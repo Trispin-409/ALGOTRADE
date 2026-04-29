@@ -1033,7 +1033,7 @@ app.get("/api/accounts", async (req, res) => {
 
     try {
       const response = await safeMetaApiCall(() => 
-        metaapi.metatraderAccountApi.getAccountsWithClassicPagination()
+        metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination()
       , 'GET_ACCOUNTS');
       
       const rawAccounts = Array.isArray(response)
@@ -1091,7 +1091,7 @@ app.post("/api/accounts", async (req, res) => {
     const { login, server } = req.body || {};
     
     // Check if account already exists to prevent duplication
-    const accounts = await metaapi.metatraderAccountApi.getAccounts();
+    const accounts = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
     let account = accounts.find(a => a.login === login && a.server === server);
     
     if (account) {
