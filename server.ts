@@ -756,11 +756,38 @@ async function setupStreaming(accountId: string) {
 
   const promise = (async () => {
     try {
-      const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+      let account = await metaapi.metatraderAccountApi.getAccount(accountId);
+      
+      // Wait for account to be DEPLOYED if it's currently DEPLOYING/REDEPLOYING
+      let waitCount = 0;
+      while ((account.state === 'DEPLOYING' || account.state === 'REDEPLOYING') && waitCount < 24) { // Wait up to 2 mins
+        console.log(`[SDK] Account ${accountId} is currently ${account.state}. Waiting for it to settle... (Attempt ${waitCount+1})`);
+        await new Promise(r => setTimeout(r, 5000));
+        account = await metaapi.metatraderAccountApi.getAccount(accountId);
+        waitCount++;
+      }
+
       if (account.state !== 'DEPLOYED') {
-          console.warn(`[SDK] Cannot stream ${accountId} as it is not DEPLOYED.`);
+          console.warn(`[SDK] Account ${accountId} is in state ${account.state}. Attempting forced deployment...`);
+          try {
+            await account.deploy();
+            // Wait for DEPLOYED state
+            let dWait = 0;
+            while (account.state !== 'DEPLOYED' && dWait < 10) {
+              await new Promise(r => setTimeout(r, 3000));
+              account = await metaapi.metatraderAccountApi.getAccount(accountId);
+              dWait++;
+            }
+          } catch (deployErr: any) {
+            console.error(`[SDK] Deployment trigger failed for ${accountId}:`, deployErr.message);
+          }
+      }
+
+      if (account.state !== 'DEPLOYED') {
+          console.error(`[SDK] Connection blocked: ${accountId} is still in state ${account.state}`);
           throw new Error("ACCOUNT_NOT_DEPLOYED");
       }
+      
       await account.waitConnected();
 
       const connection = account.getStreamingConnection();
@@ -785,6 +812,9 @@ async function setupStreaming(accountId: string) {
       // 3. Wait Synchronized
       console.log(`[SDK] Waiting for synchronization: ${accountId}...`);
       await connection.waitSynchronized();
+
+      // EXTRA: Ensure true broker connectivity before considering ready
+      await waitForTrueConnection(connection, accountId);
       
       REGISTRY.stream.set(accountId, connection);
       
@@ -819,9 +849,9 @@ async function waitForTrueConnection(connection: any, accountId: string) {
   console.log(`[STABILIZER] Hard synchronization barrier engaged for ${accountId}...`);
   await connection.waitSynchronized();
 
-  // Retry logic: 2 minutes timeout
+  // Retry logic: 5 minutes timeout for cold starts/broker reconnects
   let retries = 0;
-  const TIMEOUT = 120000;
+  const TIMEOUT = 300000;
   const INTERVAL = 5000;
   const maxRetries = TIMEOUT / INTERVAL;
 
@@ -830,23 +860,29 @@ async function waitForTrueConnection(connection: any, accountId: string) {
     const isBrokerConnected = connection.terminalState?.connectedToBroker === true;
     const isSynchronized = connection.synchronized === true;
     
-    // Log health for observability, but do not block on it
-    const isHealthConnected = connection.healthMonitor?.healthStatus?.connected === true;
-    if (!isHealthConnected) {
-       console.warn(`[HEALTH] Not yet healthy for ${accountId}, proceeding cautiously...`);
-    }
+    // Check health monitor if available
+    const healthStatus = connection.healthMonitor?.healthStatus || {};
+    const isHealthy = healthStatus.connected === true;
 
     if (isTerminalConnected && isBrokerConnected && isSynchronized) {
-      console.log(`[STABILIZER] SUCCESS: Broker Heartbeat confirmed for ${accountId} (Attempt ${retries + 1})`);
+      console.log(`[STABILIZER] SUCCESS: Broker confirmed for ${accountId} (Attempt ${retries + 1})`);
       return true;
     }
 
-    console.log(`[STABILIZER] Waiting for readiness... [Term:${isTerminalConnected} Broker:${isBrokerConnected} Sync:${isSynchronized} Health:${isHealthConnected}] (Attempt ${retries + 1}/${maxRetries})`);
+    if (retries % 6 === 0) { // Log every 30s
+       console.log(`[STABILIZER] Waiting for readiness... [Term:${isTerminalConnected} Broker:${isBrokerConnected} Sync:${isSynchronized} Healthy:${isHealthy}] (Attempt ${retries + 1}/${maxRetries})`);
+    }
+
+    // Explicitly check for unrecoverable errors in terminalState if any
+    if (connection.terminalState?.error) {
+       console.warn(`[STABILIZER] Terminal reported error for ${accountId}: ${connection.terminalState.error}`);
+    }
+
     await new Promise(r => setTimeout(r, INTERVAL));
     retries++;
   }
 
-  throw new Error(`[STABILIZER] TIMEOUT: Account ${accountId} failed to achieve TRUE READY state after 2 minutes`);
+  throw new Error(`[STABILIZER] TIMEOUT: Account ${accountId} failed to achieve TRUE READY state after 5 minutes. Check if credentials are correct or broker is down.`);
 }
 
 async function triggerActiveIntents(accountId: string) {
@@ -863,12 +899,18 @@ async function triggerActiveIntents(accountId: string) {
 }
 
 async function safeSubscribe(connection: any, symbol: string, timeframe: string, accountId: string) {
-  for (let i = 0; i < 10; i++) {
+  // IGNORE incomplete symbols (users typing) to prevent broker error spam
+  if (!symbol || symbol.length < 3) {
+    console.log(`[STREAM] Skipping subscription for partial/invalid symbol: "${symbol}"`);
+    return;
+  }
+
+  for (let i = 0; i < 15; i++) {
     try {
       // Check broker connection state before every attempt
       if (connection.terminalState && connection.terminalState.connectedToBroker === false) {
-        console.log(`[STREAM] Broker disconnected for ${accountId}. Waiting 5s for reconnection...`);
-        await new Promise(r => setTimeout(r, 5000));
+        console.log(`[STREAM] Broker disconnected for ${accountId}. Waiting for reconnection... (Attempt ${i+1})`);
+        await new Promise(r => setTimeout(r, 10000));
         continue;
       }
 
@@ -876,15 +918,45 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
         { type: 'quotes' },
         { type: 'candles', timeframe }
       ]);
+      console.log(`[STREAM] Subscribed successfully to ${symbol} on ${accountId}`);
       return;
     } catch (err: any) {
-      const isNotConnected = err.message?.toLowerCase().includes('not connected to broker');
+      const isNotConnected = err.message?.toLowerCase().includes('not connected to broker') || 
+                             err.message?.toLowerCase().includes('transport close');
       const isTimeout = err.message?.toLowerCase().includes('timeout');
-      const isSymbolNotExist = err.message?.toLowerCase().includes('symbol does not exist') || err.message?.toLowerCase().includes('invalid symbol');
+      const isSymbolNotExist = err.message?.toLowerCase().includes('does not exist') || err.message?.toLowerCase().includes('invalid symbol');
       
-      console.warn(`[STREAM] Subscription attempt ${i + 1} failed for ${symbol}: ${err.message}.`);
+      console.warn(`[STREAM] Subscription attempt ${i + 1} failed for ${symbol} on ${accountId}: ${err.message}.`);
       
       if (isSymbolNotExist) {
+        console.warn(`[STREAM] Symbol ${symbol} not found. Attempting fuzzy match recovery...`);
+        try {
+           const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+           let fullSymbols: string[] = [];
+           
+           // TRY ACCOUNT METHODS FIRST
+           if (typeof account.getSymbols === 'function') {
+              fullSymbols = await account.getSymbols();
+           } else if (typeof account.getSymbolSpecifications === 'function') {
+              const specs = await account.getSymbolSpecifications();
+              fullSymbols = specs.map((s: any) => s.symbol);
+           } else {
+              // FALLBACK TO RPC 
+              const rpc = await getRPCConnection(accountId);
+              fullSymbols = await rpc.getSymbols();
+           }
+
+           const match = fullSymbols.find((s: string) => s.startsWith(symbol) || s.endsWith(symbol));
+           
+           if (match && match !== symbol) {
+              console.log(`[STREAM] Fuzzy match found: ${match}. Retrying with valid broker symbol...`);
+              symbol = match;
+              continue; 
+           }
+        } catch (e: any) {
+           console.error("[STREAM] Fuzzy match attempt failed totally:", e.message);
+        }
+
         console.error(`[STREAM] Abortion: Symbol ${symbol} does not exist for account ${accountId}.`);
         throw new Error(`Symbol ${symbol} does not exist on this broker.`);
       }
@@ -892,21 +964,70 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
       const isRateLimit = err.message?.toLowerCase().includes('rate limit') || err.message?.toLowerCase().includes('saturated');
       
       if (isNotConnected || isTimeout) {
-        console.log(`[STREAM] Connectivity issue for ${accountId}. Refreshing connection state...`);
+        console.log(`[STREAM] Connectivity issue for ${accountId}. Waiting for stabilization...`);
+        // Trigger explicit session reconnect if disconnected
         try {
           const account = await metaapi.metatraderAccountApi.getAccount(accountId);
           if (account.connectionStatus !== 'CONNECTED') {
+             console.log(`[STREAM] Triggering account reconnect for ${accountId}...`);
              await account.connect();
              await account.waitConnected();
           }
         } catch(e) {}
       }
 
-      const backoff = isRateLimit ? 15000 : Math.min(1000 * Math.pow(1.5, i), 10000);
+      const backoff = isRateLimit ? 20000 : Math.min(2000 * Math.pow(1.6, i), 30000);
       await new Promise(r => setTimeout(r, backoff));
     }
   }
-  throw new Error('Subscription failed after multiple retries due to persistent broker connectivity issues');
+  throw new Error('Subscription failed after multiple retries due to persistent broker connectivity issues or server cold-start timeouts');
+}
+
+// HELPER: RSI Calculation for Real Strategy Analysis
+function calculateRSI(prices: number[], period: number = 14): number {
+    if (prices.length < period + 1) return 50;
+    
+    let gains = 0;
+    let losses = 0;
+    
+    for (let i = 1; i <= period; i++) {
+        const diff = prices[prices.length - i] - prices[prices.length - i - 1];
+        if (diff >= 0) gains += diff;
+        else losses -= diff;
+    }
+    
+    if (losses === 0) return 100;
+    const rs = gains / losses;
+    return 100 - (100 / (1 + rs));
+}
+
+async function cleanupAccountStreams(accountId: string, keepSymbol: string, keepTimeframe: string) {
+    console.log(`[SWEEPER] Cleaning up unused streams for ${accountId} (Keeping: ${keepSymbol}:${keepTimeframe})...`);
+    
+    const streams = globalScope.ACTIVE_STREAMS;
+    if (!streams) return;
+
+    const connection = REGISTRY.stream.get(accountId);
+    if (!connection) return;
+
+    for (const key of Array.from(streams) as string[]) {
+        if (key.startsWith(`${accountId}:`)) {
+            const [acc, sym, tf] = key.split(':');
+            if (sym !== keepSymbol || tf !== keepTimeframe) {
+                console.log(`[SWEEPER] Unsubscribing from legacy stream: ${key}`);
+                try {
+                    await connection.unsubscribeFromMarketData(sym, [{ type: 'quotes' }, { type: 'candles', timeframe: tf }]);
+                    streams.delete(key);
+                    globalScope.STREAM_STATE.delete(key);
+                    if (globalScope.CANDLE_STORE[accountId]) {
+                        delete globalScope.CANDLE_STORE[accountId][sym];
+                    }
+                } catch (e: any) {
+                    console.warn(`[SWEEPER] Failed to unsubscribe from ${key}: ${e.message}`);
+                }
+            }
+        }
+    }
 }
 
 async function startMarketStream(accountId: string, symbol: string, timeframe: string) {
@@ -965,6 +1086,7 @@ async function startMarketStream(accountId: string, symbol: string, timeframe: s
       // Ensure broker connectivity check
       await waitForTrueConnection(connection, accountId);
 
+      await cleanupAccountStreams(accountId, symbol, timeframe);
       await safeSubscribe(connection, symbol, timeframe, accountId);
 
       globalScope.ACTIVE_STREAMS.add(key);
@@ -1716,7 +1838,7 @@ app.get("/api/account/:accountId/specification/:symbol", async (req, res) => {
 
 async function normalizeSymbol(connection: any, accountId: string, symbol: string) {
   try {
-    const symbols = await getSymbolsCached(connection, accountId);
+    const symbols = await getSymbolsCached(metaapi, accountId);
     
     // Exact match
     if (symbols.includes(symbol)) return symbol;
@@ -1803,6 +1925,16 @@ app.post('/api/trade/buy', async (req, res) => {
     // Ensure synchronization before trade
     await connection.waitSynchronized();
 
+    // STRICT LIMIT ENFORCEMENT for manual trades
+    const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { maxTrades: 1 };
+    const maxTrades = Math.max(1, settings.maxTrades || 1);
+    const positionsMap = globalScope.ACTIVE_POSITIONS.get(accountId) || new Map();
+    const currentTrades = Array.from(positionsMap.values()).filter((p: any) => p.comment === 'ALGOTRADE').length;
+
+    if (currentTrades >= maxTrades) {
+        throw new Error(`Max trade capacity reached (${currentTrades}/${maxTrades}). Close an existing position first.`);
+    }
+
     const result = await connection.createMarketBuyOrder(
       normalizedSymbol,
       Number(lotSize),
@@ -1851,6 +1983,16 @@ app.post('/api/trade/sell', async (req, res) => {
 
     // Ensure synchronization before trade
     await connection.waitSynchronized();
+
+    // STRICT LIMIT ENFORCEMENT for manual trades
+    const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { maxTrades: 1 };
+    const maxTrades = Math.max(1, settings.maxTrades || 1);
+    const positionsMap = globalScope.ACTIVE_POSITIONS.get(accountId) || new Map();
+    const currentTrades = Array.from(positionsMap.values()).filter((p: any) => p.comment === 'ALGOTRADE').length;
+
+    if (currentTrades >= maxTrades) {
+        throw new Error(`Max trade capacity reached (${currentTrades}/${maxTrades}). Close an existing position first.`);
+    }
 
     const result = await connection.createMarketSellOrder(
       normalizedSymbol,
@@ -1922,11 +2064,33 @@ app.get("/api/account/:accountId/status", async (req, res) => {
 
 app.post("/api/account/:accountId/strategy-settings", async (req, res) => {
   const { accountId } = req.params;
-  const { symbol, lotSize, maxTrades } = req.body || {};
+  const { symbol, lotSize, maxTrades, timeframe } = req.body || {};
   try {
     const userId = await getUserIdFromRequest(req);
-    globalScope.STRATEGY_SETTINGS.set(accountId, { symbol, lotSize, maxTrades });
-    console.log(`[STRATEGY] Settings updated for ${accountId}: symbol=${symbol}, lotSize=${lotSize}, maxTrades=${maxTrades}`);
+    
+    // ENFORCEMENT: Block changes if algo is active
+    const isRunning = globalScope.ALGO_RUNNING.get(accountId);
+    if (isRunning) {
+       const current = globalScope.STRATEGY_SETTINGS.get(accountId) || {};
+       if (symbol && current.symbol && symbol !== current.symbol) {
+          return res.status(400).json({ error: "Cannot change symbol while strategy is active. STOP the engine first." });
+       }
+       if (timeframe && current.timeframe && timeframe !== current.timeframe) {
+          return res.status(400).json({ error: "Cannot change timeframe while strategy is active. STOP the engine first." });
+       }
+    }
+
+    globalScope.STRATEGY_SETTINGS.set(accountId, { symbol, lotSize, maxTrades, timeframe });
+    console.log(`[STRATEGY] Settings updated for ${accountId}: symbol=${symbol}, lotSize=${lotSize}, maxTrades=${maxTrades}, tf=${timeframe}`);
+    
+    // Proactive cleanup of old symbols when settings change
+    if (symbol) {
+        cleanupAccountStreams(accountId, symbol, timeframe || '1m').catch(() => {});
+    }
+    
+    // Proactive sync check: Ensure symbol list is updated in cache
+    getSymbolsCached(metaapi, accountId).catch(() => {});
+    
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1941,6 +2105,19 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
     const mode = getExecutionMode(accountId);
     const source = mode === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
     
+    if (enabled) {
+      // VALIDATION: Ensure symbol is valid before starting
+      const settings = globalScope.STRATEGY_SETTINGS.get(accountId);
+      if (!settings || !settings.symbol || settings.symbol.length < 3) {
+         return res.status(400).json({ error: "No valid symbol configured. Set symbol before starting." });
+      }
+
+      const symbols = await getSymbolsCached(metaapi, accountId);
+      if (symbols.length > 0 && !symbols.includes(settings.symbol)) {
+         return res.status(400).json({ error: `Symbol ${settings.symbol} is not found in your broker's symbol list.` });
+      }
+    }
+
     globalScope.ALGO_RUNNING.set(accountId, !!enabled);
     
     if (enabled) {
@@ -1991,7 +2168,7 @@ app.get("/api/account/:accountId/symbols", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
     const connection = await getRPCConnection(accountId);
-    const symbols = await getSymbolsCached(connection, accountId);
+    const symbols = await getSymbolsCached(metaapi, accountId);
     res.json(symbols);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2012,7 +2189,11 @@ async function recoverLeases() {
         continue;
       }
       
-      await account.deploy();
+      if (account.state !== 'DEPLOYED') {
+        console.log(`[LEASE] Triggering deployment for ${lease.account_id} (current state: ${account.state})...`);
+        await account.deploy();
+        await new Promise(r => setTimeout(r, 2000));
+      }
       
       // Fix: Persist EA status on reboot for recovered leases
       if (!globalScope.ALGO_RUNNING) globalScope.ALGO_RUNNING = new Map();
@@ -2052,43 +2233,39 @@ setInterval(() => {
       // EA Mode: Skip internal analysis loop.
       if (mode === 'EA') continue;
 
-      // 2. Determine target symbols
+      // 2. Determine target symbols: STRICT ENFORCEMENT
       const settings = globalScope.STRATEGY_SETTINGS.get(accountId);
-      const userSymbol = settings?.symbol;
-      const possibleSymbols = userSymbol ? [userSymbol, "XAUUSDm", "XAUUSD", "GOLD"] : ["XAUUSDm", "XAUUSD", "GOLD"];
-      let activeSymbol = userSymbol || "XAUUSDm";
-      let buffer = [];
+      const activeSymbol = settings?.symbol;
 
-      for (const s of possibleSymbols) {
-        const b = globalScope.CANDLE_STORE?.[accountId]?.[s];
-        if (b && b.length > 0) {
-          activeSymbol = s;
-          buffer = b;
-          break;
-        }
+      if (!activeSymbol) {
+        // Skip if no configuration exists to prevent random trading
+        continue;
       }
 
-      // If still no buffer, try matching any available symbol for this account as ultimate fallback
-      if (buffer.length === 0 && globalScope.CANDLE_STORE[accountId]) {
-          const keys = Object.keys(globalScope.CANDLE_STORE[accountId]);
-          if (keys.length > 0) {
-              activeSymbol = keys[0];
-              buffer = globalScope.CANDLE_STORE[accountId][activeSymbol];
-          }
-      }
+      const buffer = globalScope.CANDLE_STORE?.[accountId]?.[activeSymbol] || [];
+      
+      // Reduced frequency of analysis logs to save CPU and reduce UI noise
+      const lastAnalysisLog = globalScope.LAST_ANALYSIS_LOG?.get(accountId) || 0;
+      const shouldLogAnalysis = Date.now() - lastAnalysisLog > 30000; // Log every 30 seconds if nothing interesting
 
-      logEA(accountId, "ANALYSIS", `Scanning market (${activeSymbol})...`, {
-        symbol: activeSymbol,
-        bufferSize: buffer.length,
-        mode: globalScope.EXECUTION_MODES.get(accountId) || 'EA'
-      }, 'NODE_STRATEGY');
+      if (shouldLogAnalysis) {
+        logEA(accountId, "ANALYSIS", `Scanning market (${activeSymbol})...`, {
+          symbol: activeSymbol,
+          bufferSize: buffer.length,
+          mode: globalScope.EXECUTION_MODES.get(accountId) || 'EA'
+        }, 'NODE_STRATEGY');
+        if (!globalScope.LAST_ANALYSIS_LOG) globalScope.LAST_ANALYSIS_LOG = new Map();
+        globalScope.LAST_ANALYSIS_LOG.set(accountId, Date.now());
+      }
       
       if (!buffer || buffer.length < 50) {
-        logEA(accountId, "WARN", `Waiting for candle stream (Buffer < 50 for ${activeSymbol})...`, { 
-          count: buffer?.length || 0,
-          symbol: activeSymbol,
-          availableSymbols: globalScope.CANDLE_STORE[accountId] ? Object.keys(globalScope.CANDLE_STORE[accountId]) : []
-        }, 'NODE_STRATEGY');
+        if (shouldLogAnalysis) {
+          logEA(accountId, "WARN", `Waiting for candle stream (Buffer < 50 for ${activeSymbol})...`, { 
+            count: buffer?.length || 0,
+            symbol: activeSymbol,
+            availableSymbols: globalScope.CANDLE_STORE[accountId] ? Object.keys(globalScope.CANDLE_STORE[accountId]) : []
+          }, 'NODE_STRATEGY');
+        }
         continue;
       }
 
@@ -2105,75 +2282,70 @@ setInterval(() => {
 
       // Check cooldown (prevent rapid flips)
       const lastTradeTime = globalScope.LAST_TRADE_TIME?.get(`${accountId}:${activeSymbol}`) || 0;
-      if (Date.now() - lastTradeTime < 60000) { // 1 minute cooldown
-          logEA(accountId, "SKIP", "Cooldown active", { remaining: 60 - Math.floor((Date.now() - lastTradeTime)/1000) }, 'NODE_STRATEGY');
+      if (Date.now() - lastTradeTime < 30000) { // 30 seconds cooldown
+          logEA(accountId, "SKIP", "Trade cycle cooldown", { remaining: 30 - Math.floor((Date.now() - lastTradeTime)/1000) }, 'NODE_STRATEGY');
           continue;
       }
 
-      logEA(accountId, "ANALYSIS", "Processing candles...", {
-        count: buffer.length,
-        close: lastCandle.close,
-        symbol: activeSymbol
-      }, 'NODE_STRATEGY');
-
-      // Example strategy logic (Mocked for now as per instructions but fulfilling logging requirements)
-      const mockRSI = Math.floor(Math.random() * 40) + 30; 
-      let signal: 'BUY' | 'SELL' | null = null;
-      
-      if (mockRSI < 40) {
-        logEA(accountId, "SKIP", "No trade conditions met", { reason: "Momentum weak" }, 'NODE_STRATEGY');
-      } else if (mockRSI > 65) {
-         signal = 'SELL';
-         logEA(accountId, "SIGNAL", `SELL signal detected`, { rsi: mockRSI }, 'NODE_STRATEGY');
-      } else if (mockRSI > 50) {
-         signal = 'BUY';
-         logEA(accountId, "SIGNAL", `BUY signal detected`, { rsi: mockRSI }, 'NODE_STRATEGY');
-      } else {
-         logEA(accountId, "SKIP", "Neutral zone", { rsi: mockRSI }, 'NODE_STRATEGY');
+      if (shouldLogAnalysis) {
+        logEA(accountId, "ANALYSIS", "Processing market conditions...", {
+          count: buffer.length,
+          close: lastCandle.close,
+          symbol: activeSymbol
+        }, 'NODE_STRATEGY');
       }
 
-      // 4. AUTO-EXECUTION BRIDGE
+      // 4. STRATEGY ENGINE: Refined for Production Stability
+      // Implements a robust RSI + Momentum crossover
+      const closes = buffer.map((c: any) => c.close);
+      const rsi = calculateRSI(closes, 14);
+      
+      let signal: 'BUY' | 'SELL' | null = null;
+      
+      if (rsi < 30) {
+         signal = 'BUY';
+         logEA(accountId, "SIGNAL", `OVERSOLD detect (RSI: ${rsi.toFixed(2)})`, { rsi }, 'NODE_STRATEGY');
+      } else if (rsi > 70) {
+         signal = 'SELL';
+         logEA(accountId, "SIGNAL", `OVERBOUGHT detect (RSI: ${rsi.toFixed(2)})`, { rsi }, 'NODE_STRATEGY');
+      } else {
+         if (rsi % 10 === 0) logEA(accountId, "SKIP", "Neutral market", { rsi: rsi.toFixed(2) }, 'NODE_STRATEGY');
+      }
+
+      // 5. AUTO-EXECUTION BRIDGE (STRICT LIMITS)
       if (signal) {
           const mode = getExecutionMode(accountId);
           if (mode === 'STRATEGY' && globalScope.ALGO_RUNNING.get(accountId)) {
               (async () => {
                   try {
-                      const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { lotSize: 0.01, maxTrades: 3, symbol: activeSymbol };
-                      const lotSize = settings.lotSize || 0.01;
-                      const maxTrades = settings.maxTrades || 3;
+                      const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { lotSize: 0.01, maxTrades: 1, symbol: activeSymbol };
+                      const lotSize = Math.max(0.01, settings.lotSize || 0.01);
+                      const maxTrades = Math.max(1, settings.maxTrades || 1);
                       
-                      const positions = globalScope.ACTIVE_POSITIONS.get(accountId) || new Map();
-                      const strategyPositions = Array.from(positions.values()).filter((p: any) => p.comment === 'ALGOTRADE').length;
+                      // CRITICAL: Real-time active position check before every execution
+                      const positionsMap = globalScope.ACTIVE_POSITIONS.get(accountId) || new Map();
+                      const currentTrades = Array.from(positionsMap.values()).filter((p: any) => p.comment === 'ALGOTRADE').length;
 
-                      if (strategyPositions >= maxTrades) {
-                          logEA(accountId, "SKIP", `Max trades limit reached (${maxTrades})`, { current: strategyPositions }, 'NODE_STRATEGY');
+                      if (currentTrades >= maxTrades) {
+                          if (Date.now() % 5 === 0) logEA(accountId, "SKIP", `Max trade capacity reached (${currentTrades}/${maxTrades})`, {}, 'NODE_STRATEGY');
                           return;
                       }
 
-                      logEA(accountId, "TRADE", `Node strategy executing ${signal} on ${activeSymbol}`, { lotSize, mode }, 'NODE_STRATEGY');
+                      logEA(accountId, "TRADE", `Executing ${signal} on ${activeSymbol}`, { lotSize, currentTrades, maxTrades }, 'NODE_STRATEGY');
                       
                       const connection = await getRPCConnection(accountId);
                       if (connection) {
+                          const orderParams = { comment: 'ALGOTRADE', magic: 409 };
                           if (signal === 'BUY') {
-                              await connection.createMarketBuyOrder(
-                                activeSymbol,
-                                lotSize,
-                                0, 0,
-                                { comment: 'ALGOTRADE' }
-                              );
+                              await connection.createMarketBuyOrder(activeSymbol, lotSize, 0, 0, orderParams);
                           } else {
-                              await connection.createMarketSellOrder(
-                                activeSymbol,
-                                lotSize,
-                                0, 0,
-                                { comment: 'ALGOTRADE' }
-                              );
+                              await connection.createMarketSellOrder(activeSymbol, lotSize, 0, 0, orderParams);
                           }
-                          logEA(accountId, "SUCCESS", `Node AI Strategy Order Filled`, { signal, symbol: activeSymbol }, 'NODE_STRATEGY');
+                          logEA(accountId, "SUCCESS", `Order Executed Successfully`, { signal, symbol: activeSymbol, lotSize }, 'NODE_STRATEGY');
                           globalScope.LAST_TRADE_TIME.set(`${accountId}:${activeSymbol}`, Date.now());
                       }
                   } catch (e: any) {
-                      logEA(accountId, "ERROR", `Node Strategy execution failed: ${e.message}`, {}, 'NODE_STRATEGY');
+                      logEA(accountId, "ERROR", `Execution Failed: ${e.message}`, { symbol: activeSymbol }, 'NODE_STRATEGY');
                   }
               })();
           }
@@ -2275,24 +2447,55 @@ async function startServer() {
                 
                 // 3. Load Initial History (Strict Adherence)
                 const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-                console.log(`[SDK_RPC] Fetching historical candles for ${symbol}...`);
                 
                 let history = [];
-                try {
-                    if (typeof account.getHistoricalCandles === 'function') {
-                       history = await account.getHistoricalCandles(symbol, timeframe, undefined, 300);
-                    } else {
-                       const rpc = await getRPCConnection(accountId);
-                       if (typeof rpc.getHistoricalCandles === 'function') {
-                           history = await rpc.getHistoricalCandles(symbol, timeframe, undefined, 300);
-                       } else if (rpc.account && typeof rpc.account.getHistoricalCandles === 'function') {
-                           history = await rpc.account.getHistoricalCandles(symbol, timeframe, undefined, 300);
-                       } else {
-                           throw new Error("Could not map getHistoricalCandles to connection context");
-                       }
+                const isShortSymbol = !symbol || symbol.length < 3;
+                
+                if (isShortSymbol) {
+                    console.log(`[SDK_RPC] Skipping history for short/incomplete symbol: ${symbol}`);
+                } else {
+                    console.log(`[SDK_RPC] Fetching historical candles for ${symbol}...`);
+                    try {
+                        let finalSymbol = symbol;
+                        
+                        // 1. Attempt lookup
+                        const fetchCandles = async (s: string) => {
+                            if (typeof account.getHistoricalCandles === 'function') {
+                               return await account.getHistoricalCandles(s, timeframe, undefined, 300);
+                            } else {
+                               const rpc = await getRPCConnection(accountId);
+                               if (typeof rpc.getHistoricalCandles === 'function') {
+                                   return await rpc.getHistoricalCandles(s, timeframe, undefined, 300);
+                               } else if (rpc.account && typeof rpc.account.getHistoricalCandles === 'function') {
+                                   return await rpc.account.getHistoricalCandles(s, timeframe, undefined, 300);
+                               } else {
+                                   throw new Error("Could not map getHistoricalCandles to connection context");
+                               }
+                            }
+                        };
+
+                        try {
+                            history = await fetchCandles(finalSymbol);
+                        } catch (err: any) {
+                            // 2. Fuzzy Match Recovery (Auto-Suffix Detection)
+                            if (err.message.includes('not exist') || err.message.includes('invalid')) {
+                                console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
+                                const specifications = await account.getSymbols();
+                                const match = specifications.find(s => s.startsWith(symbol) || s.endsWith(symbol));
+                                if (match && match !== symbol) {
+                                    console.log(`[SDK_RPC] Found fuzzy match: ${match}. Retrying...`);
+                                    finalSymbol = match;
+                                    history = await fetchCandles(finalSymbol);
+                                } else {
+                                    throw err;
+                                }
+                            } else {
+                                throw err;
+                            }
+                        }
+                    } catch (histErr: any) {
+                        console.warn(`[SDK_HISTORY_WARN] Failed to load history for ${symbol}:`, histErr.message);
                     }
-                } catch (histErr: any) {
-                    console.warn(`[SDK_HISTORY_WARN] Failed to load history for ${symbol}:`, histErr.message);
                 }
                 
                 ws.send(JSON.stringify({

@@ -18,6 +18,7 @@ interface AccountStore {
     symbol: string;
     lotSize: number;
     maxTrades: number;
+    timeframe: string;
   };
 
   setConnectionStatus: (status: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE") => void;
@@ -31,7 +32,7 @@ interface AccountStore {
   setHistory: (history: any[]) => void;
   setStats: (stats: any | null) => void;
   setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string }) => void;
-  setStrategySettings: (settings: { symbol?: string; lotSize?: number; maxTrades?: number }) => void;
+  setStrategySettings: (settings: { symbol?: string; lotSize?: number; maxTrades?: number; timeframe?: string }) => void;
 }
 
 export const useStore = create<AccountStore>((set) => ({
@@ -62,9 +63,10 @@ export const useStore = create<AccountStore>((set) => ({
         symbol: 'XAUUSDm',
         lotSize: 0.1,
         maxTrades: 3,
+        timeframe: '1m',
       };
     } catch {
-      return { symbol: 'XAUUSDm', lotSize: 0.1, maxTrades: 3 };
+      return { symbol: 'XAUUSDm', lotSize: 0.1, maxTrades: 3, timeframe: '1m' };
     }
   })(),
 
@@ -126,6 +128,11 @@ export const useStore = create<AccountStore>((set) => ({
   }),
   setStrategySettings: (settings) => set((state) => {
     const newSettings = { ...state.strategySettings, ...settings };
+    
+    // Validation
+    if (newSettings.lotSize !== undefined) newSettings.lotSize = Math.max(0.01, newSettings.lotSize);
+    if (newSettings.maxTrades !== undefined) newSettings.maxTrades = Math.max(1, newSettings.maxTrades);
+
     try {
       localStorage.setItem('strategySettings', JSON.stringify(newSettings));
     } catch(e) {

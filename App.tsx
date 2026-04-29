@@ -113,7 +113,23 @@ const App: React.FC = () => {
   const [tradingStatus, setTradingStatus] = useState<string>('INIT');
   const [availableBrokerSymbols, setAvailableBrokerSymbols] = useState<string[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState(() => localStorage.getItem('selectedSymbol') || 'XAUUSDm');
+
+  // Sync selectedSymbol with store strategy settings
+  useEffect(() => {
+    const currentStoreSymbol = useStore.getState().strategySettings.symbol;
+    if (selectedSymbol && selectedSymbol !== currentStoreSymbol) {
+      useStore.getState().setStrategySettings({ symbol: selectedSymbol });
+    }
+  }, [selectedSymbol]);
   const [selectedTimeframe, setSelectedTimeframe] = useState(() => localStorage.getItem('selectedTimeframe') || '1m');
+
+  // Sync selectedTimeframe with store strategy settings
+  useEffect(() => {
+    const currentStoreTimeframe = useStore.getState().strategySettings.timeframe;
+    if (selectedTimeframe && selectedTimeframe !== currentStoreTimeframe) {
+      useStore.getState().setStrategySettings({ timeframe: selectedTimeframe });
+    }
+  }, [selectedTimeframe]);
   const [isDNDActive, setIsDNDActive] = useState(() => localStorage.getItem('isDNDActive') === 'true');
   const [syncedAccountIds, setSyncedAccountIds] = useState<Set<string>>(new Set());
   const [eaStatuses, setEaStatuses] = useState<Record<string, { deployed: boolean; status: string }>>({});
@@ -434,6 +450,16 @@ const App: React.FC = () => {
     const newState = !isAlgoTradeRunning;
     const mode = executionModes[selectedAccountId] || 'STRATEGY';
 
+    // 1. VALIDATION: Check symbol before starting
+    if (newState) {
+       if (!selectedSymbol || !availableBrokerSymbols.includes(selectedSymbol)) {
+          const msg = `EA ERROR: Cannot start strategy on invalid symbol "${selectedSymbol}". Select a valid one from the list.`;
+          addLog(msg);
+          alert(msg);
+          return;
+       }
+    }
+
     try {
       if (mode === 'EA') {
         // LAYER 2: Orchestration - Start/Stop Cloud Algo logic on MetaApi terminal
@@ -487,6 +513,15 @@ const App: React.FC = () => {
       return;
     }
     try {
+      const currentPositions = useStore.getState().positions;
+      const maxTrades = strategySettings.maxTrades || 1;
+      const currentAlgoTrades = currentPositions.filter(p => p.comment === 'ALGOTRADE').length;
+
+      if (currentAlgoTrades >= maxTrades) {
+         addLog(`EA ERROR: Max trade limit reached (${currentAlgoTrades}/${maxTrades}). Close an existing position first.`);
+         return;
+      }
+
       const tradeSymbol = selectedSymbol || (availableBrokerSymbols.length > 0 ? availableBrokerSymbols[0] : 'XAUUSDm');
       addLog(`EA: Executing manual BUY trade via SDK for ${selectedAccountId} on ${tradeSymbol} at ${lotSize} lots...`);
       setTradeStatus("executing");
@@ -529,6 +564,15 @@ const App: React.FC = () => {
       return;
     }
     try {
+      const currentPositions = useStore.getState().positions;
+      const maxTrades = strategySettings.maxTrades || 1;
+      const currentAlgoTrades = currentPositions.filter(p => p.comment === 'ALGOTRADE').length;
+
+      if (currentAlgoTrades >= maxTrades) {
+         addLog(`EA ERROR: Max trade limit reached (${currentAlgoTrades}/${maxTrades}). Close an existing position first.`);
+         return;
+      }
+
       const tradeSymbol = selectedSymbol || (availableBrokerSymbols.length > 0 ? availableBrokerSymbols[0] : 'XAUUSDm');
       addLog(`EA: Executing manual SELL trade via SDK for ${selectedAccountId} on ${tradeSymbol} at ${lotSize} lots...`);
       setTradeStatus("executing");

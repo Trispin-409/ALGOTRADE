@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Activity, Clock, RefreshCw, TrendingUp, TrendingDown, AlertCircle, Play, X, Zap, Shield, Layers, History, Settings, Square, Workflow } from 'lucide-react';
+import { Activity, Clock, RefreshCw, TrendingUp, TrendingDown, AlertCircle, Play, X, Zap, Shield, Layers, History, Settings, Square, Workflow, Lock } from 'lucide-react';
 import { TradingAccount } from '../types';
 import CandlestickChart from './CandlestickChart';
 import { connectionManager } from '../src/lib/ConnectionManager';
@@ -252,6 +252,26 @@ const MarketData: React.FC<MarketDataProps> = ({
     };
   }, [selectedAccountId, symbol, timeframe, addLog]);
 
+  const [localSymbol, setLocalSymbol] = useState(symbol);
+
+  useEffect(() => {
+    setLocalSymbol(symbol);
+  }, [symbol]);
+
+  useEffect(() => {
+    if (localSymbol === symbol) return;
+    
+    // VALIDATION: Only propagate to global state if symbol is officially supported by broker
+    // This prevents the SDK from attempting to subscribe to partial strings like "XAU" while typing "XAUUSDm"
+    if (!availableBrokerSymbols.includes(localSymbol)) return;
+
+    const timer = setTimeout(() => {
+      setSymbol(localSymbol);
+      addLog(`DATA: Switching analysis context to ${localSymbol}...`);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [localSymbol, symbol, setSymbol, availableBrokerSymbols, addLog]);
+
   const displayData = useMemo(() => {
     if (chartData.length === 0) return null;
     const last = chartData[chartData.length - 1];
@@ -305,37 +325,44 @@ const MarketData: React.FC<MarketDataProps> = ({
           <div className="flex flex-col gap-1">
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Symbol</span>
             <div className="relative">
-              <div className="flex bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500 group">
+              <div className={`flex bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500 group ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
                 <input 
                   type="text"
                   list="broker-symbols"
-                  value={symbol}
-                  onChange={(e) => setSymbol(e.target.value)}
-                  className={`bg-transparent text-white text-sm px-4 py-2 outline-none w-[120px] font-bold tracking-tight ${availableBrokerSymbols.length > 0 && !availableBrokerSymbols.includes(symbol) ? 'text-amber-400' : ''}`}
+                  value={localSymbol}
+                  disabled={isAlgoRunning}
+                  onChange={(e) => setLocalSymbol(e.target.value)}
+                  className={`bg-transparent text-white text-sm px-4 py-2 outline-none w-[120px] font-bold tracking-tight ${(availableBrokerSymbols.length > 0 && !availableBrokerSymbols.includes(localSymbol)) ? 'text-amber-400' : ''} ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
                   placeholder="XAUUSDm"
                 />
-                <datalist id="broker-symbols">
+                <datalist id="broker-symbols" className="bg-slate-900">
                   {availableBrokerSymbols.map(s => <option key={s} value={s} />)}
                 </datalist>
                 <div className="bg-slate-700/50 px-2 flex items-center border-l border-slate-700">
                   <Activity className={`w-3 h-3 ${availableBrokerSymbols.includes(symbol) ? 'text-emerald-500' : 'text-slate-500'}`} />
                 </div>
               </div>
+              {isAlgoRunning && (
+                <div className="absolute -bottom-4 left-1 flex items-center gap-1 text-[8px] font-black text-rose-500 uppercase tracking-widest animate-pulse">
+                  <Lock className="w-2 h-2" /> Locked during active strategy
+                </div>
+              )}
             </div>
           </div>
 
           <div className="flex flex-col gap-1">
             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Interval</span>
-            <div className="flex bg-slate-800 rounded-xl p-1 border border-slate-700">
+            <div className={`flex bg-slate-800 rounded-xl p-1 border border-slate-700 ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
               {timeframes.map(tf => (
                 <button
                   key={tf}
+                  disabled={isAlgoRunning}
                   onClick={() => setTimeframe(tf)}
                   className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
                     timeframe === tf 
                       ? 'bg-indigo-500 text-white shadow-md' 
                       : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                  }`}
+                  } ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
                 >
                   {tf}
                 </button>
