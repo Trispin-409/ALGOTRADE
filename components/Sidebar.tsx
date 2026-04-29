@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
@@ -69,7 +69,16 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         ))}
       </nav>
 
-      <div className="p-4 mt-auto">
+      <div className="p-4 mt-auto space-y-3">
+        <a 
+          href="https://wa.me/27678172189" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#25D366] hover:bg-[#128C7E] text-white rounded-xl transition-all duration-200 group active:scale-95 font-bold text-sm shadow-lg shadow-green-600/20"
+        >
+          <MessageCircle className="w-5 h-5" />
+          WhatsApp Support
+        </a>
         <div className="bg-slate-800/50 rounded-2xl p-4 border border-slate-700/50">
           <div className="flex items-center gap-2 mb-2">
             <div className="w-2 h-2 rounded-full bg-blue-500"></div>
@@ -78,7 +87,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
           <div className="w-full bg-slate-700 h-1 rounded-full overflow-hidden">
             <div className="bg-blue-500 w-[24%] h-full"></div>
           </div>
-          <p className="text-[10px] text-slate-500 mt-2 truncate">API Latency: <span className="text-emerald-400">42ms</span></p>
         </div>
       </div>
     </aside>
