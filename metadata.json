@@ -1,0 +1,8 @@
+{
+  "name": "ALGOTRADE",
+  "description": "Enterprise-grade MetaTrader automation hub with real-time SDK telemetry and multi-node synchronization via MetaApi London Cluster.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}
