@@ -1091,8 +1091,10 @@ app.post("/api/accounts", async (req, res) => {
     const { login, server } = req.body || {};
     
     // Check if account already exists to prevent duplication
-    const accounts = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
-    let account = accounts.find(a => a.login === login && a.server === server);
+    const rawResponse = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
+    const accounts = Array.isArray(rawResponse) ? rawResponse : rawResponse?.items ? rawResponse.items : rawResponse?.data ? rawResponse.data : [];
+    
+    let account = accounts.find((a: any) => a.login === login && a.server === server);
     
     if (account) {
       console.log(`[ACCOUNT] Found existing account ${account.id} for login ${login}. Skipping creation to avoid duplicate costs.`);
@@ -1104,9 +1106,26 @@ app.post("/api/accounts", async (req, res) => {
     // Explicitly removed auto-deploy per user request to save costs
     console.log(`[ACCOUNT] Bound to ${account.id}. Skipping auto-deploy.`);
     
-    await TradingController.createLease(userId, account.id, 'DEFAULT', 'london');
+    const accountId = account.id || account._data?.id || account._id;
+    await TradingController.createLease(userId, accountId, 'DEFAULT', 'london');
 
-    res.json(account);
+    const info = account.accountInformation || account._data?.accountInformation || {};
+    
+    res.json({
+      id: accountId,
+      name: account.name || account._data?.name,
+      login: account.login || account._data?.login,
+      server: account.server || account._data?.server,
+      state: account.state || account._data?.state,
+      connectionStatus: account.connectionStatus || account._data?.connectionStatus,
+      magic: account.magic || account._data?.magic,
+      platform: account.platform || account._data?.platform || (account.type || account._data?.type)?.includes('mt5') ? 'mt5' : 'mt4',
+      uptime: account.uptime || account._data?.uptime,
+      balance: info.balance || 0,
+      equity: info.equity || 0,
+      margin: info.margin || 0,
+      freeMargin: info.freeMargin || 0
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
