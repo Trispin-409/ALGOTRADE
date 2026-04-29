@@ -20,8 +20,10 @@ import {
   BellOff,
   Activity,
   TrendingUp,
-  Users
+  Users,
+  Download
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { PlatformType, TradingAccount } from './types';
 import Dashboard from './components/Dashboard';
 import Sidebar from './components/Sidebar';
@@ -843,111 +845,121 @@ const App: React.FC = () => {
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-8 custom-scrollbar z-10 w-full overflow-x-hidden">
           <div className="max-w-[1600px] mx-auto w-full space-y-6">
-            {activeTab === 'dashboard' && (
-              <Dashboard 
-                accounts={accounts} 
-                isLoading={isLoading} 
-                isAlgoTradeRunning={isAlgoTradeRunning} 
-                syncedAccountIds={syncedAccountIds}
-                selectedSymbol={selectedSymbol}
-                isTradingReady={tradingStatus ? isTradingReady(tradingStatus) : false}
-                token={session?.access_token}
-                onBuy={handleBuy}
-                onSell={handleSell}
-                onToggleAlgo={handleToggleAlgo}
-                lotSize={lotSize}
-                setLotSize={setLotSize}
-                tradeStatus={tradeStatus}
-              />
-            )}
-            {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} />}
-            {activeTab === 'ea-deployer' && <ExpertAdvisorDeployer accounts={accounts} availableBrokerSymbols={availableBrokerSymbols} token={session?.access_token} />}
-            {activeTab === 'data' && (
-              <ErrorBoundary>
-                <MarketData 
-                  accounts={accounts} 
-                  selectedAccountId={selectedAccountId || ''} 
-                  setSelectedAccountId={handleAccountSelect}
-                  symbol={selectedSymbol}
-                  setSymbol={setSelectedSymbol}
-                  timeframe={selectedTimeframe}
-                  setTimeframe={setSelectedTimeframe}
-                  addLog={addLog}
-                  availableBrokerSymbols={availableBrokerSymbols}
-                  lotSize={lotSize}
-                  setLotSize={setLotSize}
-                  onBuy={handleBuy}
-                  onSell={handleSell}
-                  onToggleAlgo={handleToggleAlgo}
-                  isAlgoRunning={isAlgoTradeRunning}
-                  tradeStatus={tradeStatus}
-                  connectionStatus={sdkStatus}
-                  executionMode={executionModes[selectedAccountId] || 'EA'}
-                  eaStatus={eaStatuses[selectedAccountId]}
-                  onSwitchMode={handleSwitchMode}
-                  onDeploy={handleDeployTerminal}
-                  onUndeploy={handleUndeployTerminal}
-                  setActiveTab={setActiveTab}
-                  token={session?.access_token}
-                />
-              </ErrorBoundary>
-            )}
-            {activeTab === 'settings' && (
-              <ErrorBoundary>
-                <ChartSettings />
-              </ErrorBoundary>
-            )}
-            {activeTab === 'logs' && (
-              <ErrorBoundary>
-                {isLogsUnlocked ? (
-                  <SystemMonitor 
-                    logs={logs} 
-                    isAuthValid={isAuthValid} 
-                    lastError={lastError} 
-                    sdkStatus={sdkStatus}
-                    onLock={() => {
-                      setIsLogsUnlocked(false);
-                      setPasswordInput('');
-                      addLog("ACCESS: System logs locked by administrator.");
-                    }} 
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, scale: 0.98, Filter: 'blur(10px)' }}
+                animate={{ opacity: 1, scale: 1, Filter: 'blur(0px)' }}
+                exit={{ opacity: 0, scale: 1.02, Filter: 'blur(10px)' }}
+                transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
+              >
+                {activeTab === 'dashboard' && (
+                  <Dashboard 
+                    accounts={accounts} 
+                    isLoading={isLoading} 
+                    isAlgoTradeRunning={isAlgoTradeRunning} 
+                    syncedAccountIds={syncedAccountIds}
+                    selectedSymbol={selectedSymbol}
+                    isTradingReady={tradingStatus ? isTradingReady(tradingStatus) : false}
+                    token={session?.access_token}
+                    onBuy={handleBuy}
+                    onSell={handleSell}
+                    onToggleAlgo={handleToggleAlgo}
+                    lotSize={lotSize}
+                    setLotSize={setLotSize}
+                    tradeStatus={tradeStatus}
                   />
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-[600px] animate-in fade-in zoom-in-95 duration-500">
-                    <div className="bg-slate-900/40 border border-white/10 p-10 rounded-[40px] shadow-2xl backdrop-blur-xl max-w-md w-full space-y-8 text-center">
-                      <div className="w-20 h-20 bg-indigo-500/10 rounded-[30px] flex items-center justify-center border border-indigo-500/20 mx-auto">
-                        <LockIcon className="text-indigo-500 w-10 h-10" />
-                      </div>
-                      <div className="space-y-2">
-                        <h2 className="text-2xl font-black text-white uppercase tracking-tighter">Encrypted Access</h2>
-                        <p className="text-slate-500 text-xs font-bold uppercase tracking-widest">System logs are restricted to authorized personnel only.</p>
-                      </div>
-                      
-                      <form onSubmit={handleUnlockLogs} className="space-y-4">
-                        <div className="relative">
-                          <input 
-                            type="password" 
-                            value={passwordInput}
-                            onChange={(e) => setPasswordInput(e.target.value)}
-                            placeholder="ENTER ACCESS KEY"
-                            className={`w-full bg-black/40 border ${passwordError ? 'border-rose-500/50' : 'border-white/10'} rounded-2xl px-6 py-4 text-center font-mono text-sm tracking-[0.3em] focus:outline-none focus:border-indigo-500/50 transition-all placeholder:text-slate-700`}
-                            autoFocus
-                          />
-                          {passwordError && (
-                            <p className="text-rose-500 text-[10px] font-black uppercase tracking-widest mt-2 animate-pulse">Invalid Access Key</p>
-                          )}
-                        </div>
-                        <button 
-                          type="submit"
-                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs transition-all active:scale-95 shadow-lg shadow-indigo-500/20"
-                        >
-                          Authorize Access
-                        </button>
-                      </form>
-                    </div>
-                  </div>
                 )}
-              </ErrorBoundary>
-            )}
+                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} />}
+                {activeTab === 'ea-deployer' && <ExpertAdvisorDeployer accounts={accounts} availableBrokerSymbols={availableBrokerSymbols} token={session?.access_token} />}
+                {activeTab === 'data' && (
+                  <ErrorBoundary>
+                    <MarketData 
+                      accounts={accounts} 
+                      selectedAccountId={selectedAccountId || ''} 
+                      setSelectedAccountId={handleAccountSelect}
+                      symbol={selectedSymbol}
+                      setSymbol={setSelectedSymbol}
+                      timeframe={selectedTimeframe}
+                      setTimeframe={setSelectedTimeframe}
+                      addLog={addLog}
+                      availableBrokerSymbols={availableBrokerSymbols}
+                      lotSize={lotSize}
+                      setLotSize={setLotSize}
+                      onBuy={handleBuy}
+                      onSell={handleSell}
+                      onToggleAlgo={handleToggleAlgo}
+                      isAlgoRunning={isAlgoTradeRunning}
+                      tradeStatus={tradeStatus}
+                      connectionStatus={sdkStatus}
+                      executionMode={executionModes[selectedAccountId] || 'EA'}
+                      eaStatus={eaStatuses[selectedAccountId]}
+                      onSwitchMode={handleSwitchMode}
+                      onDeploy={handleDeployTerminal}
+                      onUndeploy={handleUndeployTerminal}
+                      setActiveTab={setActiveTab}
+                      token={session?.access_token}
+                    />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'settings' && (
+                  <ErrorBoundary>
+                    <ChartSettings />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'logs' && (
+                  <ErrorBoundary>
+                    {isLogsUnlocked ? (
+                      <SystemMonitor 
+                        logs={logs} 
+                        isAuthValid={isAuthValid} 
+                        lastError={lastError} 
+                        sdkStatus={sdkStatus}
+                        onLock={() => {
+                          setIsLogsUnlocked(false);
+                          setPasswordInput('');
+                          addLog("ACCESS: System logs locked by administrator.");
+                        }} 
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-[600px] animate-in fade-in zoom-in-95 duration-500">
+                        <div className="bg-slate-900/40 border border-white/10 p-10 rounded-[40px] shadow-2xl backdrop-blur-xl max-w-md w-full space-y-8 text-center">
+                          <div className="w-20 h-20 bg-indigo-500/10 rounded-[30px] flex items-center justify-center border border-indigo-500/20 mx-auto">
+                            <LockIcon className="text-indigo-500 w-10 h-10" />
+                          </div>
+                          <div className="space-y-2">
+                            <h2 className="text-2xl font-black text-white uppercase tracking-tighter">Encrypted Access</h2>
+                            <p className="text-slate-500 text-xs font-bold uppercase tracking-widest">System logs are restricted to authorized personnel only.</p>
+                          </div>
+                          
+                          <form onSubmit={handleUnlockLogs} className="space-y-4">
+                            <div className="relative">
+                              <input 
+                                type="password" 
+                                value={passwordInput}
+                                onChange={(e) => setPasswordInput(e.target.value)}
+                                placeholder="ENTER ACCESS KEY"
+                                className={`w-full bg-black/40 border ${passwordError ? 'border-rose-500/50' : 'border-white/10'} rounded-2xl px-6 py-4 text-center font-mono text-sm tracking-[0.3em] focus:outline-none focus:border-indigo-500/50 transition-all placeholder:text-slate-700`}
+                                autoFocus
+                              />
+                              {passwordError && (
+                                <p className="text-rose-500 text-[10px] font-black uppercase tracking-widest mt-2 animate-pulse">Invalid Access Key</p>
+                              )}
+                            </div>
+                            <button 
+                              type="submit"
+                              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs transition-all active:scale-95 shadow-lg shadow-indigo-500/20"
+                            >
+                              Authorize Access
+                            </button>
+                          </form>
+                        </div>
+                      </div>
+                    )}
+                  </ErrorBoundary>
+                )}
+              </motion.div>
+            </AnimatePresence>
           </div>
         </div>
 

@@ -1,6 +1,6 @@
 
-import React, { useState } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
@@ -10,7 +10,32 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   const [isLogsLocked, setIsLogsLocked] = useState(true);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
   
+  useEffect(() => {
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    });
+
+    window.addEventListener('appinstalled', () => {
+      setIsInstallable(false);
+      setDeferredPrompt(null);
+    });
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstallable(false);
+      setDeferredPrompt(null);
+    }
+  };
+
   const chartSettings = useStore(state => state.chartSettings);
   const menuItems = [
     { id: 'accounts', label: 'Accounts', icon: Users },
@@ -70,6 +95,15 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
       </nav>
 
       <div className="p-4 mt-auto space-y-3">
+        {isInstallable && (
+          <button 
+            onClick={handleInstallClick}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 rounded-xl transition-all duration-200 group active:scale-95 font-bold text-sm"
+          >
+            <Download className="w-4 h-4" />
+            Install App
+          </button>
+        )}
         <a 
           href="https://wa.me/27678172189" 
           target="_blank" 

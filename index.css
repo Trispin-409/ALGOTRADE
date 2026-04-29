@@ -7,6 +7,29 @@
 }
 
 @layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  body {
+    height: 100%;
+    width: 100vw;
+    overflow: hidden;
+    position: fixed;
+    overscroll-behavior: none;
+  }
+
+  #root {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+@layer base {
   html, body {
     @apply bg-[#02040a] text-slate-200 font-sans antialiased selection:bg-indigo-500/30 selection:text-white;
     overscroll-behavior-y: none;
