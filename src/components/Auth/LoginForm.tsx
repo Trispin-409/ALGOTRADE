@@ -1,40 +1,58 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Cpu, Terminal, Fingerprint, LogIn, UserPlus, Lock } from 'lucide-react';
+import { Cpu, Terminal, Fingerprint, LogIn, UserPlus, Lock, User, ArrowLeft } from 'lucide-react';
 
 export function LoginForm() {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
+    setSuccessMessage('');
     setLoading(true);
-    console.log("LOGIN ATTEMPT:", email);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    console.log("LOGIN DATA:", data);
-    console.log("LOGIN ERROR:", error);
     if (error) alert(error.message);
     setLoading(false);
   }
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault();
+    if (!fullName.trim() || !email.trim() || !password.trim()) {
+      alert("Please fill in all fields (Full Name, Email, Password).");
+      return;
+    }
     setLoading(true);
-    console.log("SIGNUP ATTEMPT:", email);
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    console.log("SIGNUP DATA:", data);
-    console.log("SIGNUP ERROR:", error);
-    if (error) alert(error.message);
-    else {
-      alert("User created. Now login.");
-      await supabase.auth.signOut();
+    const { data, error } = await supabase.auth.signUp({ 
+      email, 
+      password,
+      options: {
+        data: {
+          full_name: fullName
+        }
+      }
+    });
+    
+    if (error) {
+      alert(error.message);
+    } else {
+      setSuccessMessage("Registration successful! Please sign in with your new account.");
+      setMode('login');
+      // Supabase signIn might auto-login if email confirmation isn't required.
+      // But typically signUp returns a session if it auto-logs in.
+      // We explicitly log out just in case it auto-logged them in to ensure they go through sign-in manually.
+      if (data?.session) {
+        await supabase.auth.signOut();
+      }
     }
     setLoading(false);
   }
 
   return (
-    <div className="relative group w-full max-w-md mx-auto z-10">
+    <div className="relative group w-full max-w-md mx-auto z-10 transition-all duration-500">
       {/* Glow effect behind form */}
       <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-purple-600 rounded-xl blur opacity-20 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
       
@@ -54,16 +72,35 @@ export function LoginForm() {
           </h2>
           <div className="flex items-center gap-2 text-xs font-mono text-cyan-500/70 tracking-widest uppercase">
             <Terminal className="w-3.5 h-3.5" />
-            <span>Awaiting Authentication</span>
+            <span>{mode === 'login' ? 'Awaiting Authentication' : 'New Identity Registration'}</span>
           </div>
         </div>
 
+        {successMessage && (
+          <div className="bg-emerald-500/10 border border-emerald-500/50 text-emerald-400 text-xs font-mono p-3 rounded-lg text-center animate-in fade-in zoom-in slide-in-from-top-2">
+            {successMessage}
+          </div>
+        )}
+
         <div className="space-y-4">
+          {mode === 'register' && (
+            <div className="relative animate-in slide-in-from-bottom-2 fade-in">
+              <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+              <input 
+                type="text" 
+                placeholder="Full Name" 
+                value={fullName} 
+                onChange={(e) => setFullName(e.target.value)} 
+                className="w-full bg-slate-950/50 border border-white/10 rounded-lg py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all" 
+              />
+            </div>
+          )}
+
           <div className="relative">
             <Fingerprint className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
             <input 
-              type="text" 
-              placeholder="Login / Email" 
+              type="email" 
+              placeholder="Email Address" 
               value={email} 
               onChange={(e) => setEmail(e.target.value)} 
               className="w-full bg-slate-950/50 border border-white/10 rounded-lg py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all" 
@@ -83,29 +120,57 @@ export function LoginForm() {
         </div>
 
         <div className="flex flex-col gap-3 mt-4">
-          <button 
-            type="button"
-            onClick={handleLogin} 
-            disabled={loading} 
-            className="group relative w-full flex items-center justify-center gap-3 bg-cyan-600 hover:bg-cyan-500 text-white py-3 px-4 rounded-lg font-black tracking-widest uppercase text-sm transition-all overflow-hidden"
-          >
-            <div className="absolute inset-0 w-1/4 h-full bg-white/20 -skew-x-12 -translate-x-full group-hover:translate-x-[400%] transition-transform duration-700 ease-in-out"></div>
-            {loading ? <Cpu className="w-5 h-5 animate-spin" /> : <LogIn className="w-5 h-5" />}
-            {loading ? 'PROCESSING...' : 'LOGIN'}
-          </button>
-          
-          <button 
-            type="button"
-            onClick={handleSignup} 
-            disabled={loading} 
-            className="w-full flex items-center justify-center gap-3 bg-slate-800/50 hover:bg-slate-800 text-slate-300 hover:text-white border border-white/5 hover:border-purple-500/30 py-3 px-4 rounded-lg font-black tracking-widest uppercase text-sm transition-all"
-          >
-            <UserPlus className="w-4 h-4" />
-            REGISTER
-          </button>
+          {mode === 'login' ? (
+            <>
+              <button 
+                type="button"
+                onClick={handleLogin} 
+                disabled={loading} 
+                className="group relative w-full flex items-center justify-center gap-3 bg-cyan-600 hover:bg-cyan-500 text-white py-3 px-4 rounded-lg font-black tracking-widest uppercase text-sm transition-all overflow-hidden"
+              >
+                <div className="absolute inset-0 w-1/4 h-full bg-white/20 -skew-x-12 -translate-x-full group-hover:translate-x-[400%] transition-transform duration-700 ease-in-out"></div>
+                {loading ? <Cpu className="w-5 h-5 animate-spin" /> : <LogIn className="w-5 h-5" />}
+                {loading ? 'PROCESSING...' : 'LOGIN'}
+              </button>
+              
+              <button 
+                type="button"
+                onClick={() => { setMode('register'); setSuccessMessage(''); }} 
+                disabled={loading} 
+                className="w-full flex items-center justify-center gap-3 bg-slate-800/50 hover:bg-slate-800 text-slate-300 hover:text-white border border-white/5 hover:border-purple-500/30 py-3 px-4 rounded-lg font-black tracking-widest uppercase text-sm transition-all"
+              >
+                <UserPlus className="w-4 h-4" />
+                CREATE NEW ACCOUNT
+              </button>
+            </>
+          ) : (
+            <>
+              <button 
+                type="button"
+                onClick={handleSignup} 
+                disabled={loading} 
+                className="group relative w-full flex items-center justify-center gap-3 bg-purple-600 hover:bg-purple-500 text-white py-3 px-4 rounded-lg font-black tracking-widest uppercase text-sm transition-all overflow-hidden"
+              >
+                <div className="absolute inset-0 w-1/4 h-full bg-white/20 -skew-x-12 -translate-x-full group-hover:translate-x-[400%] transition-transform duration-700 ease-in-out"></div>
+                {loading ? <Cpu className="w-5 h-5 animate-spin" /> : <UserPlus className="w-5 h-5" />}
+                {loading ? 'STORING...' : 'REGISTER IDENTITY'}
+              </button>
+              
+              <button 
+                type="button"
+                onClick={() => setMode('login')} 
+                disabled={loading} 
+                className="w-full flex items-center justify-center gap-2 text-slate-400 hover:text-white py-3 px-4 rounded-lg font-bold tracking-widest uppercase text-xs transition-all"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                BACK TO LOGIN
+              </button>
+            </>
+          )}
         </div>
       </form>
     </div>
   );
 }
+
 
