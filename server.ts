@@ -228,6 +228,19 @@ function assertFreshTick(accountId: string) {
   if (Date.now() - lastTick > 3000) throw new Error(`[GUARD] Market data for ${accountId} STALE (>3s)`);
 }
 
+
+function sanitizeError(err: any): string {
+  let msg = String(err?.message || err);
+  if (msg.includes('failed to authenticate') || msg.includes('Invalid account') || msg.includes('Account disabled') || msg.includes('Validation failed')) {
+    return "Failed to authenticate with the broker. Please check your MT4/MT5 login, password, and server. Note: MT4/MT5 accounts can only be connected if credentials are correct.";
+  }
+  msg = msg.replace(/https?:\/\/[^\s]+/g, '');
+  msg = msg.replace(/metaapi/ig, 'cloud gateway');
+  msg = msg.replace(/MetaApi/ig, 'Cloud Gateway');
+  msg = msg.replace(/agiliumtrade/ig, 'cloud gateway');
+  return msg.trim();
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -1131,7 +1144,7 @@ app.get("/api/user/bootstrap", async (req, res) => {
       ui_state: "READY"
     });
   } catch (err: any) {
-    res.status(401).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(401).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1200,13 +1213,13 @@ app.get("/api/accounts", async (req, res) => {
         return res.json(globalScope.ACCOUNT_LIST_CACHE.filter((a: any) => activeAccountIds.has(a.id)));
       }
       let errMsg = err.message || "";
-      errMsg = errMsg.replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway');
+      errMsg = sanitizeError(errMsg);
       res.status(500).json({ error: "CLOUD_REJECTION", message: errMsg });
     } finally {
       globalScope.SYNC_IN_PROGRESS = false;
     }
   } catch (err: any) {
-    res.status(401).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(401).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1272,10 +1285,12 @@ app.post("/api/accounts", async (req, res) => {
     if (msg.includes("Validation failed") && msg.includes("/users/current/accounts")) {
        msg = "Broker settings validation failed. Please review your login, password, and server details.";
     }
-    msg = msg.replace(/metaapi/ig, 'cloud gateway');
-    msg = msg.replace(/MetaApi/ig, 'Cloud Gateway');
+    msg = sanitizeError(msg);
     
-    res.status(500).json({ error: msg });
+    // Fallback if URL still sneaks through
+    msg = msg.replace(/https?:\/\/[^\s]+/g, '');
+    
+    res.status(500).json({ error: msg.trim() });
   }
 });
 
@@ -1287,7 +1302,7 @@ app.delete("/api/account/:accountId", async (req, res) => {
     await metaapi.metatraderAccountApi.removeAccount(accountId);
     res.sendStatus(204);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1342,7 +1357,7 @@ app.post("/api/account/:accountId/deploy", async (req, res) => {
     await TradingController.updateEAStatus(accountId, userId, true, 'ACTIVE');
     res.sendStatus(204);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1359,7 +1374,7 @@ app.post("/api/account/:accountId/undeploy", async (req, res) => {
     
     res.sendStatus(204);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1402,7 +1417,7 @@ app.post("/api/account/:accountId/start-algo", async (req, res) => {
     console.log(`[ALGO] EA Engine Started for ${accountId} 🚀`);
     res.json({ success: true });
   } catch (err: any) {
-    res.status(400).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(400).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1426,7 +1441,7 @@ app.post("/api/account/:accountId/stop-algo", async (req, res) => {
     console.log(`[ALGO] Stopped for ${accountId}`);
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 app.delete("/api/account/:accountId/ea/cleanup", async (req, res) => {
@@ -1461,7 +1476,7 @@ app.delete("/api/account/:accountId/ea/cleanup", async (req, res) => {
     logEA(accountId, 'SUCCESS', 'Remote terminal is now clear of all Expert Advisors.', {}, 'EA_CLOUD');
     res.sendStatus(204);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1498,7 +1513,7 @@ app.get("/api/account/:accountId/ea", async (req, res) => {
     res.json(eas);
   } catch (err: any) {
     console.error(`[ORCHESTRATION_ERROR] Error listing EAs for ${accountId}:`, err.message);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1534,7 +1549,7 @@ app.delete("/api/account/:accountId/ea/:eaName", async (req, res) => {
     res.sendStatus(204);
   } catch (err: any) {
     console.error(`[ORCHESTRATION_ERROR] Error removing EA ${eaName} for ${accountId}:`, err.message);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1547,7 +1562,7 @@ app.get("/api/servers/search", async (req, res) => {
     const servers = await metaapi.metatraderAccountApi.searchServers(name as string);
     res.json(servers);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1677,7 +1692,7 @@ app.put("/api/account/:accountId/ea/:eaName", async (req, res) => {
     res.sendStatus(204);
   } catch (err: any) {
     console.error(`[ORCHESTRATION_ERROR] Error updating EA for ${accountId}:`, err.message);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1769,7 +1784,7 @@ app.put("/api/account/:accountId/ea/:eaName/file", async (req, res) => {
     res.sendStatus(204);
   } catch (err: any) {
     console.error(`[ORCHESTRATION_ERROR] Error uploading EA binary:`, err.message);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1847,7 +1862,7 @@ app.post("/api/account/:accountId/redeploy", async (req, res) => {
     res.sendStatus(204);
   } catch (err: any) {
     console.error(`[REST EA] Redeployment FAILED for ${accountId}:`, err.message);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1858,7 +1873,7 @@ app.get("/api/account/:accountId/specification/:symbol", async (req, res) => {
     const spec = await connection.getSymbolSpecification(symbol);
     res.json(spec);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -1975,7 +1990,7 @@ app.post('/api/trade/buy', async (req, res) => {
   } catch (err: any) {
     logEA(req.body?.accountId || null, 'ERROR', `Buy execution failed: ${err.message}`);
     console.error("[TRADE] BUY FAILED", err);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2034,7 +2049,7 @@ app.post('/api/trade/sell', async (req, res) => {
   } catch (err: any) {
     logEA(req.body?.accountId || null, 'ERROR', `Sell execution failed: ${err.message}`);
     console.error("[TRADE] SELL FAILED", err);
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2053,7 +2068,7 @@ app.get("/api/account/:accountId/positions", async (req, res) => {
     const positions = connection.terminalState.positions || [];
     res.json(positions);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2084,7 +2099,7 @@ app.get("/api/account/:accountId/status", async (req, res) => {
     });
   } catch (err: any) {
     console.error(`[API] Status poll error for ${accountId}:`, err.message);
-    res.status(err.message?.includes("Unauthorized") ? 401 : 500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(err.message?.includes("Unauthorized") ? 401 : 500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2119,7 +2134,7 @@ app.post("/api/account/:accountId/strategy-settings", async (req, res) => {
     
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2170,7 +2185,7 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
     console.log(`[ALGO] State for ${accountId} set to ${enabled} (${mode})`);
     res.json({ success: true, enabled: !!enabled });
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2185,7 +2200,7 @@ app.get("/api/account/:accountId/history", async (req, res) => {
     const history = await connection.getHistoryOrdersByTimeRange(startTime, endTime, 0, Number(limit));
     res.json(history);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 
@@ -2197,7 +2212,7 @@ app.get("/api/account/:accountId/symbols", async (req, res) => {
     const symbols = await getSymbolsCached(metaapi, accountId);
     res.json(symbols);
   } catch (err: any) {
-    res.status(500).json({ error: String(err?.message || err).replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway') });
+    res.status(500).json({ error: sanitizeError(err) });
   }
 });
 

@@ -470,6 +470,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
     try {
       setActiveStep('deploying');
       addSystemLog(`STEP 1: Requesting Terminal with Platform MT${formData.platform} Detection via SDK Service...`);
+      addSystemLog(`NOTE: Real-time authentication can take 15-45 seconds. Please wait...`);
 
       const payload: any = {
         name: formData.name,
