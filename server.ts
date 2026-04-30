@@ -768,6 +768,10 @@ async function setupStreaming(accountId: string) {
       }
 
       if (account.state !== 'DEPLOYED') {
+          if (account.state === 'UNDEPLOYED') {
+            console.warn(`[SDK] Account ${accountId} is explicitly UNDEPLOYED. Skipping auto-deploy.`);
+            throw new Error("ACCOUNT_EXPLICITLY_UNDEPLOYED");
+          }
           console.warn(`[SDK] Account ${accountId} is in state ${account.state}. Attempting forced deployment...`);
           try {
             await account.deploy();

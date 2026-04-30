@@ -384,14 +384,19 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!selectedAccountId || !session) return;
 
-    const fetchBrokerSymbols = async () => {
+    const fetchBrokerSymbols = async (retries = 5) => {
       try {
         const brokerSymbols = await safeFetch(`/api/account/${selectedAccountId}/symbols`, {
           headers: { Authorization: `Bearer ${session.access_token}` }
         });
         setAvailableBrokerSymbols(brokerSymbols);
       } catch (err: any) {
-        addLog(`DATA ERROR: Failed to fetch symbols: ${err.message}`);
+        if (retries > 0) {
+          console.warn(`[RETRY] Retrying fetchBrokerSymbols in 10s. ${retries} attempts left.`);
+          setTimeout(() => fetchBrokerSymbols(retries - 1), 10000);
+        } else {
+          addLog(`DATA ERROR: Failed to fetch symbols after retries: ${err.message}`);
+        }
       }
     };
 
@@ -607,7 +612,7 @@ const App: React.FC = () => {
     }
   };
 
-  const verifyAndFetch = useCallback(async () => {
+  const verifyAndFetch = useCallback(async (retries = 5) => {
     if (!session) return;
     setIsLoading(true);
     setLastError(null);
@@ -615,10 +620,9 @@ const App: React.FC = () => {
     try {
       // Also poll infra health
       try {
-        const h = await safeFetch('/api/infra-health');
-        // setSdkStatus(h.status || 'CONNECTED'); // Removed to avoid overwriting websocket state
+        await safeFetch('/api/infra-health');
       } catch (e) {
-        // setSdkStatus('OFFLINE'); // Removed
+        // Silently fail health check
       }
 
       const data = await safeFetch('/api/accounts', {
@@ -670,14 +674,20 @@ const App: React.FC = () => {
         console.log(`[DEBUG] Normalizing Terminal ${newAcc.login}: status=${newAcc.connectionStatus}, ready=${newAcc.ready}`);
         return newAcc;
       }));
-    } catch (err: any) {
-      setLastError(`Cluster Exception: ${err.message}`);
-      addLog(`FATAL: Connection lost to London Cluster. Re-attempting handshake in 60s.`);
-      setIsAuthValid(false);
-    } finally {
       setIsLoading(false);
+    } catch (err: any) {
+      if (retries > 0) {
+        console.warn(`[RETRY] Retrying verifyAndFetch in 15s. ${retries} attempts left.`);
+        setTimeout(() => verifyAndFetch(retries - 1), 15000);
+      } else {
+        setLastError(`Cluster Exception: ${err.message}`);
+        addLog(`FATAL: Connection lost to London Cluster. Re-attempting handshake in 60s.`);
+        setIsAuthValid(false);
+        setIsLoading(false);
+        setTimeout(() => verifyAndFetch(5), 60000);
+      }
     }
-  }, [addLog, session]);
+  }, [addLog, session, accounts.length, selectedAccountId]);
 
   // Terminal Auto-Discovery logic removed in favor of direct SDK handling
   useEffect(() => {
