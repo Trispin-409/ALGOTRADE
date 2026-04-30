@@ -1199,7 +1199,9 @@ app.get("/api/accounts", async (req, res) => {
       if (globalScope.ACCOUNT_LIST_CACHE) {
         return res.json(globalScope.ACCOUNT_LIST_CACHE.filter((a: any) => activeAccountIds.has(a.id)));
       }
-      res.status(500).json({ error: "METAAPI_REJECTION", message: err.message });
+      let errMsg = err.message || "";
+      errMsg = errMsg.replace(/metaapi/ig, 'cloud gateway').replace(/MetaApi/ig, 'Cloud Gateway');
+      res.status(500).json({ error: "CLOUD_REJECTION", message: errMsg });
     } finally {
       globalScope.SYNC_IN_PROGRESS = false;
     }
@@ -1220,17 +1222,28 @@ app.post("/api/accounts", async (req, res) => {
     const rawResponse = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
     const accounts = Array.isArray(rawResponse) ? rawResponse : rawResponse?.items ? rawResponse.items : rawResponse?.data ? rawResponse.data : [];
     
-    let account = accounts.find((a: any) => a.login === login && a.server === server);
+    let account = accounts.find((a: any) => String(a.login) === String(login) && String(a.server).toLowerCase() === String(server).toLowerCase());
     
+    let isNew = false;
     if (account) {
-      console.log(`[ACCOUNT] Found existing account ${account.id} for login ${login}. Skipping creation to avoid duplicate costs.`);
+      console.log(`[ACCOUNT] Found existing account ${account.id || account._id} for login ${login}. Reusing for user.`);
     } else {
       console.log(`[ACCOUNT] Creating new account for login ${login}.`);
       account = await metaapi.metatraderAccountApi.createAccount(req.body || {});
+      isNew = true;
     }
     
-    // Explicitly removed auto-deploy per user request to save costs
-    console.log(`[ACCOUNT] Bound to ${account.id}. Skipping auto-deploy.`);
+    // Deploy if it's a fresh account or currently not deployed
+    if (isNew || account.state !== 'DEPLOYED') {
+      try {
+        console.log(`[ACCOUNT] Account state is ${account.state}. Triggering deployment...`);
+        await account.deploy();
+      } catch (deployErr: any) {
+        console.log(`[ACCOUNT] Deploy hint skipped: ${deployErr.message}`);
+      }
+    } else {
+      console.log(`[ACCOUNT] Bound to ${account.id}. Account already DEPLOYED.`);
+    }
     
     const accountId = account.id || account._data?.id || account._id;
     await TradingController.createLease(userId, accountId, 'DEFAULT', 'london');
@@ -1253,7 +1266,16 @@ app.post("/api/accounts", async (req, res) => {
       freeMargin: info.freeMargin || 0
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    let msg = err.message || "An unknown error occurred";
+    
+    // Scrub internal API terminology for client
+    if (msg.includes("Validation failed") && msg.includes("/users/current/accounts")) {
+       msg = "Broker settings validation failed. Please review your login, password, and server details.";
+    }
+    msg = msg.replace(/metaapi/ig, 'cloud gateway');
+    msg = msg.replace(/MetaApi/ig, 'Cloud Gateway');
+    
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -1290,7 +1312,7 @@ async function waitForMetaApiReady(connection: any, accountId: string) {
     retries++;
   }
 
-  throw new Error("MetaApi not ready after timeout");
+  throw new Error("Cloud Node not ready after timeout");
 }
 
 app.post("/api/account/:accountId/deploy", async (req, res) => {
@@ -1301,7 +1323,7 @@ app.post("/api/account/:accountId/deploy", async (req, res) => {
     const effectiveUserId = userId || userIdAuth;
     const existingEA = await TradingController.getEAStatus(accountId, effectiveUserId);
     
-    logEA(accountId, 'INFO', 'MetaApi Terminal Deployment sequence initiated in Cloud Hub.', { region: region || 'london' }, 'EA_CLOUD');
+    logEA(accountId, 'INFO', 'Cloud Terminal Deployment sequence initiated in Cloud Hub.', { region: region || 'london' }, 'EA_CLOUD');
 
     if (existingEA?.deployed) {
        return res.status(400).json({ error: "EA already deployed" });
@@ -1361,7 +1383,7 @@ app.post("/api/account/:accountId/start-algo", async (req, res) => {
     }
     
     await TradingController.setAlgoRunning(accountId, userId, true);
-    logEA(accountId, 'INFO', '[EA] MetaApi Hub: Remote Expert Advisor logic activation sequence engaged.', {}, 'EA_CLOUD');
+    logEA(accountId, 'INFO', '[EA] Cloud Hub: Remote Expert Advisor logic activation sequence engaged.', {}, 'EA_CLOUD');
     
     // Enable Algo Trading on the actual connection for EA mode
     try {
@@ -1388,7 +1410,7 @@ app.post("/api/account/:accountId/stop-algo", async (req, res) => {
   const { accountId } = req.params;
   try {
     const userId = await getUserIdFromRequest(req);
-    logEA(accountId, 'INFO', 'MetaApi Cloud EA Engine stop sequence engaged.', {}, 'EA_CLOUD');
+    logEA(accountId, 'INFO', 'Cloud EA Engine stop sequence engaged.', {}, 'EA_CLOUD');
     await TradingController.setAlgoRunning(accountId, userId, false);
 
     // Disable Algo Trading on the connection
@@ -2126,7 +2148,7 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
     
     if (enabled) {
       if (mode === 'EA') {
-        logEA(accountId, 'INFO', '[EA] MetaApi Hub: Remote logic activation sequence engaged.', {}, 'EA_CLOUD');
+        logEA(accountId, 'INFO', '[EA] Cloud Hub: Remote logic activation sequence engaged.', {}, 'EA_CLOUD');
       } else {
         logEA(accountId, 'INFO', '[STRATEGY] Node Engine: Local analysis cycle started.', {}, 'NODE_STRATEGY');
       }

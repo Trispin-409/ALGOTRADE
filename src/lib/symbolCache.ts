@@ -1,6 +1,6 @@
 const symbolsCache = new Map<string, { symbols: string[], lastFetchTime: number, isFetching?: boolean, lastErrorTime?: number }>();
 const CACHE_TTL = 1000 * 60 * 30; // 30 min (increased to reduce API load)
-const ERROR_TTL = 1000 * 30; // 30 seconds wait after an error
+const ERROR_TTL = 1000 * 60; // 60 seconds wait after an error
 
 export async function getSymbolsCached(metaapi: any, accountId: string): Promise<string[]> {
   const now = Date.now();
@@ -21,7 +21,10 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
 
   // If we had a recent error (like rate limit), don't retry immediately
   if (cached?.lastErrorTime && (now - cached.lastErrorTime < ERROR_TTL)) {
-    console.warn(`[SYMBOL_CACHE] Skipping retry for ${accountId} due to recent error (Cooling down).`);
+    // Only warn if we really have no symbols, otherwise just silently return cached
+    if (!cached.symbols || cached.symbols.length === 0) {
+       console.warn(`[SYMBOL_CACHE] Skipping retry for ${accountId} due to recent error (Cooling down).`);
+    }
     return cached.symbols || [];
   }
 
@@ -35,6 +38,12 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
   async function fetchWithRetry(attempt = 1): Promise<string[]> {
     try {
       const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+      
+      // Ensure the account is deployed before trying to fetch symbols
+      if (account.state !== 'DEPLOYED') {
+        throw new Error(`Account is in ${account.state} state. Cannot fetch symbols.`);
+      }
+      
       let symbols: string[] = [];
       
       try {
@@ -45,7 +54,8 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
           throw new Error('getSymbols not found on account');
         }
       } catch (e: any) {
-        if (e.message?.includes('rate limit') || e.message?.includes('quota')) throw e;
+        const msg = e.message || '';
+        if (msg.includes('rate limit') || msg.includes('quota') || msg.includes('cpu credits')) throw e;
 
         try {
           // 2. Try getSymbolSpecifications (fallback)
@@ -56,17 +66,19 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
             throw new Error('getSymbolSpecifications not found on account');
           }
         } catch (e2: any) {
-          if (e2.message?.includes('rate limit') || e2.message?.includes('quota')) throw e2;
+          const msg2 = e2.message || '';
+          if (msg2.includes('rate limit') || msg2.includes('quota') || msg2.includes('cpu credits')) throw e2;
 
           try {
             // 3. RPC Fallback
-            console.log(`[SYMBOL_CACHE] Attempting RPC fallback for ${accountId}...`);
             const connection = await account.getRPCConnection();
-            await connection.connect();
-            await connection.waitSynchronized();
+            if (!connection.terminalState?.connected) {
+                await connection.connect();
+                await connection.waitSynchronized();
+            }
             symbols = await connection.getSymbols();
           } catch (e3: any) {
-             throw e3;
+             throw new Error(`RPC connection failed: ${e3.message}`);
           }
         }
       }
