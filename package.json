@@ -22,6 +22,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "form-data": "^4.0.5",
+    "jimp": "^1.6.1",
     "lucide-react": "^0.562.0",
     "metaapi.cloud-sdk": "latest",
     "motion": "^12.38.0",

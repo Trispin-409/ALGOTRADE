@@ -8,10 +8,10 @@
   "theme_color": "#6366f1",
   "icons": [
     {
-      "src": "/icon.webp",
-      "sizes": "512x512",
-      "type": "image/webp",
-      "purpose": "any maskable"
+      "src": "/icon.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any"
     }
   ],
   "lang": "en",
