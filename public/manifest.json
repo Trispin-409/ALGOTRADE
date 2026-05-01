@@ -1,5 +1,5 @@
 {
-  "name": "MetaTrader Automation Pro",
+  "name": "ALGOTRADE",
   "short_name": "MT Automation",
   "description": "Professional MetaTrader 5 Cloud Automation and Analysis",
   "start_url": "/",
@@ -8,9 +8,18 @@
   "theme_color": "#6366f1",
   "icons": [
     {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
+      "src": "/icon.webp",
+      "sizes": "512x512",
+      "type": "image/webp",
+      "purpose": "any maskable"
     }
+  ],
+  "lang": "en",
+  "scope": "/",
+  "display_override": [
+    "standalone",
+    "fullscreen",
+    "window-controls-overlay",
+    "minimal-ui"
   ]
 }
