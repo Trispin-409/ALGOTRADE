@@ -100,6 +100,8 @@ const MarketData: React.FC<MarketDataProps> = ({
   const [isSymbolsLoading, setIsSymbolsLoading] = useState(false);
   
   const chartSettings = useStore(state => state.chartSettings);
+  const marketAnalysis = useStore(state => state.marketAnalysis);
+  const [showAnalysis, setShowAnalysis] = useState(true);
   
   const systemStatus = connectionStatus; // Use prop from App.tsx instead of internal WS-bound state
 
@@ -383,6 +385,17 @@ const MarketData: React.FC<MarketDataProps> = ({
                 </span>
                 {isSubscribing && <RefreshCw className="w-4 h-4 text-indigo-400 animate-spin" />}
               </div>
+              <button
+                onClick={() => setShowAnalysis(!showAnalysis)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                  showAnalysis 
+                    ? 'bg-indigo-500 text-white shadow-[0_0_15px_rgba(99,102,241,0.4)]' 
+                    : 'bg-slate-800 text-slate-400 border border-white/5 hover:text-white'
+                }`}
+              >
+                <Zap className={`w-3.5 h-3.5 ${showAnalysis ? 'fill-white' : ''}`} />
+                {showAnalysis ? 'Analysis ON' : 'Show Analysis'}
+              </button>
             </div>
 
           <div className="flex-1 w-full relative min-h-[450px] lg:min-h-[550px]">
@@ -405,6 +418,8 @@ const MarketData: React.FC<MarketDataProps> = ({
                   deals={deals} 
                   positions={globalPositions}
                   executionMode={executionMode}
+                  marketAnalysis={marketAnalysis}
+                  showAnalysis={showAnalysis}
                   upColor={chartSettings.upColor}
                   downColor={chartSettings.downColor}
                   bgImageUrl={chartSettings.bgImageUrl}

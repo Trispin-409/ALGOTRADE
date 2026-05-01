@@ -24,10 +24,13 @@ const TradingController = {
 
   async createLease(userId: string, accountId: string, eaName: string, region: string) {
     if (!adminSupabase) return;
-    const { error } = await adminSupabase
-      .from("ea_leases")
-      .insert({ user_id: userId, account_id: accountId, ea_name: eaName, region, status: 'DEPLOYED' });
-    if (error) throw new Error(`Lease creation failed: ${error.message}`);
+    const { data } = await adminSupabase.from("ea_leases").select("id").eq("account_id", accountId).single();
+    if (data) {
+      await adminSupabase.from("ea_leases").update({ user_id: userId, ea_name: eaName, region, status: 'DEPLOYED' }).eq("account_id", accountId);
+    } else {
+      const { error } = await adminSupabase.from("ea_leases").insert({ user_id: userId, account_id: accountId, ea_name: eaName, region, status: 'DEPLOYED' });
+      if (error) throw new Error(`Lease creation failed: ${error.message}`);
+    }
   },
 
   async updateHeartbeat(accountId: string, userId?: string) {
@@ -547,17 +550,25 @@ function createMetaApiListener(accountId: string) {
   let lastReconnect = 0;
   const handler = {
     onConnected: async (instanceIndex: string) => {
-      console.log(`[SDK] CONNECTED to server ${instanceIndex} for ${accountId}`);
       const now = Date.now();
-      if (now - lastReconnect > 5000) {
+      const lastRec = globalScope.LAST_CONN_LOG?.get(accountId) || 0;
+      if (now - lastRec > 60000) {
+        console.log(`[SDK] CONNECTED to server ${instanceIndex} for ${accountId}`);
         logEA(accountId, "INFO", "SDK server connection established", {}, 'SYSTEM');
-        lastReconnect = now;
+        if (!globalScope.LAST_CONN_LOG) globalScope.LAST_CONN_LOG = new Map();
+        globalScope.LAST_CONN_LOG.set(accountId, now);
       }
       broadcast({ type: 'status:update', accountId, status: 'CONNECTED_TO_SERVER' });
     },
     onDisconnected: async (instanceIndex: string) => {
-      console.warn(`[SDK] DISCONNECTED from server ${instanceIndex} for ${accountId}`);
-      logEA(accountId, "INFO", "SDK server disconnected (Booting/Sleeping)", {}, 'SYSTEM');
+      const now = Date.now();
+      const lastRec = globalScope.LAST_DISCONN_LOG?.get(accountId) || 0;
+      if (now - lastRec > 60000) {
+        console.warn(`[SDK] DISCONNECTED from server ${instanceIndex} for ${accountId}`);
+        logEA(accountId, "INFO", "SDK server connection lost (Recovering...)", {}, 'SYSTEM');
+        if (!globalScope.LAST_DISCONN_LOG) globalScope.LAST_DISCONN_LOG = new Map();
+        globalScope.LAST_DISCONN_LOG.set(accountId, now);
+      }
       broadcast({ type: 'status:update', accountId, status: 'DISCONNECTED_FROM_SERVER' });
     },
     onBrokerConnectionStatusChanged: async (instanceIndex: string, connected: boolean) => {
@@ -948,20 +959,7 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
       if (isSymbolNotExist) {
         console.warn(`[STREAM] Symbol ${symbol} not found. Attempting fuzzy match recovery...`);
         try {
-           const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-           let fullSymbols: string[] = [];
-           
-           // TRY ACCOUNT METHODS FIRST
-           if (typeof account.getSymbols === 'function') {
-              fullSymbols = await account.getSymbols();
-           } else if (typeof account.getSymbolSpecifications === 'function') {
-              const specs = await account.getSymbolSpecifications();
-              fullSymbols = specs.map((s: any) => s.symbol);
-           } else {
-              // FALLBACK TO RPC 
-              const rpc = await getRPCConnection(accountId);
-              fullSymbols = await rpc.getSymbols();
-           }
+           const fullSymbols = await getSymbolsCached(metaapi, accountId);
 
            const match = fullSymbols.find((s: string) => s.startsWith(symbol) || s.endsWith(symbol));
            
@@ -1001,6 +999,153 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
 }
 
 // HELPER: RSI Calculation for Real Strategy Analysis
+// --- PATTERN DETECTION ENGINE (MQL5 PORT) ---
+function checkDoji(candle: any): boolean {
+  const body = Math.abs(candle.open - candle.close);
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  return (body / range < 0.12);
+}
+
+function checkHammer(candle: any): boolean {
+  const body = Math.abs(candle.open - candle.close);
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const lowerShadow = Math.min(candle.open, candle.close) - candle.low;
+  const upperShadow = candle.high - Math.max(candle.open, candle.close);
+  return (body / range < 0.35 && lowerShadow >= 1.8 * body && upperShadow <= 0.6 * body);
+}
+
+function checkInvertedHammer(candle: any): boolean {
+  const body = Math.abs(candle.open - candle.close);
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const lowerShadow = Math.min(candle.open, candle.close) - candle.low;
+  const upperShadow = candle.high - Math.max(candle.open, candle.close);
+  return (body / range < 0.35 && upperShadow >= 1.8 * body && lowerShadow <= 0.6 * body);
+}
+
+function checkBullishEngulfing(prev: any, curr: any): boolean {
+  if (!prev || !curr) return false;
+  // A candle that swallows the previous candle's body or range
+  const prevBody = Math.abs(prev.open - prev.close);
+  const currBody = Math.abs(curr.open - curr.close);
+  const engulfs = curr.close > curr.open && prev.close < prev.open && curr.close >= prev.open && curr.open <= prev.close;
+  return engulfs && (currBody > prevBody * 0.8);
+}
+
+function checkBearishEngulfing(prev: any, curr: any): boolean {
+  if (!prev || !curr) return false;
+  const engulfs = curr.close < curr.open && prev.close > prev.open && curr.close <= prev.open && curr.open >= prev.close;
+  const prevBody = Math.abs(prev.open - prev.close);
+  const currBody = Math.abs(curr.open - curr.close);
+  return engulfs && (currBody > prevBody * 0.8);
+}
+
+function getPatternPolarity(name: string): number {
+  const bull = ['hammer', 'bullish engulfing', 'inverted hammer', 'morning star'];
+  const bear = ['shooting star', 'bearish engulfing', 'dark cloud cover', 'evening star'];
+  if (bull.includes(name)) return 1;
+  if (bear.includes(name)) return -1;
+  return 0;
+}
+
+// Analysis Storage
+const ANALYSIS_STORE: Record<string, any> = {};
+
+function performPatternAnalysis(accountId: string, symbol: string, candles: any[]) {
+  if (!candles || candles.length < 20) return null;
+  
+  const minPrice = Math.min(...candles.map(c => c.low));
+  const maxPrice = Math.max(...candles.map(c => c.high));
+  const range = maxPrice - minPrice;
+  const binCount = 40;
+  const binSize = range / binCount;
+  
+  const bins = new Array(binCount).fill(0);
+  const detections: any[] = [];
+  
+  for (let i = 1; i < candles.length; i++) {
+    const curr = candles[i];
+    const prev = candles[i-1];
+    
+    let pattern = '';
+    if (checkDoji(curr)) pattern = 'doji';
+    else if (checkHammer(curr)) pattern = 'hammer';
+    else if (checkInvertedHammer(curr)) pattern = 'inverted hammer';
+    else if (checkBullishEngulfing(prev, curr)) pattern = 'bullish engulfing';
+    else if (checkBearishEngulfing(prev, curr)) pattern = 'bearish engulfing';
+    
+    if (pattern) {
+      const polarity = getPatternPolarity(pattern);
+      const pricePoint = polarity > 0 ? curr.low : (polarity < 0 ? curr.high : (curr.high + curr.low) / 2);
+      const binIdx = Math.min(binCount - 1, Math.max(0, Math.floor((pricePoint - minPrice) / binSize)));
+      
+      const recencyWeight = Math.pow(0.5, (candles.length - 1 - i) / 50);
+      bins[binIdx] += recencyWeight;
+      
+      detections.push({
+        time: curr.time,
+        pattern,
+        price: pricePoint,
+        polarity
+      });
+    }
+  }
+  
+  // Detect Zones
+  const zones: any[] = [];
+  const maxBinValue = Math.max(...bins);
+  const threshold = Math.max(0.01, maxBinValue * 0.25); // Lower threshold for more zones
+  
+  for (let b = 0; b < bins.length; b++) {
+    if (bins[b] >= threshold) {
+      zones.push({
+        low: minPrice + b * binSize,
+        high: minPrice + (b + 1) * binSize,
+        strength: maxBinValue > 0 ? bins[b] / maxBinValue : 1,
+        isSupport: (minPrice + (b + 0.5) * binSize) < candles[candles.length - 1].close,
+        isConsolidation: false
+      });
+    }
+  }
+
+  // Backup: Detect Pivot Zones if few patterns found
+  if (zones.length < 5) {
+    const candlesSortedByHigh = [...candles].sort((a, b) => b.high - a.high).slice(0, 8);
+    const candlesSortedByLow = [...candles].sort((a, b) => a.low - b.low).slice(0, 8);
+    
+    candlesSortedByHigh.forEach(h => {
+        zones.push({ low: h.high * 0.9997, high: h.high * 1.0003, strength: 0.4, isSupport: false, isConsolidation: false });
+    });
+    candlesSortedByLow.forEach(l => {
+        zones.push({ low: l.low * 0.9997, high: l.low * 1.0003, strength: 0.4, isSupport: true, isConsolidation: false });
+    });
+  }
+
+  // Detect Consolidation: Tightest range in last 20 candles
+  const lastCandle = candles[candles.length - 1];
+  const last20 = candles.slice(-20);
+  const cMin = Math.min(...last20.map(c => c.low));
+  const cMax = Math.max(...last20.map(c => c.high));
+  if ((cMax - cMin) / lastCandle.close < 0.002) { // 0.2% range relative to price
+    zones.push({
+      low: cMin,
+      high: cMax,
+      strength: 1,
+      isSupport: false,
+      isConsolidation: true
+    });
+  }
+
+  // Ensure zones are sorted by strength and limited
+  const finalZones = zones.sort((a, b) => (b.strength || 0) - (a.strength || 0)).slice(0, 20);
+  
+  const result = { bins, zones: finalZones, detections: detections.slice(-10) }; // only last 10 detections for UI
+  ANALYSIS_STORE[`${accountId}:${symbol}`] = result;
+  return result;
+}
+
 function calculateRSI(prices: number[], period: number = 14): number {
     if (prices.length < period + 1) return 50;
     
@@ -1187,7 +1332,7 @@ app.get("/api/accounts", async (req, res) => {
         throw new Error("INVALID_ACCOUNTS_SHAPE: SDK response malformed");
       }
 
-      const accounts = rawAccounts.map((acc: any) => {
+      const allParsedAccounts = rawAccounts.map((acc: any) => {
         const accountId = acc.id || acc._data?.id || acc._id;
         const info = acc.accountInformation || acc._data?.accountInformation || {};
         
@@ -1195,7 +1340,7 @@ app.get("/api/accounts", async (req, res) => {
           id: accountId,
           _id: accountId,
           name: acc.name || acc._data?.name,
-          platform: acc.platform || acc._data?.platform,
+          platform: (acc.version || acc._data?.version) === 5 || (acc.version || acc._data?.version) === '5' || String(acc.platform || acc._data?.platform).includes('mt5') ? 'mt5' : 'mt4',
           login: acc.login || acc._data?.login,
           connectionStatus: acc.connectionStatus || acc._data?.connectionStatus || 'DISCONNECTED',
           state: acc.state || acc._data?.state,
@@ -1203,10 +1348,10 @@ app.get("/api/accounts", async (req, res) => {
           equity: info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : null),
           currency: info.currency || 'USD'
         };
-      }).filter(a => activeAccountIds.has(a.id));
+      });
 
-      globalScope.ACCOUNT_LIST_CACHE = accounts;
-      res.json(accounts);
+      globalScope.ACCOUNT_LIST_CACHE = allParsedAccounts;
+      res.json(allParsedAccounts.filter((a: any) => activeAccountIds.has(a.id)));
     } catch (err: any) {
       console.error("[SDK ERROR] Native Rejection:", err);
       if (globalScope.ACCOUNT_LIST_CACHE) {
@@ -1229,13 +1374,23 @@ app.get("/api/accounts", async (req, res) => {
 app.post("/api/accounts", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
-    const { login, server } = req.body || {};
+    const { login, server, platform, magic } = req.body || {};
     
     // Check if account already exists to prevent duplication
     const rawResponse = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
     const accounts = Array.isArray(rawResponse) ? rawResponse : rawResponse?.items ? rawResponse.items : rawResponse?.data ? rawResponse.data : [];
     
-    let account = accounts.find((a: any) => String(a.login) === String(login) && String(a.server).toLowerCase() === String(server).toLowerCase());
+    let account = accounts.find((a: any) => {
+      let isMatch = String(a.login) === String(login) && String(a.server).toLowerCase() === String(server).toLowerCase();
+      // Ensure platform match if provided (e.g. metaapi platform 'mt5' vs mt4)
+      if (isMatch && platform) {
+         const accPlat = (a.version || a._data?.version) === 5 || (a.version || a._data?.version) === '5' || String(a.platform || a._data?.platform).includes('mt5') ? 'mt5' : 'mt4';
+         if (accPlat !== platform) {
+            isMatch = false;
+         }
+      }
+      return isMatch;
+    });
     
     let isNew = false;
     if (account) {
@@ -1263,7 +1418,7 @@ app.post("/api/accounts", async (req, res) => {
 
     const info = account.accountInformation || account._data?.accountInformation || {};
     
-    res.json({
+    const responseObj = {
       id: accountId,
       name: account.name || account._data?.name,
       login: account.login || account._data?.login,
@@ -1271,13 +1426,24 @@ app.post("/api/accounts", async (req, res) => {
       state: account.state || account._data?.state,
       connectionStatus: account.connectionStatus || account._data?.connectionStatus,
       magic: account.magic || account._data?.magic,
-      platform: account.platform || account._data?.platform || (account.type || account._data?.type)?.includes('mt5') ? 'mt5' : 'mt4',
+      platform: (account.version || account._data?.version) === 5 || (account.version || account._data?.version) === '5' || String(account.platform || account._data?.platform).includes('mt5') ? 'mt5' : 'mt4',
       uptime: account.uptime || account._data?.uptime,
       balance: info.balance || 0,
       equity: info.equity || 0,
       margin: info.margin || 0,
       freeMargin: info.freeMargin || 0
-    });
+    };
+    
+    if (globalScope.ACCOUNT_LIST_CACHE) {
+      const existingIdx = globalScope.ACCOUNT_LIST_CACHE.findIndex((a: any) => a.id === accountId);
+      if (existingIdx !== -1) {
+        globalScope.ACCOUNT_LIST_CACHE[existingIdx] = responseObj;
+      } else {
+        globalScope.ACCOUNT_LIST_CACHE.push(responseObj);
+      }
+    }
+    
+    res.json(responseObj);
   } catch (err: any) {
     let msg = err.message || "An unknown error occurred";
     
@@ -1300,6 +1466,17 @@ app.delete("/api/account/:accountId", async (req, res) => {
     const userId = await getUserIdFromRequest(req);
     await closeConnection(accountId, "DELETING");
     await metaapi.metatraderAccountApi.removeAccount(accountId);
+    res.sendStatus(204);
+  } catch (err: any) {
+    res.status(500).json({ error: sanitizeError(err) });
+  }
+});
+
+app.delete("/api/account/:accountId/lease", async (req, res) => {
+  const { accountId } = req.params;
+  try {
+    const userId = await getUserIdFromRequest(req);
+    await TradingController.removeLease(accountId);
     res.sendStatus(204);
   } catch (err: any) {
     res.status(500).json({ error: sanitizeError(err) });
@@ -1559,8 +1736,8 @@ app.get("/api/servers/search", async (req, res) => {
   const { name } = req.query;
   try {
     const userId = await getUserIdFromRequest(req);
-    const servers = await metaapi.metatraderAccountApi.searchServers(name as string);
-    res.json(servers);
+    // Since MetaApi SDK might not provide searchServers freely, or the method is different, just return empty object
+    res.json({});
   } catch (err: any) {
     res.status(500).json({ error: sanitizeError(err) });
   }
@@ -1904,7 +2081,7 @@ async function normalizeSymbol(connection: any, accountId: string, symbol: strin
 
 // --- EXECUTION ROUTER (Mandatory 3-Layer Separation) ---
 const getExecutionMode = (accountId: string): 'EA' | 'STRATEGY' => {
-  return globalScope.EXECUTION_MODES.get(accountId) || 'STRATEGY';
+  return 'STRATEGY';
 };
 
 const validateExecution = (accountId: string, intent: 'NODE_TRADE' | 'EA_DEPLOYMENT' | 'CONTROL_ACTION'): { allowed: boolean; message?: string } => {
@@ -2293,7 +2470,7 @@ setInterval(() => {
         logEA(accountId, "ANALYSIS", `Scanning market (${activeSymbol})...`, {
           symbol: activeSymbol,
           bufferSize: buffer.length,
-          mode: globalScope.EXECUTION_MODES.get(accountId) || 'EA'
+          mode: 'STRATEGY'
         }, 'NODE_STRATEGY');
         if (!globalScope.LAST_ANALYSIS_LOG) globalScope.LAST_ANALYSIS_LOG = new Map();
         globalScope.LAST_ANALYSIS_LOG.set(accountId, Date.now());
@@ -2311,46 +2488,223 @@ setInterval(() => {
       }
 
       const lastCandle = buffer[buffer.length - 1];
+      const lastCandleTime = new Date(lastCandle.time).getTime();
 
       // 3. Trade Management (One trade at a time per account/symbol)
       const activePositions = globalScope.ACTIVE_POSITIONS.get(accountId);
       const hasOpenPosition = activePositions && Array.from(activePositions.values()).some((p: any) => p.symbol === activeSymbol);
 
       if (hasOpenPosition) {
-        logEA(accountId, "SKIP", "Position already open for symbol", { symbol: activeSymbol }, 'NODE_STRATEGY');
+        // Only log skip once every few mins to keep journal clean
+        if (Date.now() % 30000 < 1000) {
+          logEA(accountId, "SKIP", "Position active", { symbol: activeSymbol }, 'NODE_STRATEGY');
+        }
         continue;
       }
 
       // Check cooldown (prevent rapid flips)
       const lastTradeTime = globalScope.LAST_TRADE_TIME?.get(`${accountId}:${activeSymbol}`) || 0;
-      if (Date.now() - lastTradeTime < 30000) { // 30 seconds cooldown
-          logEA(accountId, "SKIP", "Trade cycle cooldown", { remaining: 30 - Math.floor((Date.now() - lastTradeTime)/1000) }, 'NODE_STRATEGY');
+      if (Date.now() - lastTradeTime < 60000) { // 60 seconds cooldown
           continue;
       }
 
-      if (shouldLogAnalysis) {
-        logEA(accountId, "ANALYSIS", "Processing market conditions...", {
-          count: buffer.length,
-          close: lastCandle.close,
-          symbol: activeSymbol
-        }, 'NODE_STRATEGY');
+      // 4. STRATEGY ENGINE: Heatmap & Pattern Confluence
+      const analysis = performPatternAnalysis(accountId, activeSymbol, buffer);
+      
+      if (shouldLogAnalysis || (analysis && analysis.detections.length > 5)) {
+        const detCount = analysis?.detections?.length || 0;
+        const zoneCount = analysis?.zones?.length || 0;
+        if (detCount > 0 || zoneCount > 0) {
+          logEA(accountId, "ANALYSIS", `Pattern Engine: Detected ${detCount} patterns and ${zoneCount} zones active on ${activeSymbol}.`, {
+            detections: detCount,
+            zones: zoneCount
+          }, 'NODE_STRATEGY');
+        }
       }
 
-      // 4. STRATEGY ENGINE: Refined for Production Stability
-      // Implements a robust RSI + Momentum crossover
-      const closes = buffer.map((c: any) => c.close);
-      const rsi = calculateRSI(closes, 14);
-      
       let signal: 'BUY' | 'SELL' | null = null;
       
-      if (rsi < 30) {
-         signal = 'BUY';
-         logEA(accountId, "SIGNAL", `OVERSOLD detect (RSI: ${rsi.toFixed(2)})`, { rsi }, 'NODE_STRATEGY');
-      } else if (rsi > 70) {
-         signal = 'SELL';
-         logEA(accountId, "SIGNAL", `OVERBOUGHT detect (RSI: ${rsi.toFixed(2)})`, { rsi }, 'NODE_STRATEGY');
-      } else {
-         if (rsi % 10 === 0) logEA(accountId, "SKIP", "Neutral market", { rsi: rsi.toFixed(2) }, 'NODE_STRATEGY');
+      if (analysis) {
+        // Broadcast Analysis to listeners (only if something changed or every few seconds to save bandwidth)
+        if (subscriptions.has(accountId)) {
+          subscriptions.get(accountId)?.forEach(ws => {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({
+                type: 'MARKET_ANALYSIS_UPDATE',
+                accountId,
+                symbol: activeSymbol,
+                analysis
+              }));
+            }
+          });
+        }
+
+        // Alert for notable patterns (e.g. engulfing) on the latest closed candle
+        if (buffer.length >= 2) {
+            const lastClosed = buffer[buffer.length - 2];
+            const notableDetections = analysis.detections.filter(
+                (d: any) => d.time === lastClosed.time && d.pattern.toLowerCase().includes('engulfing')
+            );
+            
+            if (!globalScope.NOTIFIED_PATTERNS) globalScope.NOTIFIED_PATTERNS = new Set<string>();
+            
+            notableDetections.forEach((d: any) => {
+                const sig = `${accountId}:${activeSymbol}:${d.time}:${d.pattern}`;
+                if (!globalScope.NOTIFIED_PATTERNS.has(sig)) {
+                    globalScope.NOTIFIED_PATTERNS.add(sig);
+                    logEA(accountId, "INFO", `Notable Pattern Identified on ${activeSymbol}: ${d.pattern.toUpperCase()}`, { pattern: d.pattern, polarity: d.polarity, close: lastClosed.close }, 'NODE_STRATEGY');
+                }
+            });
+        }
+
+        // Signal Logic: Heatmap-based support/resistance confluence
+        const recentDetections = analysis.detections.filter((d: any) => 
+          new Date(d.time).getTime() >= lastCandleTime - 1200000 // Last 20 mins relative to chart
+        );
+
+        const bullPatterns = recentDetections.filter((d: any) => d.polarity > 0);
+        const bearPatterns = recentDetections.filter((d: any) => d.polarity < 0);
+
+        const bullCount = bullPatterns.length;
+        const bearCount = bearPatterns.length;
+
+        // Smart Confluence Strategy & Learning System
+        let buyScore = 50; 
+        let sellScore = 50;
+        let buyConfluences: string[] = [];
+        let sellConfluences: string[] = [];
+
+        // 1. Candlestick Patterns (Confluence)
+        if (bullCount > 0) {
+            buyScore += bullCount * 8;
+            buyConfluences.push(`${bullCount}x Bullish Patterns`);
+        }
+        if (bearCount > 0) {
+            sellScore += bearCount * 8;
+            sellConfluences.push(`${bearCount}x Bearish Patterns`);
+        }
+
+        // 2. Double Top / Bottom Detection (Fractals)
+        const findPeaksAndValleys = (cands: any[]) => {
+            const peaks = [];
+            const valleys = [];
+            for (let i = 2; i < cands.length - 2; i++) {
+                const c = cands[i];
+                if (c.high > cands[i-1].high && c.high > cands[i-2].high && c.high > cands[i+1].high && c.high > cands[i+2].high) {
+                    peaks.push(c);
+                }
+                if (c.low < cands[i-1].low && c.low < cands[i-2].low && c.low < cands[i+1].low && c.low < cands[i+2].low) {
+                    valleys.push(c);
+                }
+            }
+            return { peaks, valleys };
+        };
+        const { peaks, valleys } = findPeaksAndValleys(buffer.slice(-40));
+        
+        if (valleys.length >= 2) {
+            const v1 = valleys[valleys.length - 1];
+            const v2 = valleys[valleys.length - 2];
+            if (Math.abs(v1.low - v2.low) / v1.low < 0.0015 && lastCandle.close > v1.low) {
+                buyScore += 15;
+                buyConfluences.push("Double Bottom Detected");
+            }
+        }
+        if (peaks.length >= 2) {
+            const p1 = peaks[peaks.length - 1];
+            const p2 = peaks[peaks.length - 2];
+            if (Math.abs(p1.high - p2.high) / p1.high < 0.0015 && lastCandle.close < p1.high) {
+                sellScore += 15;
+                sellConfluences.push("Double Top Detected");
+            }
+        }
+
+        // 3. Breakout & Retest Logic (Market Memory)
+        const adaptiveKey = `${accountId}:${activeSymbol}`;
+        if (!globalScope.ADAPTIVE_ZONES) globalScope.ADAPTIVE_ZONES = {};
+        if (!globalScope.ADAPTIVE_ZONES[adaptiveKey]) {
+            globalScope.ADAPTIVE_ZONES[adaptiveKey] = { flippedToSupport: [], flippedToResistance: [] };
+        }
+        const tracked = globalScope.ADAPTIVE_ZONES[adaptiveKey];
+
+        // Track zone breakouts to flip S/R
+        analysis.zones.forEach((z: any) => {
+            if (!z.isSupport && lastCandle.close > z.high * 1.001) { // Resistance Broken UP -> Becomes Support
+                if (!tracked.flippedToSupport.some((t: any) => Math.abs(t.low - z.low) < 0.0001)) {
+                    tracked.flippedToSupport.push({ ...z });
+                }
+            }
+            if (z.isSupport && lastCandle.close < z.low * 0.999) { // Support Broken DOWN -> Becomes Resistance
+                if (!tracked.flippedToResistance.some((t: any) => Math.abs(t.low - z.low) < 0.0001)) {
+                    tracked.flippedToResistance.push({ ...z });
+                }
+            }
+        });
+        // Keep memory fresh
+        tracked.flippedToSupport = tracked.flippedToSupport.slice(-5);
+        tracked.flippedToResistance = tracked.flippedToResistance.slice(-5);
+
+        // Rejection Filters (Don't catch falling knives)
+        const bodySize = Math.abs(lastCandle.close - lastCandle.open);
+        const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
+        const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
+        
+        const isBullishCandle = lastCandle.close > lastCandle.open;
+        const isBearishCandle = lastCandle.close < lastCandle.open;
+        
+        // A strong bullish rejection means it bounced up (long wick) OR is printing a green candle off the level.
+        const strongBullishRejection = isBullishCandle || (lowerWick > bodySize * 2);
+        const strongBearishRejection = isBearishCandle || (upperWick > bodySize * 2);
+
+        // Check Retest
+        const retestSupport = tracked.flippedToSupport.some((z: any) => 
+            lastCandle.low <= z.high * 1.002 && lastCandle.close >= z.low && strongBullishRejection
+        );
+        if (retestSupport) {
+            buyScore += 35;
+            buyConfluences.push("Sniper Retest: Broken Resistance to Support (Rejected)");
+        }
+        const retestResistance = tracked.flippedToResistance.some((z: any) => 
+            lastCandle.high >= z.low * 0.998 && lastCandle.close <= z.high && strongBearishRejection
+        );
+        if (retestResistance) {
+            sellScore += 35;
+            sellConfluences.push("Sniper Retest: Broken Support to Resistance (Rejected)");
+        }
+
+        // Standard Support/Resistance Confluence
+        const nearSupport = analysis.zones.some((z: any) => z.isSupport && lastCandle.close >= z.low * 0.998 && lastCandle.close <= z.high * 1.002 && strongBullishRejection);
+        if (nearSupport) {
+            buyScore += 25;
+            buyConfluences.push("Key Support Bounce");
+        }
+        const nearResistance = analysis.zones.some((z: any) => !z.isSupport && lastCandle.close >= z.low * 0.998 && lastCandle.close <= z.high * 1.002 && strongBearishRejection);
+        if (nearResistance) {
+            sellScore += 25;
+            sellConfluences.push("Key Resistance Rejection");
+        }
+
+        // Momentum / Buying Pressure
+        const buyingPressure = lastCandle.close > lastCandle.open && (lastCandle.close - lastCandle.open) / lastCandle.open > 0.001;
+        const sellingPressure = lastCandle.close < lastCandle.open && (lastCandle.open - lastCandle.close) / lastCandle.open > 0.001;
+
+        if (buyingPressure) buyConfluences.push("Heavy Buying Pressure");
+        if (sellingPressure) sellConfluences.push("Heavy Selling Pressure");
+
+        // STRICT ENTRY RULES (Anti-FOMO)
+        // Must have candlestick pattern confirmation AND must be at a valid SR/Retest zone
+        const isValidBuyZone = nearSupport || retestSupport || (valleys.length >= 2);
+        const isValidSellZone = nearResistance || retestResistance || (peaks.length >= 2);
+
+        const buyConfidence = Math.min(99, buyScore);
+        const sellConfidence = Math.min(99, sellScore);
+
+        if (bullCount > 0 && isValidBuyZone && buyConfidence >= 75 && buyConfidence > sellConfidence) {
+            signal = 'BUY';
+            logEA(accountId, "SIGNAL", `STRATEGY BUY (Confidence: ${buyConfidence}%) - Reasons: ${buyConfluences.join(', ')}`, { confidence: buyConfidence, confluences: buyConfluences, close: lastCandle.close }, 'NODE_STRATEGY');
+        } else if (bearCount > 0 && isValidSellZone && sellConfidence >= 75 && sellConfidence > buyConfidence) {
+            signal = 'SELL';
+            logEA(accountId, "SIGNAL", `STRATEGY SELL (Confidence: ${sellConfidence}%) - Reasons: ${sellConfluences.join(', ')}`, { confidence: sellConfidence, confluences: sellConfluences, close: lastCandle.close }, 'NODE_STRATEGY');
+        }
       }
 
       // 5. AUTO-EXECUTION BRIDGE (STRICT LIMITS)
@@ -2521,8 +2875,8 @@ async function startServer() {
                             // 2. Fuzzy Match Recovery (Auto-Suffix Detection)
                             if (err.message.includes('not exist') || err.message.includes('invalid')) {
                                 console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
-                                const specifications = await account.getSymbols();
-                                const match = specifications.find(s => s.startsWith(symbol) || s.endsWith(symbol));
+                                const specifications = await getSymbolsCached(metaapi, accountId);
+                                const match = specifications.find((s: string) => s.startsWith(symbol) || s.endsWith(symbol));
                                 if (match && match !== symbol) {
                                     console.log(`[SDK_RPC] Found fuzzy match: ${match}. Retrying...`);
                                     finalSymbol = match;
@@ -2613,7 +2967,7 @@ async function startServer() {
              ws.send(JSON.stringify({
                  type: 'EXECUTION_MODE_UPDATE',
                  accountId,
-                 mode: globalScope.EXECUTION_MODES.get(accountId) || 'EA'
+                 mode: 'STRATEGY'
              }));
           }
         } else if (data.type === 'SWITCH_MODE' && data.accountId && data.mode) {

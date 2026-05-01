@@ -28,7 +28,8 @@ import { PlatformType, TradingAccount } from './types';
 import Dashboard from './components/Dashboard';
 import Sidebar from './components/Sidebar';
 import AccountConfig from './components/AccountConfig';
-import ExpertAdvisorDeployer from './components/ExpertAdvisorDeployer';
+  // Remove ea-deployer state
+
 import SystemMonitor from './components/SystemMonitor';
 import { ExpertLogPanel } from './components/ExpertLogPanel';
 import MarketData from './components/MarketData';
@@ -118,6 +119,9 @@ const App: React.FC = () => {
 
   // Sync selectedSymbol with store strategy settings
   useEffect(() => {
+    if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") {
+      Notification.requestPermission();
+    }
     const currentStoreSymbol = useStore.getState().strategySettings.symbol;
     if (selectedSymbol && selectedSymbol !== currentStoreSymbol) {
       useStore.getState().setStrategySettings({ symbol: selectedSymbol });
@@ -155,11 +159,10 @@ const App: React.FC = () => {
     
     const fetchStatus = async () => {
       try {
-        const res = await fetch(`/api/account/${selectedAccountId}/status`, {
-          headers: { Authorization: `Bearer ${session.access_token}` }
-        });
-        if (res.ok) {
-           const data = await res.json();
+        // useStore.getState() is fine, but we need fresh token
+        // safeFetch now handles token internally, but we'll pass it anyway for clarity or rely on auto-inject
+        const data = await safeFetch(`/api/account/${selectedAccountId}/status`);
+        if (data) {
            setEaStatuses(prev => ({ ...prev, [selectedAccountId]: data }));
            // Sync algo running state with terminal state if in EA mode
            if (executionModes[selectedAccountId] === 'EA') {
@@ -240,7 +243,7 @@ const App: React.FC = () => {
     if (!bootData || !session) return;
     
     const savedId = localStorage.getItem('selectedAccountId');
-    if (savedId) {
+    if (savedId && accounts.some(a => a.id === savedId)) {
        handleAccountSelect(savedId);
     } else if (accounts.length > 0) {
        handleAccountSelect(accounts[0].id);
@@ -334,6 +337,37 @@ const App: React.FC = () => {
       if (data.type === 'EA_JOURNAL') {
         const payloadStr = Object.keys(data.metadata || {}).length > 0 ? JSON.stringify(data.metadata) : '';
         addLog(`[EA][${data.level}] ${data.message} ${payloadStr}`);
+        
+        // Push notification for signals or major alerts
+        if (data.level === 'SIGNAL' || data.level === 'ALERT') {
+          // Play a native beep sound
+          try {
+             const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+             const oscillator = audioContext.createOscillator();
+             const gainNode = audioContext.createGain();
+             oscillator.connect(gainNode);
+             gainNode.connect(audioContext.destination);
+             oscillator.type = 'sine';
+             oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+             oscillator.frequency.exponentialRampToValueAtTime(1760, audioContext.currentTime + 0.1);
+             gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+             gainNode.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.05);
+             gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+             oscillator.start(audioContext.currentTime);
+             oscillator.stop(audioContext.currentTime + 0.3);
+          } catch(e) { console.error("Audio play failed", e); }
+
+          if ("Notification" in window && Notification.permission === "granted") {
+            let bodyText = payloadStr;
+            if (data.metadata && data.metadata.confidence) {
+                bodyText = `Confidence: ${data.metadata.confidence}%\nConfluences: ${(data.metadata.confluences || []).join(', ')}`;
+            }
+            new Notification(`🔥 EA ${data.level}: ${data.message}`, {
+              body: bodyText,
+              icon: '/vite.svg'
+            });
+          }
+        }
       }
 
       const store = useStore.getState();
@@ -353,6 +387,12 @@ const App: React.FC = () => {
         store.setPositions(store.positions.filter(p => p.id !== data.data.id));
       } else if (data.type === 'HISTORY_ORDER_ADDED') {
         store.setHistory([data.data, ...store.history].slice(0, 20));
+      } else if (data.type === 'MARKET_ANALYSIS_UPDATE') {
+        const normSelected = selectedSymbol?.toUpperCase() || '';
+        const normReceived = data.symbol?.toUpperCase() || '';
+        if (data.accountId === selectedAccountId && normReceived === normSelected) {
+          store.setMarketAnalysis(data.analysis);
+        }
       }
     });
     
@@ -880,8 +920,7 @@ const App: React.FC = () => {
                     tradeStatus={tradeStatus}
                   />
                 )}
-                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} />}
-                {activeTab === 'ea-deployer' && <ExpertAdvisorDeployer accounts={accounts} availableBrokerSymbols={availableBrokerSymbols} token={session?.access_token} />}
+                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab('ea-deployer'); }} />}
                 {activeTab === 'data' && (
                   <ErrorBoundary>
                     <MarketData 
@@ -994,10 +1033,6 @@ const App: React.FC = () => {
           <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'data' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
             <TrendingUp className="w-5 h-5 lg:w-6 lg:h-6" />
             <span className="text-[10px] lg:text-xs font-bold">Market</span>
-          </button>
-          <button onClick={() => setActiveTab('ea-deployer')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'ea-deployer' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
-            <Terminal className="w-5 h-5 lg:w-6 lg:h-6" />
-            <span className="text-[10px] lg:text-xs font-bold">Terminal</span>
           </button>
           <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'accounts' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
             <Users className="w-5 h-5 lg:w-6 lg:h-6" />

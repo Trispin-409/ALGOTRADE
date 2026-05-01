@@ -20,6 +20,11 @@ interface AccountStore {
     maxTrades: number;
     timeframe: string;
   };
+  marketAnalysis: {
+    bins: number[];
+    zones: any[];
+    detections: any[];
+  } | null;
 
   setConnectionStatus: (status: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE") => void;
   updateAccount: (payload: { balance?: number; equity?: number; currency?: string }) => void;
@@ -33,6 +38,7 @@ interface AccountStore {
   setStats: (stats: any | null) => void;
   setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string }) => void;
   setStrategySettings: (settings: { symbol?: string; lotSize?: number; maxTrades?: number; timeframe?: string }) => void;
+  setMarketAnalysis: (analysis: any | null) => void;
 }
 
 export const useStore = create<AccountStore>((set) => ({
@@ -44,6 +50,7 @@ export const useStore = create<AccountStore>((set) => ({
   positions: [],
   history: [],
   stats: null,
+  marketAnalysis: null,
   chartSettings: (() => {
     try {
       const saved = localStorage.getItem('chartSettings');
@@ -140,4 +147,5 @@ export const useStore = create<AccountStore>((set) => ({
     }
     return { strategySettings: newSettings };
   }),
+  setMarketAnalysis: (analysis) => set({ marketAnalysis: analysis }),
 }));

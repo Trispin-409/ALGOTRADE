@@ -1,4 +1,6 @@
 
+import { supabase } from './supabase';
+
 export const formatCurrency = (value: number, currency?: string) => {
   const currencyCode = (currency || 'ZAR').toUpperCase();
   try {
@@ -14,12 +16,32 @@ export const formatCurrency = (value: number, currency?: string) => {
 
 export const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export const getVerifiedSession = async () => {
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error || !session) return null;
+  return session;
+};
+
 let restQueue: Promise<any> = Promise.resolve();
 
 export const safeFetch = async (url: string, options?: RequestInit) => {
+  // Automatically inject fresh token if Authorization header is missing or placeholder
+  let finalOptions = { ...options };
+  if (!finalOptions.headers) finalOptions.headers = {};
+  
+  const headers = finalOptions.headers as Record<string, string>;
+  
+  // If no auth header or it's a generic one, try to get a fresh one
+  if (!headers['Authorization'] || headers['Authorization'].includes('undefined')) {
+    const session = await getVerifiedSession();
+    if (session) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+  }
+
   // Global Request Circuit Breaker: Total Serialization of all REST traffic
   const result = restQueue.then(async () => {
-    const res = await fetch(url, options);
+    const res = await fetch(url, finalOptions);
     const text = await res.text();
     
     if (!res.ok) {

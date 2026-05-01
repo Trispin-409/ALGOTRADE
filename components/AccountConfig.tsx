@@ -13,6 +13,7 @@ interface AccountConfigProps {
   accounts: TradingAccount[];
   setAccounts: React.Dispatch<React.SetStateAction<TradingAccount[]>>;
   token?: string;
+  onSelectAccount?: (id: string) => void;
 }
 
 interface ProvisioningProfile {
@@ -233,7 +234,7 @@ const safeBtoa = (str: string): string => {
   }
 };
 
-const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, token }) => {
+const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, token, onSelectAccount }) => {
   const [view, setView] = useState<'accounts' | 'profiles'>('accounts');
   const [isAdding, setIsAdding] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -306,7 +307,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
   }, [serverSearchQuery]);
 
   const handleDeleteAccount = async (accountId: string, accountName: string, accountLogin: string) => {
-    if (!confirm(`CRITICAL: Purge terminal "${accountName}" (${accountLogin})? This will release all cloud resources.`)) return;
+    if (!confirm(`Hide terminal "${accountName}" (${accountLogin}) from the UI?`)) return;
     
     setActionLoading(`${accountId}-delete`);
     setIsAdding(true); 
@@ -315,7 +316,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
 
     try {
       addSystemLog(`COMMAND: Decommissioning resources via SDK Provisioner...`);
-      await safeFetch(`/api/account/${accountId}`, {
+      await safeFetch(`/api/account/${accountId}/lease`, {
         method: 'DELETE',
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
@@ -494,6 +495,12 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
       const accountId = accountData.id || accountData._id;
       
       addSystemLog(`SUCCESS: Cloud Terminal ID ${accountId.slice(0, 8)} created.`);
+      setAccounts(prev => {
+        if (!prev.find(a => a.id === accountId)) {
+          return [...prev, accountData];
+        }
+        return prev;
+      });
       setIsAdding(false);
       setActiveStep('idle');
     } catch (err: any) {
@@ -651,31 +658,50 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
             </div>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+          <div className="flex flex-col space-y-4 sm:space-y-6">
             {accounts.map(acc => (
-              <div key={acc.id} className="bg-slate-900/40 border border-white/5 p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] backdrop-blur-md hover:border-indigo-500/30 transition-all group overflow-hidden">
-                <div className="flex justify-between items-start mb-6 gap-2">
-                  <div className="flex items-center gap-3 sm:gap-4 overflow-hidden">
-                    <div className="w-10 h-10 sm:w-12 h-12 bg-indigo-600/10 rounded-xl flex items-center justify-center font-black text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-inner uppercase font-mono shrink-0">{acc.platform}</div>
-                    <div className="truncate">
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-black text-white text-sm sm:text-base truncate">{acc.name}</h4>
-                      </div>
-                      <p className="text-[9px] sm:text-[10px] text-slate-500 font-mono truncate">{acc.login}</p>
+              <div 
+                key={acc.id} 
+                onClick={() => onSelectAccount && onSelectAccount(acc.id)}
+                className="bg-slate-900/40 border border-white/5 p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] backdrop-blur-md hover:border-indigo-500/30 transition-all group overflow-hidden cursor-pointer flex flex-col md:flex-row md:items-center justify-between"
+              >
+                <div className="flex items-start md:items-center gap-3 sm:gap-4 overflow-hidden mb-4 md:mb-0">
+                  <div className="w-10 h-10 sm:w-12 h-12 bg-indigo-600/10 rounded-xl flex items-center justify-center font-black text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-inner uppercase font-mono shrink-0">{acc.platform}</div>
+                  <div className="truncate">
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-black text-white text-sm sm:text-base truncate">{acc.name}</h4>
                     </div>
+                    <p className="text-[9px] sm:text-[10px] text-slate-500 font-mono truncate">{acc.login} • {acc.server}</p>
                   </div>
+                </div>
+
+                <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-3 shrink-0">
                   <div className="flex flex-col items-end gap-1 shrink-0">
                     <div className={`px-2 sm:px-3 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase border ${acc.connectionStatus === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
                     {acc.connectionStatus !== 'CONNECTED' && acc.state === 'DEPLOYED' && (
                       <span className="text-[6px] text-rose-500 font-bold uppercase tracking-tighter">Check Credentials</span>
                     )}
                   </div>
+                  
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <button 
+                      onClick={() => handleDeleteAccount(acc.id, acc.name || 'Unknown', acc.login || 'Unknown')}
+                      disabled={actionLoading === `${acc.id}-delete`}
+                      className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-black uppercase tracking-widest border border-rose-500/20 transition-colors flex items-center gap-1"
+                    >
+                      {actionLoading === `${acc.id}-delete` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Hide</span>}
+                    </button>
+                    {acc.connectionStatus !== 'CONNECTED' && acc.state === 'DEPLOYED' && (
+                      <button 
+                        onClick={() => handleReconnect(acc.id)}
+                        disabled={actionLoading === `${acc.id}-reconnect`}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest border border-emerald-500/20 transition-colors flex items-center gap-1"
+                      >
+                        {actionLoading === `${acc.id}-reconnect` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Connect</span>}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                
-                
-                <div className="mb-6 gap-2">
-                </div>
-
               </div>
             ))}
           </div>

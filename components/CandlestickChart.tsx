@@ -20,10 +20,29 @@ interface Props {
   deals?: any[];
   positions?: any[];
   executionMode?: 'EA' | 'STRATEGY';
+  marketAnalysis?: {
+    bins: number[];
+    zones: any[];
+    detections: any[];
+  } | null;
+  showAnalysis?: boolean;
   upColor?: string;
   downColor?: string;
   bgImageUrl?: string;
 }
+
+const getPatternColor = (pattern: string, polarity: number) => {
+  const pStr = String(pattern || '');
+  const hash = pStr.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  if (polarity > 0) {
+    const hues = [140, 160, 180, 200];
+    return `hsl(${hues[hash % hues.length]}, 80%, 65%)`; // Bullish: Greens/Cyans
+  } else if (polarity < 0) {
+    const hues = [340, 0, 20, 300];
+    return `hsl(${hues[hash % hues.length]}, 85%, 65%)`; // Bearish: Reds/Magentas/Oranges
+  }
+  return '#cbd5e1';
+};
 
 export default function CandlestickChart({ 
   data, 
@@ -32,6 +51,8 @@ export default function CandlestickChart({
   deals = [], 
   positions = [], 
   executionMode = 'EA',
+  marketAnalysis = null,
+  showAnalysis = false,
   upColor = '#10b981',
   downColor = '#f43f5e',
   bgImageUrl = ''
@@ -145,6 +166,76 @@ export default function CandlestickChart({
           );
         })}
 
+        {/* ANALYSIS LAYER: Heatmap & Zones */}
+        {showAnalysis && marketAnalysis && (
+          <g>
+            {/* Heatmap Bins */}
+            {marketAnalysis.bins.map((weight, i) => {
+              if (weight <= 0) return null;
+              const binH = height / marketAnalysis.bins.length;
+              const y = height - (i + 1) * binH;
+              const alpha = Math.min(0.4, weight / 10);
+              return (
+                <rect 
+                  key={`bin-${i}`}
+                  x={0}
+                  y={y}
+                  width={mainW}
+                  height={binH}
+                  fill="#6366f1"
+                  opacity={alpha * 0.4}
+                />
+              );
+            })}
+            
+            {/* Zones */}
+            {marketAnalysis.zones.map((z, i) => {
+              const yLow = getY(z.low);
+              const yHigh = getY(z.high);
+              let color = z.isSupport ? '#10b981' : '#f43f5e';
+              if (z.isConsolidation) color = '#94a3b8'; // gray for consolidation
+
+              return (
+                <g key={`zone-${i}`} opacity={0.8}>
+                   <rect 
+                    x={0}
+                    y={Math.min(yLow, yHigh)}
+                    width={mainW}
+                    height={Math.max(3, Math.abs(yLow - yHigh))}
+                    fill={color}
+                    opacity={z.isConsolidation ? 0.25 : 0.15 * (z.strength || 1)}
+                  />
+                  {!z.isConsolidation && (
+                    <line 
+                      x1={0} x2={mainW} 
+                      y1={z.isSupport ? Math.min(yLow, yHigh) : Math.max(yLow, yHigh)} 
+                      y2={z.isSupport ? Math.min(yLow, yHigh) : Math.max(yLow, yHigh)} 
+                      stroke={color} 
+                      strokeWidth={1.5}
+                      opacity={0.6}
+                    />
+                  )}
+                  {z.isConsolidation && (
+                    <text x={12} y={Math.min(yLow, yHigh) - 6} fill="#94a3b8" fontSize="9" fontWeight="black" className="uppercase tracking-widest">Consolidation Range</text>
+                  )}
+                </g>
+              );
+            })}
+
+            {/* Recent Detections */}
+            {marketAnalysis.detections.map((d: any, i: number) => {
+               const x = matchTimeX(d.time);
+               const y = getY(d.price);
+               const color = getPatternColor(d.pattern, d.polarity);
+               return (
+                 <g key={`det-${i}`}>
+                   <circle cx={x} cy={y} r={4} fill={color} stroke="#0f172a" strokeWidth={1} />
+                 </g>
+               );
+            })}
+          </g>
+        )}
+
         {/* Candlesticks Layer */}
         {chartData.map((d, i) => {
           const x = getX(i);
@@ -238,6 +329,60 @@ export default function CandlestickChart({
         {/* Right Axis Isolator */}
         <line x1={mainW} x2={mainW} y1={0} y2={height} stroke="#1e293b" />
       </svg>
+      
+      {/* Pattern Summary Overlay */}
+      {showAnalysis && marketAnalysis && (
+        <div className="absolute top-4 left-4 p-3 pointer-events-none select-none text-xs flex flex-col gap-2 drop-shadow-xl font-mono">
+          <div className="font-semibold text-slate-100 flex gap-2 items-center drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
+            <span>ACTIVE PATTERNS ({marketAnalysis.detections.length})</span>
+          </div>
+          <div className="flex gap-6">
+            <div className="flex flex-col gap-1">
+              <span className="text-emerald-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
+                BULLISH ({marketAnalysis.detections.filter((d: any) => d.polarity > 0).length})
+              </span>
+              {Object.entries(
+                marketAnalysis.detections
+                  .filter((d: any) => d.polarity > 0)
+                  .reduce((acc: any, curr: any) => {
+                    acc[curr.pattern] = (acc[curr.pattern] || 0) + 1;
+                    return acc;
+                  }, {})
+              ).map(([pattern, count]: [string, any]) => {
+                const color = getPatternColor(pattern, 1);
+                return (
+                  <div key={pattern} className="flex justify-between items-center gap-4 font-semibold drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]" style={{ color }}>
+                    <span className="uppercase tracking-wide">{pattern}</span>
+                    <span className="px-1.5 py-0.5 rounded text-white bg-slate-900/60 shadow-inner">x{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+            
+            <div className="flex flex-col gap-1 border-l border-white/20 pl-6">
+              <span className="text-rose-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
+                BEARISH ({marketAnalysis.detections.filter((d: any) => d.polarity < 0).length})
+              </span>
+              {Object.entries(
+                marketAnalysis.detections
+                  .filter((d: any) => d.polarity < 0)
+                  .reduce((acc: any, curr: any) => {
+                    acc[curr.pattern] = (acc[curr.pattern] || 0) + 1;
+                    return acc;
+                  }, {})
+              ).map(([pattern, count]: [string, any]) => {
+                const color = getPatternColor(pattern, -1);
+                return (
+                  <div key={pattern} className="flex justify-between items-center gap-4 font-semibold drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]" style={{ color }}>
+                    <span className="uppercase tracking-wide">{pattern}</span>
+                    <span className="px-1.5 py-0.5 rounded text-white bg-slate-900/60 shadow-inner">x{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
