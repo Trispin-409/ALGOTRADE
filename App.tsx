@@ -430,6 +430,27 @@ const App: React.FC = () => {
           headers: { Authorization: `Bearer ${session.access_token}` }
         });
         setAvailableBrokerSymbols(brokerSymbols);
+        
+        // AUTO-NORMALIZATION: If current symbol is invalid for new broker, fix it
+        if (brokerSymbols.length > 0 && selectedSymbol) {
+          const normSelected = selectedSymbol.toUpperCase();
+          const cleanBase = normSelected.replace(/[M\.#+\.\$]/g, ''); // Extract base like XAUUSD
+          
+          if (!brokerSymbols.includes(selectedSymbol)) {
+             // Look for fuzzy match
+             const match = brokerSymbols.find((s: string) => {
+                const su = s.toUpperCase();
+                return su.includes(cleanBase) && su.length <= cleanBase.length + 4;
+             });
+             
+             if (match) {
+                console.log(`[AUTO-FIX] Switching symbol ${selectedSymbol} -> ${match} for new broker context`);
+                setSelectedSymbol(match);
+             } else {
+                setSelectedSymbol(brokerSymbols[0]);
+             }
+          }
+        }
       } catch (err: any) {
         if (retries > 0) {
           console.warn(`[RETRY] Retrying fetchBrokerSymbols in 10s. ${retries} attempts left.`);
@@ -441,7 +462,7 @@ const App: React.FC = () => {
     };
 
     fetchBrokerSymbols();
-  }, [selectedAccountId, addLog, session]);
+  }, [selectedAccountId, session]); // Removed addLog to reduce frequency, added selectedSymbol check logic
 
   useEffect(() => {
     localStorage.setItem('selectedSymbol', selectedSymbol);
@@ -738,8 +759,14 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!bootData) return;
-    // Perform initial synchronization only
+    // Perform initial synchronization
     verifyAndFetch();
+    
+    // PERIODIC SYNC: Keep terminal balances and connection states fresh
+    const interval = setInterval(() => {
+      verifyAndFetch(0); // Background sync with no retries to prevent stack exhaustion on poor networks
+    }, 60000); // Every 60 seconds
+    return () => clearInterval(interval);
   }, [verifyAndFetch, bootData]);
 
   // Handle AlgoTrade Start/Stop lifecycle
@@ -906,6 +933,7 @@ const App: React.FC = () => {
                 {activeTab === 'dashboard' && (
                   <Dashboard 
                     accounts={accounts} 
+                    selectedAccountId={selectedAccountId}
                     isLoading={isLoading} 
                     isAlgoTradeRunning={isAlgoTradeRunning} 
                     syncedAccountIds={syncedAccountIds}
@@ -948,6 +976,7 @@ const App: React.FC = () => {
                       onUndeploy={handleUndeployTerminal}
                       setActiveTab={setActiveTab}
                       token={session?.access_token}
+                      isLoading={isLoading}
                     />
                   </ErrorBoundary>
                 )}

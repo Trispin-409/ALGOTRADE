@@ -31,6 +31,7 @@ interface MarketDataProps {
   onUndeploy: () => Promise<void>;
   setActiveTab: (tab: string) => void;
   token?: string;
+  isLoading: boolean;
 }
 
 const getTimeframeMinutes = (tf: string): number => {
@@ -82,7 +83,8 @@ const MarketData: React.FC<MarketDataProps> = ({
   onDeploy,
   onUndeploy,
   setActiveTab,
-  token
+  token,
+  isLoading
 }) => {
   const candles = useStore(state => state.candles);
   const setCandles = useStore(state => state.setCandles);
@@ -157,6 +159,13 @@ const MarketData: React.FC<MarketDataProps> = ({
   useEffect(() => {
     addLogRef.current = addLog;
   }, [addLog]);
+
+  useEffect(() => {
+    // Clear candles when context changes to prevent ghosting of previous broker data
+    setCandles([]);
+    setLatestTick(null);
+    setDeals([]);
+  }, [selectedAccountId, symbol, timeframe]);
 
   useEffect(() => {
     if (!selectedAccountId || !symbol || !timeframe) return;
@@ -309,6 +318,19 @@ const MarketData: React.FC<MarketDataProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* SYMBOL MISMATCH ALERT (Global Context Guard) */}
+      {!isLoading && availableBrokerSymbols.length > 0 && symbol && !availableBrokerSymbols.includes(symbol) && (
+        <div className="mx-2 bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl flex items-center gap-3 animate-pulse">
+           <Zap className="w-5 h-5 text-amber-500" />
+           <div className="flex-1">
+             <p className="text-xs font-bold text-amber-200 uppercase tracking-tighter">Symbol Conflict Detected</p>
+             <p className="text-[10px] text-amber-400/80 uppercase font-medium leading-relaxed">
+               "{symbol}" is not recognized by your broker. Using a mismatched symbol will cause "SYMBOL NOT FOUND" errors.
+             </p>
+           </div>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 p-2">
         <div className="flex flex-wrap items-center gap-3 w-full justify-between sm:justify-start">
           <div className="flex flex-col gap-1">
@@ -371,6 +393,8 @@ const MarketData: React.FC<MarketDataProps> = ({
               ))}
             </div>
           </div>
+          
+          {/* Removed selectedAccount balance from here as per user request */}
         </div>
       </div>
 

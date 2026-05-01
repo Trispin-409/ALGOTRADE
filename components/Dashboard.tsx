@@ -1,12 +1,13 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Wallet, Activity, Percent, ShieldCheck, ArrowUpRight, ArrowDownRight, TrendingUp, Loader2, BarChart3, History, Layers } from 'lucide-react';
+import { Wallet, Activity, Percent, ShieldCheck, ArrowUpRight, ArrowDownRight, TrendingUp, Loader2, BarChart3, History, Layers, RefreshCw } from 'lucide-react';
 import { TradingAccount, MetaStats } from '../types';
 import { formatCurrency, safeFetch } from '../src/lib/utils';
 import { useStore } from '../src/store';
 
 interface DashboardProps {
   accounts: TradingAccount[];
+  selectedAccountId?: string;
   isLoading: boolean;
   isAlgoTradeRunning: boolean;
   syncedAccountIds: Set<string>;
@@ -26,6 +27,7 @@ import { Play, X, Zap } from 'lucide-react';
 
 const Dashboard: React.FC<DashboardProps> = ({ 
   accounts, 
+  selectedAccountId,
   isLoading, 
   isAlgoTradeRunning, 
   syncedAccountIds, 
@@ -58,9 +60,15 @@ const Dashboard: React.FC<DashboardProps> = ({
     // Component unmounted state handled by global App.tsx subscription
   }, []);
 
-  // 1. DUAL-LAYER ARCHITECTURE: Derive "Trusted UI State" from "Raw Stream Data"
+  const lastValidValues = useRef<{ balance: number, equity: number, activeBalance: number, currency: string }>({ 
+    balance: 0, 
+    equity: 0, 
+    activeBalance: 0, 
+    currency: 'USD' 
+  });
+
+  // 1. DUAL-LAYER ARCHITECTURE
   const readyAccounts = useMemo(() => {
-    // RELAXED VALIDATION: Do not block UI if balance is undefined
     return accounts.map(acc => ({
       ...acc,
       balance: acc.balance ?? 0,
@@ -68,6 +76,10 @@ const Dashboard: React.FC<DashboardProps> = ({
       currency: acc.currency ?? 'USD'
     }));
   }, [accounts]);
+
+  const activeAccount = useMemo(() => 
+    readyAccounts.find(a => a.id === selectedAccountId) || readyAccounts[0]
+  , [readyAccounts, selectedAccountId]);
 
   const totalBalance = useMemo(() => 
     readyAccounts.reduce((sum, acc) => sum + Number(acc.balance), 0)
@@ -78,24 +90,45 @@ const Dashboard: React.FC<DashboardProps> = ({
   , [readyAccounts]);
   
   // 2. Persistent Currency Resolution
-  const resolvedCurrency = useMemo(() => 
-    accounts.find(acc => acc.currency)?.currency || 'ZAR'
-  , [accounts]);
-  
-  // 3. INITIAL LOAD BUFFER: Institutional-grade hydration management
-  // Tracks if the system has achieved its first stable synchronized state
+  const resolvedCurrency = useMemo(() => {
+    const activeAcc = accounts.find(a => a.id === selectedAccountId);
+    if (activeAcc?.currency) return activeAcc.currency;
+    
+    const anyCurrency = accounts.find(acc => acc.currency)?.currency;
+    return anyCurrency || 'ZAR';
+  }, [accounts, selectedAccountId]);
+
+  // Persistent Display Logic: Only switch to "0.00" if we explicitly mean it
+  const isCurrentlySyncing = isLoading && readyAccounts.length === 0;
+
+  useEffect(() => {
+    if (totalBalance > 0 || totalEquity > 0) {
+      lastValidValues.current = {
+        balance: totalBalance,
+        equity: totalEquity,
+        activeBalance: activeAccount?.balance || 0,
+        currency: resolvedCurrency
+      };
+    }
+  }, [totalBalance, totalEquity, activeAccount, resolvedCurrency]);
+
+  // 3. INITIAL LOAD BUFFER
   const isInitialLoad = useRef(true);
-  const [, forceUpdate] = useState({}); // Simple trigger to re-render when ref changes
+  const [, forceUpdate] = useState({});
 
   useEffect(() => {
     if (readyAccounts.length > 0 && isInitialLoad.current) {
       isInitialLoad.current = false;
-      forceUpdate({}); // Switch from "Syncing..." to real values permanently
+      forceUpdate({});
     }
   }, [readyAccounts]);
 
-  // Global Hydration Gate: Use the Load Buffer for the first-render experience
   const isStable = !isInitialLoad.current;
+
+  const displayBalance = totalBalance > 0 ? totalBalance : lastValidValues.current.balance;
+  const displayEquity = totalEquity > 0 ? totalEquity : lastValidValues.current.equity;
+  const displayActiveBalance = (activeAccount?.balance || 0) > 0 ? (activeAccount?.balance || 0) : lastValidValues.current.activeBalance;
+  const displayCurrency = (totalBalance > 0 || totalEquity > 0) ? resolvedCurrency : lastValidValues.current.currency;
   
   const connectedCount = useMemo(() => 
     accounts.filter(a => a.connectionStatus === 'CONNECTED' || a.connectionStatus === 'connected').length
@@ -137,27 +170,66 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [fetchStats, subscriberAccount]);
 
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const manualRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await safeFetch('/api/accounts?force=true', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      // Logic for triggering global fetch should be handled by App state, but here we can just wait
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 2000);
+    }
+  };
+
   return (
     <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700 w-full overflow-x-hidden">
+      <div className="flex items-center justify-between px-2">
+        <div className="flex flex-col">
+          <h2 className="text-lg sm:text-x font-black text-white tracking-tight uppercase italic flex items-center gap-2">
+            <BarChart3 className="w-5 h-5 text-indigo-500" />
+            Intelligence Metrics
+          </h2>
+          <p className="text-[10px] text-slate-500 font-bold tracking-widest uppercase mt-0.5">Real-time Terminal Monitoring</p>
+        </div>
+        <button 
+          onClick={manualRefresh}
+          disabled={isRefreshing || isLoading}
+          className="flex items-center gap-2 px-4 py-2 bg-slate-800/80 border border-white/5 rounded-xl text-[10px] font-black text-slate-300 uppercase tracking-widest hover:bg-slate-700 transition-all disabled:opacity-50 shadow-lg backdrop-blur-sm"
+        >
+          {isRefreshing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+          {isRefreshing ? 'Syncing...' : 'Sync Now'}
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
         <MetricCard 
           label="Global Balance" 
-          value={isStable ? formatCurrency(totalBalance, resolvedCurrency) : "Syncing..."} 
+          value={isStable ? formatCurrency(displayBalance, displayCurrency) : "Syncing..."} 
           icon={Wallet} 
           color="blue" 
         />
-        <MetricCard label="Terminals Online" value={`${connectedCount} / ${accounts.length}`} icon={Activity} color="indigo" />
         <MetricCard 
-          label="Algo Status" 
-          value={isAlgoTradeRunning ? "ACTIVE" : "PAUSED"} 
-          icon={isAlgoTradeRunning ? TrendingUp : ShieldCheck} 
-          color={isAlgoTradeRunning ? "emerald" : "amber"} 
+          label="Live Balance" 
+          value={isStable ? formatCurrency(displayActiveBalance, displayCurrency) : "Syncing..."} 
+          icon={Zap} 
+          color="emerald" 
         />
         <MetricCard 
           label="Equity" 
-          value={isStable ? formatCurrency(totalEquity, resolvedCurrency) : "Syncing..."} 
+          value={isStable ? formatCurrency(displayEquity, displayCurrency) : "Syncing..."} 
           icon={Layers} 
           color="indigo" 
+        />
+        <MetricCard 
+          label="Terminals" 
+          value={`${connectedCount} / ${accounts.length}`} 
+          icon={Activity} 
+          color="amber" 
         />
       </div>
     </div>

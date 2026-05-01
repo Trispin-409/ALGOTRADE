@@ -172,6 +172,7 @@ globalScope.CONNECTION_FAILURES = globalScope.CONNECTION_FAILURES || new Map<str
 // User-specific listing caches
 globalScope.ACCOUNT_LIST_CACHE_BY_USER = globalScope.ACCOUNT_LIST_CACHE_BY_USER || new Map<string, any[]>();
 globalScope.SYNC_IN_PROGRESS_BY_USER = globalScope.SYNC_IN_PROGRESS_BY_USER || new Set<string>();
+globalScope.LAST_SYNC_TIME_BY_USER = globalScope.LAST_SYNC_TIME_BY_USER || new Map<string, number>();
 
 globalScope.LATEST_CANDLES = globalScope.LATEST_CANDLES || new Map<string, any>();
 globalScope.CANDLE_STORE = globalScope.CANDLE_STORE || {};
@@ -1323,15 +1324,27 @@ app.get("/api/accounts", async (req, res) => {
     const leases = await TradingController.getActiveLeases(userId);
     const activeAccountIds = new Set(leases.map(l => l.account_id));
 
+    // PERFORMANCE: Return fresh cache (30s) immediately to prevent SDK bottleneck
+    const now = Date.now();
+    const userCache = globalScope.ACCOUNT_LIST_CACHE_BY_USER.get(userId);
+    const lastSync = globalScope.LAST_SYNC_TIME_BY_USER?.get(userId) || 0;
+    
+    const force = req.query.force === 'true';
+    if (!force && userCache && (now - lastSync < 30000)) {
+      return res.json(userCache.filter((a: any) => activeAccountIds.has(a.id)));
+    }
+
     if (globalScope.SYNC_IN_PROGRESS_BY_USER.has(userId)) {
-      const cached = globalScope.ACCOUNT_LIST_CACHE_BY_USER.get(userId);
-      if (cached) return res.json(cached.filter((a: any) => activeAccountIds.has(a.id)));
+      if (userCache) return res.json(userCache.filter((a: any) => activeAccountIds.has(a.id)));
       return res.json({ status: 'SYNCING', message: 'Sync in progress' });
     }
 
     globalScope.SYNC_IN_PROGRESS_BY_USER.add(userId);
+    if (!globalScope.LAST_SYNC_TIME_BY_USER) globalScope.LAST_SYNC_TIME_BY_USER = new Map<string, number>();
+    globalScope.LAST_SYNC_TIME_BY_USER.set(userId, now);
+    
     // Safety timeout
-    setTimeout(() => globalScope.SYNC_IN_PROGRESS_BY_USER.delete(userId), 20000);
+    setTimeout(() => globalScope.SYNC_IN_PROGRESS_BY_USER.delete(userId), 15000);
 
     try {
       const response = await safeMetaApiCall(() => 
