@@ -24,11 +24,23 @@ const TradingController = {
 
   async createLease(userId: string, accountId: string, eaName: string, region: string) {
     if (!adminSupabase) return;
-    const { data } = await adminSupabase.from("ea_leases").select("id").eq("account_id", accountId).single();
+    // Composite check: Does THIS user already lease THIS account?
+    const { data } = await adminSupabase.from("ea_leases")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("user_id", userId)
+      .single();
+      
     if (data) {
-      await adminSupabase.from("ea_leases").update({ user_id: userId, ea_name: eaName, region, status: 'DEPLOYED' }).eq("account_id", accountId);
+      await adminSupabase.from("ea_leases").update({ ea_name: eaName, region, status: 'DEPLOYED' }).eq("id", data.id);
     } else {
-      const { error } = await adminSupabase.from("ea_leases").insert({ user_id: userId, account_id: accountId, ea_name: eaName, region, status: 'DEPLOYED' });
+      const { error } = await adminSupabase.from("ea_leases").insert({ 
+        user_id: userId, 
+        account_id: accountId, 
+        ea_name: eaName, 
+        region, 
+        status: 'DEPLOYED' 
+      });
       if (error) throw new Error(`Lease creation failed: ${error.message}`);
     }
   },
@@ -48,9 +60,11 @@ const TradingController = {
     return data || [];
   },
 
-  async removeLease(accountId: string) {
+  async removeLease(accountId: string, userId?: string) {
     if (!adminSupabase) return;
-    await adminSupabase.from("ea_leases").delete().eq("account_id", accountId);
+    let query = adminSupabase.from("ea_leases").delete().eq("account_id", accountId);
+    if (userId) query = query.eq("user_id", userId);
+    await query;
   },
 
   async updateEAStatus(accountId: string, userId: string, deployed: boolean, status: string) {
@@ -154,6 +168,10 @@ globalScope.ALGO_RUNNING = globalScope.ALGO_RUNNING || new Map<string, boolean>(
 globalScope.EXECUTION_MODES = globalScope.EXECUTION_MODES || new Map<string, 'EA' | 'STRATEGY'>();
 globalScope.STREAM_FAILURES = globalScope.STREAM_FAILURES || new Map<string, number>();
 globalScope.CONNECTION_FAILURES = globalScope.CONNECTION_FAILURES || new Map<string, number>();
+
+// User-specific listing caches
+globalScope.ACCOUNT_LIST_CACHE_BY_USER = globalScope.ACCOUNT_LIST_CACHE_BY_USER || new Map<string, any[]>();
+globalScope.SYNC_IN_PROGRESS_BY_USER = globalScope.SYNC_IN_PROGRESS_BY_USER || new Set<string>();
 
 globalScope.LATEST_CANDLES = globalScope.LATEST_CANDLES || new Map<string, any>();
 globalScope.CANDLE_STORE = globalScope.CANDLE_STORE || {};
@@ -1305,15 +1323,15 @@ app.get("/api/accounts", async (req, res) => {
     const leases = await TradingController.getActiveLeases(userId);
     const activeAccountIds = new Set(leases.map(l => l.account_id));
 
-    if (globalScope.SYNC_IN_PROGRESS) {
-      if (globalScope.ACCOUNT_LIST_CACHE) {
-        return res.json(globalScope.ACCOUNT_LIST_CACHE.filter((a: any) => activeAccountIds.has(a.id)));
-      }
-      return res.json({ status: 'SYNCING', message: 'Sync already in progress' });
+    if (globalScope.SYNC_IN_PROGRESS_BY_USER.has(userId)) {
+      const cached = globalScope.ACCOUNT_LIST_CACHE_BY_USER.get(userId);
+      if (cached) return res.json(cached.filter((a: any) => activeAccountIds.has(a.id)));
+      return res.json({ status: 'SYNCING', message: 'Sync in progress' });
     }
 
-    globalScope.SYNC_IN_PROGRESS = true;
-    setTimeout(() => globalScope.SYNC_IN_PROGRESS = false, 5000);
+    globalScope.SYNC_IN_PROGRESS_BY_USER.add(userId);
+    // Safety timeout
+    setTimeout(() => globalScope.SYNC_IN_PROGRESS_BY_USER.delete(userId), 20000);
 
     try {
       const response = await safeMetaApiCall(() => 
@@ -1338,30 +1356,49 @@ app.get("/api/accounts", async (req, res) => {
         
         return {
           id: accountId,
-          _id: accountId,
           name: acc.name || acc._data?.name,
           platform: (acc.version || acc._data?.version) === 5 || (acc.version || acc._data?.version) === '5' || String(acc.platform || acc._data?.platform).includes('mt5') ? 'mt5' : 'mt4',
           login: acc.login || acc._data?.login,
+          server: acc.server || acc._data?.server,
           connectionStatus: acc.connectionStatus || acc._data?.connectionStatus || 'DISCONNECTED',
           state: acc.state || acc._data?.state,
-          balance: info.balance !== undefined ? Number(info.balance) : null,
-          equity: info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : null),
+          balance: info.balance !== undefined ? Number(info.balance) : 0,
+          equity: info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : 0),
+          margin: info.margin !== undefined ? Number(info.margin) : 0,
+          freeMargin: info.freeMargin !== undefined ? Number(info.freeMargin) : 0,
           currency: info.currency || 'USD'
         };
       });
 
-      globalScope.ACCOUNT_LIST_CACHE = allParsedAccounts;
+      globalScope.ACCOUNT_LIST_CACHE_BY_USER.set(userId, allParsedAccounts);
       res.json(allParsedAccounts.filter((a: any) => activeAccountIds.has(a.id)));
     } catch (err: any) {
-      console.error("[SDK ERROR] Native Rejection:", err);
-      if (globalScope.ACCOUNT_LIST_CACHE) {
-        return res.json(globalScope.ACCOUNT_LIST_CACHE.filter((a: any) => activeAccountIds.has(a.id)));
+      console.error("[SDK ERROR] Native Rejection (Isolating):", err);
+      const cached = globalScope.ACCOUNT_LIST_CACHE_BY_USER.get(userId);
+      if (cached && cached.length > 0) {
+        return res.json(cached.filter((a: any) => activeAccountIds.has(a.id)));
       }
+      
       let errMsg = err.message || "";
-      errMsg = sanitizeError(errMsg);
-      res.status(500).json({ error: "CLOUD_REJECTION", message: errMsg });
+      // If it's a transient SDK error, we can try to return what we have in DB leases as placeholders
+      const leases = await TradingController.getActiveLeases(userId);
+      const placeholders = leases.map(l => ({
+          id: l.account_id,
+          name: l.ea_name || "Recovering...",
+          login: "****",
+          server: l.region || "london",
+          connectionStatus: "RECOVERING",
+          state: "DEPLOYED",
+          balance: 0,
+          equity: 0,
+          currency: "USD"
+      }));
+      
+      if (placeholders.length > 0) return res.json(placeholders);
+
+      res.status(500).json({ error: "CLOUD_REJECTION", message: sanitizeError(errMsg) });
     } finally {
-      globalScope.SYNC_IN_PROGRESS = false;
+      globalScope.SYNC_IN_PROGRESS_BY_USER.delete(userId);
     }
   } catch (err: any) {
     res.status(401).json({ error: sanitizeError(err) });
@@ -1434,14 +1471,14 @@ app.post("/api/accounts", async (req, res) => {
       freeMargin: info.freeMargin || 0
     };
     
-    if (globalScope.ACCOUNT_LIST_CACHE) {
-      const existingIdx = globalScope.ACCOUNT_LIST_CACHE.findIndex((a: any) => a.id === accountId);
-      if (existingIdx !== -1) {
-        globalScope.ACCOUNT_LIST_CACHE[existingIdx] = responseObj;
-      } else {
-        globalScope.ACCOUNT_LIST_CACHE.push(responseObj);
-      }
+    const userCache = globalScope.ACCOUNT_LIST_CACHE_BY_USER.get(userId) || [];
+    const existingIdx = userCache.findIndex((a: any) => a.id === accountId);
+    if (existingIdx !== -1) {
+      userCache[existingIdx] = responseObj;
+    } else {
+      userCache.push(responseObj);
     }
+    globalScope.ACCOUNT_LIST_CACHE_BY_USER.set(userId, userCache);
     
     res.json(responseObj);
   } catch (err: any) {
@@ -1476,7 +1513,7 @@ app.delete("/api/account/:accountId/lease", async (req, res) => {
   const { accountId } = req.params;
   try {
     const userId = await getUserIdFromRequest(req);
-    await TradingController.removeLease(accountId);
+    await TradingController.removeLease(accountId, userId);
     res.sendStatus(204);
   } catch (err: any) {
     res.status(500).json({ error: sanitizeError(err) });
@@ -2066,8 +2103,18 @@ async function normalizeSymbol(connection: any, accountId: string, symbol: strin
     const caseInMatch = symbols.find(s => s.toLowerCase() === lowerSymbol);
     if (caseInMatch) return caseInMatch;
     
-    // Suffix match (e.g. XAUUSD -> XAUUSDm)
-    const suffixMatch = symbols.find(s => s.toLowerCase().startsWith(lowerSymbol));
+    // Suffix match (e.g. XAUUSD -> XAUUSDm, XAUUSD.m, XAUUSD#, mXAUUSD)
+    const suffixMatch = symbols.find(s => {
+      const sLower = s.toLowerCase();
+      // Direct matches
+      if (sLower === lowerSymbol) return true;
+      // Predefined suffixes/prefixes
+      if (sLower.startsWith(lowerSymbol + ".") || sLower.startsWith(lowerSymbol + "#") || sLower.startsWith(lowerSymbol + "+")) return true;
+      // General containment with length guard (to prevent matching "USD" in "EURUSD")
+      if (sLower.includes(lowerSymbol) && s.length <= symbol.length + 4) return true;
+      return false;
+    });
+    
     if (suffixMatch) {
       console.log(`[SDK] Symbol Normalization: ${symbol} -> ${suffixMatch}`);
       return suffixMatch;
@@ -2331,8 +2378,24 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
       }
 
       const symbols = await getSymbolsCached(metaapi, accountId);
-      if (symbols.length > 0 && !symbols.includes(settings.symbol)) {
-         return res.status(400).json({ error: `Symbol ${settings.symbol} is not found in your broker's symbol list.` });
+      let isValidSymbol = false;
+      if (symbols.length > 0) {
+         if (symbols.includes(settings.symbol)) {
+            isValidSymbol = true;
+         } else {
+            // Fuzzy match (e.g. suffixes)
+            const match = symbols.find((s: string) => s === settings.symbol || s.startsWith(settings.symbol + ".") || s.startsWith(settings.symbol + "#") || (s.endsWith(settings.symbol) && s.length <= settings.symbol.length + 3));
+            if (match) {
+               console.log(`[ALGO] Normalizing start symbol ${settings.symbol} -> ${match}`);
+               settings.symbol = match;
+               globalScope.STRATEGY_SETTINGS.set(accountId, settings);
+               isValidSymbol = true;
+            }
+         }
+      }
+
+      if (symbols.length > 0 && !isValidSymbol) {
+         return res.status(400).json({ error: `Symbol ${settings.symbol} is not found in your broker's symbol list. Available symbols: ${symbols.slice(0, 10).join(', ')}...` });
       }
     }
 

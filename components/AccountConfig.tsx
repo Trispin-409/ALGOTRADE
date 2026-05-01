@@ -438,6 +438,21 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
     }
   };
 
+  const handleReconnect = async (accountId: string) => {
+    setActionLoading(`${accountId}-reconnect`);
+    try {
+      await safeFetch(`/api/account/${accountId}/deploy`, { 
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      addSystemLog(`COMMAND: Reconnection signal broadcast to Cloud Node for ${accountId}.`);
+    } catch (err: any) {
+      alert(`Reconnect Error: ${err.message}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleNodeAction = async (accountId: string, action: 'deploy' | 'undeploy' | 'redeploy') => {
     setActionLoading(`${accountId}-${action}`);
     try {
