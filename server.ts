@@ -3,6 +3,7 @@ import cors from "cors";
 import axios from "axios";
 import FormData from "form-data";
 import https from "https";
+import crypto from "crypto";
 import MetaApiModule from "metaapi.cloud-sdk/esm-node";
 const MetaApi = typeof MetaApiModule === "function" ? MetaApiModule : (MetaApiModule as any).default || MetaApiModule;
 import dotenv from "dotenv";
@@ -108,7 +109,7 @@ globalScope.RPC_CONNECTIONS = REGISTRY.rpc;
 globalScope.ACCOUNT_READY = globalScope.ACCOUNT_READY || new Map();
 globalScope.ACTIVE_POSITIONS = globalScope.ACTIVE_POSITIONS || new Map<string, Map<string, any>>();
 
-const EA_JOURNAL_STORE: any[] = [];
+const TRADING_JOURNAL_STORE: any[] = [];
 const MAX_LOGS = 500;
 
 let cachedProvisioningIp: string | null = null;
@@ -133,9 +134,9 @@ async function resolveProvisioningHost() {
 }
 
 // EA Journal Logging Utility
-export function logEA(accountId: string | null, level: string, message: string, metadata: any = {}, source: 'EA_CLOUD' | 'NODE_STRATEGY' | 'SYSTEM' = 'SYSTEM') {
+export function logMessage(accountId: string | null, level: string, message: string, metadata: any = {}, source: 'NODE_STRATEGY' | 'NODE_STRATEGY' | 'SYSTEM' = 'SYSTEM') {
   const log = {
-    type: 'EA_JOURNAL',
+    type: 'TRADING_JOURNAL',
     accountId,
     level,
     message,
@@ -144,12 +145,12 @@ export function logEA(accountId: string | null, level: string, message: string, 
     timestamp: new Date().toISOString()
   };
   
-  EA_JOURNAL_STORE.push(log);
-  if (EA_JOURNAL_STORE.length > MAX_LOGS) {
-    EA_JOURNAL_STORE.shift();
+  TRADING_JOURNAL_STORE.push(log);
+  if (TRADING_JOURNAL_STORE.length > MAX_LOGS) {
+    TRADING_JOURNAL_STORE.shift();
   }
 
-  console.log(`[EA_JOURNAL][${level}] ${message}`, Object.keys(metadata).length ? metadata : '');
+  console.log(`[TRADING_JOURNAL][${level}] ${message}`, Object.keys(metadata).length ? metadata : '');
   broadcast(log);
 }
 globalScope.STREAM_INITIALIZED = globalScope.STREAM_INITIALIZED || new Map();
@@ -354,7 +355,21 @@ setInterval(async () => {
     }
     
     if (!isServerConnected || !isBrokerConnected || !isSynchronized) {
-      console.log(`[MONITOR] ${accountId} status: [Server:${isServerConnected} Broker:${isBrokerConnected} Sync:${isSynchronized}]. SDK typically auto-recovers.`);
+      const now = Date.now();
+      const lastRec = globalScope.LAST_MONITOR_RECOVERY?.get(accountId) || 0;
+      
+      console.log(`[MONITOR] ${accountId} status: [Server:${isServerConnected} Broker:${isBrokerConnected} Sync:${isSynchronized}].`);
+      
+      // If disconnected from server for > 60s, trigger a fresh connect attempt
+      if (!isServerConnected && (now - lastRec > 60000)) {
+         console.warn(`[MONITOR] [RECOVERY] Triggering fresh setupStreaming for ${accountId} due to persistent disconnection.`);
+         globalScope.LAST_MONITOR_RECOVERY = globalScope.LAST_MONITOR_RECOVERY || new Map();
+         globalScope.LAST_MONITOR_RECOVERY.set(accountId, now);
+         
+         // Clear old connection to force fresh setup
+         REGISTRY.stream.delete(accountId);
+         setupStreaming(accountId).catch(e => console.error(`[MONITOR] Recovery path failed for ${accountId}:`, e.message));
+      }
       
       // If we are disconnected from broker for too long, try a manual poke
       if (isServerConnected && !isBrokerConnected) {
@@ -489,8 +504,11 @@ async function getRPCConnection(accountId: string) {
   const existing = REGISTRY.rpc.get(accountId);
   if (existing && !existing.isClosed) {
     try {
-      // Small check to ensure connection is actually responsive
-      await existing.waitSynchronized();
+      try {
+        await existing.waitSynchronized({ timeoutInSeconds: 30 });
+      } catch (e: any) {
+        console.warn(`[SDK_RPC] waitSynchronized warning: ${e.message}`);
+      }
       return existing;
     } catch (e) {
       console.warn(`[SDK_RPC] RPC connection stale for ${accountId}, reconnecting...`);
@@ -508,7 +526,11 @@ async function getRPCConnection(accountId: string) {
       const rpc = account.getRPCConnection();
 
       await rpc.connect();
-      await rpc.waitSynchronized();
+      try {
+        await rpc.waitSynchronized({ timeoutInSeconds: 300 });
+      } catch(e: any) {
+        console.warn(`[SDK_RPC] Wait synchronized warning: ${e.message}`);
+      }
 
       REGISTRY.rpc.set(accountId, rpc);
       return rpc;
@@ -573,7 +595,7 @@ function createMetaApiListener(accountId: string) {
       const lastRec = globalScope.LAST_CONN_LOG?.get(accountId) || 0;
       if (now - lastRec > 60000) {
         console.log(`[SDK] CONNECTED to server ${instanceIndex} for ${accountId}`);
-        logEA(accountId, "INFO", "SDK server connection established", {}, 'SYSTEM');
+        logMessage(accountId, "INFO", "SDK server connection established", {}, 'SYSTEM');
         if (!globalScope.LAST_CONN_LOG) globalScope.LAST_CONN_LOG = new Map();
         globalScope.LAST_CONN_LOG.set(accountId, now);
       }
@@ -584,15 +606,43 @@ function createMetaApiListener(accountId: string) {
       const lastRec = globalScope.LAST_DISCONN_LOG?.get(accountId) || 0;
       if (now - lastRec > 60000) {
         console.warn(`[SDK] DISCONNECTED from server ${instanceIndex} for ${accountId}`);
-        logEA(accountId, "INFO", "SDK server connection lost (Recovering...)", {}, 'SYSTEM');
+        logMessage(accountId, "INFO", "SDK server connection lost (Recovering...)", {}, 'SYSTEM');
         if (!globalScope.LAST_DISCONN_LOG) globalScope.LAST_DISCONN_LOG = new Map();
         globalScope.LAST_DISCONN_LOG.set(accountId, now);
       }
       broadcast({ type: 'status:update', accountId, status: 'DISCONNECTED_FROM_SERVER' });
+      
+      // Proactive hint to SDK to keep looking for connection
+      const connection = REGISTRY.stream.get(accountId);
+      if (connection && !connection.isClosed && !connection.synchronized) {
+         console.log(`[SDK] [RECONNECT_WATCHDOG] Connection ${accountId} is disconnected but open. Monitoring self-healing...`);
+      }
+    },
+    onError: async (error: any) => {
+      const msg = error?.message || String(error);
+      console.error(`[SDK] [STREAM_ERROR] Account ${accountId}: ${msg}`);
+      logMessage(accountId, "ERROR", `Stream Error: ${msg}`, {}, 'SYSTEM');
+      
+      if (msg.includes('transport close') || msg.includes('lost connection')) {
+         console.warn(`[SDK] [RECOVERY] Critical transport failure for ${accountId}. Releasing connection for fresh setup.`);
+         REGISTRY.stream.delete(accountId); // Force setupStreaming to create a fresh one next time
+      }
+    },
+    onStreamError: async (error: any) => {
+       const msg = error?.message || String(error);
+       console.error(`[SDK] [STREAM_ERROR_V2] Account ${accountId}: ${msg}`);
+       if (msg.includes('transport close')) {
+          REGISTRY.stream.delete(accountId);
+       }
+    },
+    onStreamClosed: async () => {
+       console.log(`[SDK] [STREAM_CLOSED] Account ${accountId}. Clearing registry.`);
+       REGISTRY.stream.delete(accountId);
+       globalScope.STREAM_READY.set(accountId, false);
     },
     onBrokerConnectionStatusChanged: async (instanceIndex: string, connected: boolean) => {
       console.log(`[SDK] Broker connection status for ${accountId}: ${connected ? 'CONNECTED' : 'DISCONNECTED'}`);
-      logEA(accountId, connected ? "SUCCESS" : "INFO", `Broker ${connected ? 'Connected' : 'Disconnected (Booting/Sleeping)'}`, {}, 'SYSTEM');
+      logMessage(accountId, connected ? "SUCCESS" : "INFO", `Broker ${connected ? 'Connected' : 'Disconnected (Booting/Sleeping)'}`, {}, 'SYSTEM');
       broadcast({ type: 'status:update', accountId, status: connected ? 'READY' : 'OFFLINE_FROM_BROKER' });
       globalScope.READY_STATE.set(accountId, connected);
     },
@@ -601,9 +651,9 @@ function createMetaApiListener(accountId: string) {
       broadcast({ type: 'status:update', accountId, status: 'SYNCING' });
     },
     onSynchronizationFinished: async (instanceIndex: string) => {
-      const source = getExecutionMode(accountId) === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
+      const source = 'NODE_STRATEGY';
       console.log(`[SDK] ✅ SYNCHRONIZED for ${accountId}`);
-      logEA(accountId, "SUCCESS", "Account synchronization finished", {}, source);
+      logMessage(accountId, "SUCCESS", "Account synchronization finished", {}, source);
       
       globalScope.STREAM_READY.set(accountId, true);
       REGISTRY.locked.set(accountId, true);
@@ -676,9 +726,9 @@ function createMetaApiListener(accountId: string) {
                 // Also keep LATEST_CANDLES map updated for compatibility
                 globalScope.LATEST_CANDLES.set(key, buffer);
 
-                const mode = getExecutionMode(accountId);
-                const source = mode === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
-                logEA(accountId, "DATA", `[${mode}] Market data flow updated`, {
+                const mode = 'STRATEGY';
+                const source = 'NODE_STRATEGY';
+                logMessage(accountId, "DATA", `[${mode}] Market data flow updated`, {
                   count: buffer.length,
                   symbol,
                   time: lastCandle.time
@@ -707,9 +757,9 @@ function createMetaApiListener(accountId: string) {
       const isNew = !pMap.has(position.id);
       pMap.set(position.id, position);
       
-      const source = getExecutionMode(accountId) === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
+      const source = 'NODE_STRATEGY';
       if (isNew) {
-         logEA(accountId, 'EXECUTION', `Position Opened ${position.symbol} ${position.volume}`, { id: position.id }, source);
+         logMessage(accountId, 'EXECUTION', `Position Opened ${position.symbol} ${position.volume}`, { id: position.id }, source);
       }
       broadcast({ type: 'POSITION_UPDATE', accountId, data: position });
     },
@@ -719,8 +769,8 @@ function createMetaApiListener(accountId: string) {
         pMap.delete(positionId);
       }
       
-      const source = getExecutionMode(accountId) === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
-      logEA(accountId, 'INFO', `Position Closed ${positionId}`, {}, source);
+      const source = 'NODE_STRATEGY';
+      logMessage(accountId, 'INFO', `Position Closed ${positionId}`, {}, source);
       broadcast({ type: 'POSITION_REMOVED', accountId, data: { id: positionId } });
     },
     onHistoryOrderAdded: async (instanceIndex: string, historyOrder: any) => {
@@ -745,14 +795,14 @@ function createMetaApiListener(accountId: string) {
 function createEAExpertLogListener(accountId: string) {
   const handler = {
     onLog: async (log: any) => {
-      logEA(accountId, log.type === 'error' ? 'ERROR' : 'INFO', `[EA] ${log.message}`, { 
+      logMessage(accountId, log.type === 'error' ? 'ERROR' : 'INFO', `[EA] ${log.message}`, { 
         ea: log.expertAdvisorName, 
         symbol: log.symbol,
         time: log.time 
-      }, 'EA_CLOUD');
+      }, 'NODE_STRATEGY');
     },
     onError: async (error: any) => {
-      logEA(accountId, 'ERROR', `EA Terminal Error: ${error.message}`, {}, 'EA_CLOUD');
+      logMessage(accountId, 'ERROR', `EA Terminal Error: ${error.message}`, {}, 'NODE_STRATEGY');
     }
   };
 
@@ -785,7 +835,11 @@ async function setupStreaming(accountId: string) {
   if (existing && !existing.isClosed) {
     try {
       if (existing.synchronized && existing.terminalState?.connectedToBroker) return existing;
-      await existing.waitSynchronized();
+      try {
+         await existing.waitSynchronized({ timeoutInSeconds: 30 });
+      } catch(e: any) {
+         console.warn(`[SDK] waitSynchronized warning: ${e.message}`);
+      }
       return existing;
     } catch (e) {
       console.warn(`[SDK] Error reusing connection for ${accountId}, attempting fresh connect...`);
@@ -858,7 +912,11 @@ async function setupStreaming(accountId: string) {
       
       // 3. Wait Synchronized
       console.log(`[SDK] Waiting for synchronization: ${accountId}...`);
-      await connection.waitSynchronized();
+      try {
+        await connection.waitSynchronized({ timeoutInSeconds: 300 });
+      } catch(e: any) {
+        console.warn(`[SDK] waitSynchronized warning: ${e.message}`);
+      }
 
       // EXTRA: Ensure true broker connectivity before considering ready
       await waitForTrueConnection(connection, accountId);
@@ -894,7 +952,11 @@ app.get("/api/token", (req, res) => {
 // Market Data Subscription Helper (Locked Singleton Pattern)
 async function waitForTrueConnection(connection: any, accountId: string) {
   console.log(`[STABILIZER] Hard synchronization barrier engaged for ${accountId}...`);
-  await connection.waitSynchronized();
+  try {
+    await connection.waitSynchronized({ timeoutInSeconds: 300 });
+  } catch(e: any) {
+    console.warn(`[STABILIZER] waitSynchronized barrier warning: ${e.message}`);
+  }
 
   // Retry logic: 5 minutes timeout for cold starts/broker reconnects
   let retries = 0;
@@ -955,8 +1017,8 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
   for (let i = 0; i < 15; i++) {
     try {
       // Check broker connection state before every attempt
-      if (connection.terminalState && connection.terminalState.connectedToBroker === false) {
-        console.log(`[STREAM] Broker disconnected for ${accountId}. Waiting for reconnection... (Attempt ${i+1})`);
+      if (!connection.terminalState || connection.terminalState.connectedToBroker !== true || connection.synchronized !== true) {
+        console.log(`[STREAM] Broker disconnected or syncing for ${accountId}. Waiting... (Attempt ${i+1})`);
         await new Promise(r => setTimeout(r, 10000));
         continue;
       }
@@ -1288,6 +1350,207 @@ async function startMarketStream(accountId: string, symbol: string, timeframe: s
   return promise;
 }
 
+async function activateUserAutomations(userId: string, limit: number) {
+  try {
+    if (!adminSupabase) return;
+    
+    // Find unassigned accounts if user doesn't have enough leases
+    const currentLeases = await TradingController.getActiveLeases(userId);
+    let assignedCount = currentLeases.length;
+    
+    // If we need to assign more accounts from an unassigned pool
+    if (assignedCount < limit && metaapi) {
+        // Fetch all accounts from MetaApi
+        const rawResponse = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
+        const allAccounts = Array.isArray(rawResponse) ? rawResponse : rawResponse?.items ? rawResponse.items : rawResponse?.data ? rawResponse.data : [];
+        
+        // Find which accounts are already leased by ANYONE
+        const { data: allLeases } = await adminSupabase.from("ea_leases").select("account_id");
+        const leasedIds = new Set((allLeases || []).map(l => l.account_id));
+        
+        const unassignedAccounts = allAccounts.filter((a: any) => {
+            const accId = a.id || a._data?.id || a._id;
+            return !leasedIds.has(accId);
+        });
+        
+        for (const account of unassignedAccounts) {
+            if (assignedCount >= limit) break;
+            const accountId = account.id || account._data?.id || account._id;
+            
+            // Attach account to user
+            await TradingController.createLease(userId, accountId, 'DEFAULT', 'london');
+            assignedCount++;
+        }
+    }
+    
+    // Now trigger EA deployments and algo sessions for all their leases
+    const finalLeases = await TradingController.getActiveLeases(userId);
+    
+    for (const lease of finalLeases) {
+       const accountId = lease.account_id;
+       await TradingController.updateEAStatus(accountId, userId, true, 'DEPLOYED');
+       await TradingController.setAlgoRunning(accountId, userId, true);
+       
+       broadcast({ type: 'status:update', accountId, status: 'READY' });
+       broadcast({ type: 'ACCOUNT_READY', accountId, status: 'READY' });
+       broadcast({ type: 'trading:started', accountId, userId });
+    }
+    
+  } catch(e: any) {
+    console.error("[AUTOMATION] Failed to run automations:", e.message);
+  }
+}
+
+// ============== SAAS & SUBSCRIPTION ENDPOINTS ==============
+app.post("/api/payfast/webhook", async (req, res) => {
+  try {
+    const pfData = req.body;
+    let pfParamString = "";
+    Object.keys(pfData).sort().forEach(key => {
+      if(key !== "signature"){
+        pfParamString += `${key}=${encodeURIComponent(pfData[key].trim()).replace(/%20/g, "+")}&`;
+      }
+    });
+    pfParamString = pfParamString.slice(0, -1);
+    
+    const passPhrase = process.env.PAYFAST_PASSPHRASE || "";
+    if (passPhrase) {
+        pfParamString += `&passphrase=${encodeURIComponent(passPhrase.trim()).replace(/%20/g, "+")}`;
+    }
+    
+    const signature = crypto.createHash("md5").update(pfParamString).digest("hex");
+    if (signature !== pfData.signature) {
+       console.error("[PAYFAST] Invalid signature");
+       return res.status(400).send("Invalid signature");
+    }
+
+    const userId = pfData.custom_str1;
+    const planType = pfData.custom_str2;
+    const paymentStatus = pfData.payment_status;
+    const amountGross = parseFloat(pfData.amount_gross);
+
+    const plans: Record<string, number> = { 'Starter': 550, 'Pro': 899, 'Elite': 1199 };
+    const expectedAmount = plans[planType];
+    
+    if (adminSupabase) {
+      await adminSupabase.from("payment_logs").insert({
+         user_id: userId,
+         reference: pfData.pf_payment_id,
+         amount: amountGross,
+         status: paymentStatus,
+         payload: pfData
+      });
+    }
+
+    if (paymentStatus !== "COMPLETE") return res.status(200).send("Not complete");
+    if (!expectedAmount || amountGross !== expectedAmount) {
+       console.error(`[PAYFAST] Amount mismatch for ${planType}. Expected ${expectedAmount}, got ${amountGross}`);
+       return res.status(400).send("Amount mismatch");
+    }
+   
+    const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
+
+    if (adminSupabase) {
+      await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("user_id", userId).eq("status", "active");
+
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + 30);
+
+      const { error } = await adminSupabase.from("subscriptions").insert({
+        user_id: userId,
+        plan_type: planType,
+        status: 'active',
+        metaapi_account_limit: metaapiAccountLimit,
+        expiry_date: expiryDate.toISOString()
+      });
+
+      if (error) console.error("[PAYFAST] Subscription DB error", error.message);
+    }
+
+    await activateUserAutomations(userId, metaapiAccountLimit);
+
+    broadcast({ type: 'subscription:activated', userId, plan: planType, limit: metaapiAccountLimit });
+    return res.status(200).send("OK");
+  } catch(e: any) {
+    console.error("[PAYFAST] Error:", e.message);
+    res.status(500).send("Server Error");
+  }
+});
+
+app.post("/api/subscription/activate", async (req, res) => {
+   try {
+     const userId = await getUserIdFromRequest(req);
+     const { targetUserId, planType } = req.body;
+     
+     if (!adminSupabase) return res.status(500).json({error: "No DB"});
+     const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
+     if (!roleData || (roleData.role !== 'developer' && roleData.role !== 'admin')) {
+         return res.status(403).json({ error: "Forbidden: Not an admin/developer" });
+     }
+     
+     const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
+
+     await adminSupabase.from("audit_logs").insert({
+       admin_id: userId,
+       action: "activate_subscription",
+       target_user_id: targetUserId,
+       details: { plan_type: planType }
+     });
+
+     await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("user_id", targetUserId).eq("status", "active");
+
+     const expiryDate = new Date();
+     expiryDate.setDate(expiryDate.getDate() + 30);
+
+     await adminSupabase.from("subscriptions").insert({
+        user_id: targetUserId,
+        plan_type: planType,
+        status: 'active',
+        metaapi_account_limit: metaapiAccountLimit,
+        expiry_date: expiryDate.toISOString()
+     });
+
+     await activateUserAutomations(targetUserId, metaapiAccountLimit);
+
+     broadcast({ type: 'subscription:activated', userId: targetUserId, plan: planType, limit: metaapiAccountLimit });
+     res.status(200).json({ success: true, message: `Activated ${planType} for ${targetUserId}` });
+   } catch (e: any) {
+     res.status(500).json({ error: e.message });
+   }
+});
+
+app.get("/api/subscription/status", async (req, res) => {
+   try {
+     const userId = await getUserIdFromRequest(req);
+     if (!adminSupabase) return res.status(500).json({error: "No DB"});
+     const { data } = await adminSupabase.from("subscriptions")
+       .select("*")
+       .eq("user_id", userId)
+       .eq("status", "active")
+       .single();
+     if (data) return res.json(data);
+     res.json({ status: 'inactive' });
+   } catch(e: any) {
+     res.status(500).json({ error: e.message });
+   }
+});
+
+app.get("/api/admin/audit-logs", async (req, res) => {
+   try {
+       const userId = await getUserIdFromRequest(req);
+       if (!adminSupabase) return res.status(500).json({error: "No DB"});
+       const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
+       if (!roleData || (roleData.role !== 'developer' && roleData.role !== 'admin')) {
+           return res.status(403).json({ error: "Forbidden" });
+       }
+       const { data } = await adminSupabase.from("audit_logs").select("*").order("created_at", { ascending: false });
+       res.json(data || []);
+   } catch(e: any) {
+       res.status(500).json({ error: e.message });
+   }
+});
+// ==========================================================
+
 // ACCOUNT FETCH (Direct SDK Call - No hybrid overrides)
 app.get("/api/user/bootstrap", async (req, res) => {
   try {
@@ -1297,7 +1560,34 @@ app.get("/api/user/bootstrap", async (req, res) => {
     // Also fetch execution modes for these accounts
     const modes: Record<string, string> = {};
     for (const lease of leases) {
-        modes[lease.account_id] = getExecutionMode(lease.account_id);
+        modes[lease.account_id] = 'STRATEGY';
+    }
+    
+    let has_active_subscription = false;
+    let subscription_plan = null;
+
+    // DEVELOPER OVERRIDE: trispinblackops@gmail.com always has access
+    const authHeader = req.headers.authorization;
+    if (authHeader && adminSupabase) {
+        const token = authHeader.replace("Bearer ", "");
+        const { data: userData } = await adminSupabase.auth.getUser(token);
+        const userEmail = userData.user?.email || "";
+        if (userEmail.toLowerCase() === "trispinblackops@gmail.com") {
+            has_active_subscription = true;
+            subscription_plan = "Developer";
+        }
+    }
+
+    if (!has_active_subscription && adminSupabase) {
+       const { data: sub } = await adminSupabase.from("subscriptions")
+          .select("plan_type, status")
+          .eq("user_id", userId)
+          .eq("status", "active")
+          .single();
+       if (sub) {
+          has_active_subscription = true;
+          subscription_plan = sub.plan_type;
+       }
     }
     
     res.json({
@@ -1305,7 +1595,9 @@ app.get("/api/user/bootstrap", async (req, res) => {
       ea_leases: leases,
       execution_modes: modes,
       meta_api_url: process.env.VITE_METAAPI_BASE_URL || `http://${req.headers.host}`,
-      ui_state: "READY"
+      ui_state: "READY",
+      has_active_subscription,
+      subscription_plan
     });
   } catch (err: any) {
     res.status(401).json({ error: sanitizeError(err) });
@@ -1313,7 +1605,7 @@ app.get("/api/user/bootstrap", async (req, res) => {
 });
 
 app.get("/api/ea/logs", (req, res) => {
-  res.json(EA_JOURNAL_STORE);
+  res.json(TRADING_JOURNAL_STORE);
 });
 
 app.get("/api/accounts", async (req, res) => {
@@ -1367,13 +1659,23 @@ app.get("/api/accounts", async (req, res) => {
         const accountId = acc.id || acc._data?.id || acc._id;
         const info = acc.accountInformation || acc._data?.accountInformation || {};
         
+        let connectionStatus = acc.connectionStatus || acc._data?.connectionStatus || 'DISCONNECTED';
+        
+        // If our local stream says it's connected, override MetaApi's stale config response
+        const connection = REGISTRY.stream.get(accountId);
+        if (connection && connection.terminalState) {
+           if (connection.terminalState.connected === true && connection.terminalState.connectedToBroker === true) {
+              connectionStatus = 'CONNECTED';
+           }
+        }
+        
         return {
           id: accountId,
           name: acc.name || acc._data?.name,
           platform: (acc.version || acc._data?.version) === 5 || (acc.version || acc._data?.version) === '5' || String(acc.platform || acc._data?.platform).includes('mt5') ? 'mt5' : 'mt4',
           login: acc.login || acc._data?.login,
           server: acc.server || acc._data?.server,
-          connectionStatus: acc.connectionStatus || acc._data?.connectionStatus || 'DISCONNECTED',
+          connectionStatus: connectionStatus,
           state: acc.state || acc._data?.state,
           balance: info.balance !== undefined ? Number(info.balance) : 0,
           equity: info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : 0),
@@ -1424,6 +1726,23 @@ app.get("/api/accounts", async (req, res) => {
 app.post("/api/accounts", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
+    
+    // VALIDATE SAAS LIMITS
+    if (adminSupabase) {
+       const leases = await TradingController.getActiveLeases(userId);
+       const { data: subData } = await adminSupabase.from("subscriptions")
+          .select("metaapi_account_limit")
+          .eq("user_id", userId)
+          .eq("status", "active")
+          .single();
+          
+       const userLimit = subData ? subData.metaapi_account_limit : 0;
+       
+       if (leases.length >= userLimit) {
+           return res.status(403).json({ error: `Subscription limit reached. Please upgrade your plan. Limit: ${userLimit}, Current: ${leases.length}` });
+       }
+    }
+    
     const { login, server, platform, magic } = req.body || {};
     
     // Check if account already exists to prevent duplication
@@ -1565,7 +1884,7 @@ app.post("/api/account/:accountId/deploy", async (req, res) => {
     const effectiveUserId = userId || userIdAuth;
     const existingEA = await TradingController.getEAStatus(accountId, effectiveUserId);
     
-    logEA(accountId, 'INFO', 'Cloud Terminal Deployment sequence initiated in Cloud Hub.', { region: region || 'london' }, 'EA_CLOUD');
+    logMessage(accountId, 'INFO', 'Cloud Terminal Deployment sequence initiated in Cloud Hub.', { region: region || 'london' }, 'NODE_STRATEGY');
 
     if (existingEA?.deployed) {
        return res.status(400).json({ error: "EA already deployed" });
@@ -1592,7 +1911,7 @@ app.post("/api/account/:accountId/undeploy", async (req, res) => {
   const { accountId } = req.params;
   try {
     const userId = await getUserIdFromRequest(req);
-    logEA(accountId, 'INFO', 'Cloud Terminal termination signal broadcast.', {}, 'EA_CLOUD');
+    logMessage(accountId, 'INFO', 'Cloud Terminal termination signal broadcast.', {}, 'NODE_STRATEGY');
     await TradingController.setAlgoRunning(accountId, userId, false);
     await TradingController.updateEAStatus(accountId, userId, false, 'OFFLINE');
     
@@ -1605,8 +1924,8 @@ app.post("/api/account/:accountId/undeploy", async (req, res) => {
   }
 });
 
-app.post("/api/account/:accountId/start-algo", async (req, res) => {
-  const { accountId } = req.params;
+app.post(["/api/account/:accountId/start-algo", "/api/trading/activate"], async (req, res) => {
+  const accountId = req.params.accountId || req.body.accountId;
   try {
     assertReady(accountId);
     assertStream(accountId);
@@ -1621,11 +1940,11 @@ app.post("/api/account/:accountId/start-algo", async (req, res) => {
     
     // Note: We check if deployed, but if it was just deployed we might need a heartbeat
     if (!eaStatus?.deployed) {
-        logEA(accountId, 'WARN', 'EA engine activation attempted but no deployment record found. Checking terminal state...', {}, 'EA_CLOUD');
+        logMessage(accountId, 'WARN', 'EA engine activation attempted but no deployment record found. Checking terminal state...', {}, 'NODE_STRATEGY');
     }
     
     await TradingController.setAlgoRunning(accountId, userId, true);
-    logEA(accountId, 'INFO', '[EA] Cloud Hub: Remote Expert Advisor logic activation sequence engaged.', {}, 'EA_CLOUD');
+    logMessage(accountId, 'INFO', '[EA] Cloud Hub: Remote Expert Advisor logic activation sequence engaged.', {}, 'NODE_STRATEGY');
     
     // Enable Algo Trading on the actual connection for EA mode
     try {
@@ -1641,6 +1960,8 @@ app.post("/api/account/:accountId/start-algo", async (req, res) => {
       console.warn(`[ALGO] Could not enable terminal-side algo trading:`, e);
     }
 
+    broadcast({ type: 'trading:started', accountId, userId });
+
     console.log(`[ALGO] EA Engine Started for ${accountId} 🚀`);
     res.json({ success: true });
   } catch (err: any) {
@@ -1648,11 +1969,11 @@ app.post("/api/account/:accountId/start-algo", async (req, res) => {
   }
 });
 
-app.post("/api/account/:accountId/stop-algo", async (req, res) => {
-  const { accountId } = req.params;
+app.post(["/api/account/:accountId/stop-algo", "/api/trading/stop"], async (req, res) => {
+  const accountId = req.params.accountId || req.body.accountId;
   try {
     const userId = await getUserIdFromRequest(req);
-    logEA(accountId, 'INFO', 'Cloud EA Engine stop sequence engaged.', {}, 'EA_CLOUD');
+    logMessage(accountId, 'INFO', 'Cloud EA Engine stop sequence engaged.', {}, 'NODE_STRATEGY');
     await TradingController.setAlgoRunning(accountId, userId, false);
 
     // Disable Algo Trading on the connection
@@ -1665,355 +1986,17 @@ app.post("/api/account/:accountId/stop-algo", async (req, res) => {
       console.warn(`[ALGO] Could not disable terminal-side algo trading:`, e);
     }
 
+    broadcast({ type: 'trading:stopped', accountId, userId });
+
     console.log(`[ALGO] Stopped for ${accountId}`);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: sanitizeError(err) });
   }
 });
-app.delete("/api/account/:accountId/ea/cleanup", async (req, res) => {
-  const { accountId } = req.params;
-  try {
-    const userId = await getUserIdFromRequest(req);
-    logEA(accountId, 'INFO', 'Global EA cleanup signal received. Extracting all remote expert advisors...', {}, 'EA_CLOUD');
-    
-    const account = await getAccount(accountId);
-    
-    // List all
-    const existingEas = await resilientProvisioning(async () => {
-      if (typeof (account as any).getExpertAdvisors === 'function') {
-        return await (account as any).getExpertAdvisors();
-      }
-      return [];
-    }, "LIST_EAS_CLEANUP");
 
-    if (existingEas && Array.isArray(existingEas)) {
-      for (const ea of existingEas) {
-        const name = ea.expertAdvisorName || ea.name;
-        if (name) {
-          await resilientProvisioning(async () => {
-            if (typeof (account as any).removeExpertAdvisor === 'function') {
-              return await (account as any).removeExpertAdvisor(name);
-            }
-          }, "REMOVE_EA_CLEANUP");
-        }
-      }
-    }
-    
-    logEA(accountId, 'SUCCESS', 'Remote terminal is now clear of all Expert Advisors.', {}, 'EA_CLOUD');
-    res.sendStatus(204);
-  } catch (err: any) {
-    res.status(500).json({ error: sanitizeError(err) });
-  }
-});
 
-app.get("/api/account/:accountId/ea", async (req, res) => {
-  const { accountId } = req.params;
-  try {
-    const userId = await getUserIdFromRequest(req);
-    console.log(`[ORCHESTRATION] Fetching EA list for ${accountId} via SDK...`);
-    
-    // LAYER 2: Orchestration via SDK
-    const account = await getAccount(accountId);
-    
-    const eas = await resilientProvisioning(async () => {
-       if (typeof (account as any).getExpertAdvisors === 'function') {
-         return await (account as any).getExpertAdvisors();
-       } else {
-         console.log(`[ORCHESTRATION] Using REST fallback for LIST_EAS`);
-         const token = process.env.METAAPI_ADMIN_TOKEN;
-         const domains = ['agiliumtrade.agiliumtrade.ai', 'agiliumtrade.ai', 'london-a.agiliumtrade.ai'];
-         let lastError = null;
-         for (const domain of domains) {
-           try {
-             const response = await fetch(`https://mt-provisioning-api-v1.${domain}/users/current/accounts/${accountId}/expert-advisors`, {
-               headers: { 'auth-token': token! }
-             });
-             if (response.ok) return await response.json();
-             lastError = new Error(`REST EA List failed on ${domain}: ${await response.text()}`);
-           } catch (err: any) { lastError = err; }
-         }
-         throw lastError || new Error(`REST EA List failed`);
-       }
-    }, "LIST_EAS");
 
-    res.json(eas);
-  } catch (err: any) {
-    console.error(`[ORCHESTRATION_ERROR] Error listing EAs for ${accountId}:`, err.message);
-    res.status(500).json({ error: sanitizeError(err) });
-  }
-});
-
-app.delete("/api/account/:accountId/ea/:eaName", async (req, res) => {
-  const { accountId, eaName } = req.params;
-  try {
-    const userId = await getUserIdFromRequest(req);
-    console.log(`[ORCHESTRATION] Removing EA ${eaName} for ${accountId} via SDK...`);
-    
-    const account = await getAccount(accountId);
-    await resilientProvisioning(async () => {
-      if (typeof (account as any).removeExpertAdvisor === 'function') {
-        return await (account as any).removeExpertAdvisor(eaName);
-      } else {
-        console.log(`[ORCHESTRATION] Using REST fallback for REMOVE_EA`);
-        const token = process.env.METAAPI_ADMIN_TOKEN;
-        const domains = ['agiliumtrade.agiliumtrade.ai', 'agiliumtrade.ai', 'london-a.agiliumtrade.ai'];
-        let lastError = null;
-        for (const domain of domains) {
-          try {
-            const response = await fetch(`https://mt-provisioning-api-v1.${domain}/users/current/accounts/${accountId}/expert-advisors/${eaName}`, {
-              method: 'DELETE',
-              headers: { 'auth-token': token! }
-            });
-            if (response.ok || response.status === 204) return true;
-            lastError = new Error(`REST EA Remove failed on ${domain}: ${await response.text()}`);
-          } catch (err: any) { lastError = err; }
-         }
-        throw lastError || new Error(`REST EA Remove failed`);
-      }
-    }, "REMOVE_EA");
-
-    res.sendStatus(204);
-  } catch (err: any) {
-    console.error(`[ORCHESTRATION_ERROR] Error removing EA ${eaName} for ${accountId}:`, err.message);
-    res.status(500).json({ error: sanitizeError(err) });
-  }
-});
-
-// REMOVED: /api/accounts/profiles endpoint per instructions (getProvisioningProfiles does not exist in MT API anymore).
-
-app.get("/api/servers/search", async (req, res) => {
-  const { name } = req.query;
-  try {
-    const userId = await getUserIdFromRequest(req);
-    // Since MetaApi SDK might not provide searchServers freely, or the method is different, just return empty object
-    res.json({});
-  } catch (err: any) {
-    res.status(500).json({ error: sanitizeError(err) });
-  }
-});
-
-app.put("/api/account/:accountId/ea/:eaName", async (req, res) => {
-  const { accountId, eaName } = req.params;
-  try {
-    const userId = await getUserIdFromRequest(req);
-    
-    // Enforcement
-    const check = validateExecution(accountId, 'EA_DEPLOYMENT');
-    if (!check.allowed) {
-      return res.status(403).json({ error: check.message });
-    }
-
-    const { symbol, period, inputs } = req.body || {};
-    
-    if (!symbol || !period) {
-      return res.status(400).json({ error: "Validation Error: 'symbol' and 'period' are required fields for EA definition." });
-    }
-
-    console.log(`[ORCHESTRATION] Fresh Start requested. Removing existing EAs for ${accountId}...`);
-    logEA(accountId, 'INFO', 'Fresh Start initiated. Clearing existing Cloud EA definitions...', {}, 'EA_CLOUD');
-
-    const account = await getAccount(accountId);
-    
-    // LAYER 2: FRESH START - Pull out existing EAs
-    try {
-      const existingEas = await resilientProvisioning(async () => {
-        try {
-          if (typeof (account as any).getExpertAdvisors === 'function') {
-            return await (account as any).getExpertAdvisors();
-          }
-        } catch (e: any) {
-          // If the account doesn't support custom EAs (e.g. non-G1), skip cleanup gracefully
-          if (e.message.includes('G1 accounts')) {
-            console.log(`[ORCHESTRATION] Cleanup skipped: ${e.message}`);
-            return [];
-          }
-          throw e;
-        }
-        return [];
-      }, "LIST_EAS_BEFORE_CLEAN");
-
-      if (existingEas && Array.isArray(existingEas)) {
-        for (const ea of existingEas) {
-          const name = ea.expertAdvisorName || ea.name;
-          if (name) {
-            console.log(`[ORCHESTRATION] Removing stale EA: ${name}`);
-            await resilientProvisioning(async () => {
-              try {
-                if (typeof (account as any).removeExpertAdvisor === 'function') {
-                  return await (account as any).removeExpertAdvisor(name);
-                }
-              } catch (e: any) {
-                 console.warn(`[ORCHESTRATION] Failed to remove EA ${name}: ${e.message}`);
-              }
-            }, "REMOVE_STALE_EA");
-          }
-        }
-      }
-    } catch (cleanErr: any) {
-      console.warn(`[ORCHESTRATION] Non-critical: Failed to list/clear existing EAs: ${cleanErr.message}`);
-    }
-
-    console.log(`[ORCHESTRATION] Deploying fresh EA definition: ${eaName}...`);
-    
-    // 1. Ensure synchronization gate
-    const connection = await getRPCConnection(accountId); 
-    const normalizedSymbol = await normalizeSymbol(connection, accountId, symbol);
-
-    const eaData: any = { 
-        symbol: normalizedSymbol, 
-        period: req.body?.period, 
-    };
-    if (inputs && (account as any).type !== 'cloud-g2') eaData.inputs = inputs;
-
-    await resilientProvisioning(async () => {
-      try {
-        if ((account as any).type === 'cloud-g2') {
-          console.log(`[ORCHESTRATION] Skipping EA definition creation for G2, proceeding directly to file upload...`);
-          return true;
-        }
-
-        if (typeof (account as any).updateExpertAdvisor === 'function') {
-          return await (account as any).updateExpertAdvisor(eaName, eaData);
-        } else if (typeof (account as any).createExpertAdvisor === 'function') {
-          const res = await (account as any).createExpertAdvisor(eaName, eaData);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          return res;
-        } else {
-          const token = process.env.METAAPI_ADMIN_TOKEN;
-          
-          const domains = [
-            'agiliumtrade.agiliumtrade.ai',
-            'agiliumtrade.ai',
-            'london-a.agiliumtrade.ai'
-          ];
-          
-          let lastError = null;
-          for (const domain of domains) {
-            try {
-              const url = `https://mt-provisioning-api-v1.${domain}/users/current/accounts/${accountId}/expert-advisors/${eaName}`;
-              console.log(`[REST] Attempting ${eaName} update via ${url}`);
-              const response = await fetch(url, {
-                method: 'PUT',
-                headers: {
-                  'auth-token': token!,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(eaData)
-              });
-              if (response.ok || response.status === 204) return true;
-              const body = await response.text();
-              lastError = new Error(`REST EA Update failed on ${domain}: ${body}`);
-            } catch (err: any) {
-              lastError = err;
-              console.warn(`[REST] Failed to reach ${domain}: ${err.message}`);
-            }
-          }
-          throw lastError || new Error(`REST EA Update failed after trying all domains`);
-        }
-      } catch (err: any) {
-        throw err;
-      }
-    }, "UPDATE_EA");
-
-    res.sendStatus(204);
-  } catch (err: any) {
-    console.error(`[ORCHESTRATION_ERROR] Error updating EA for ${accountId}:`, err.message);
-    res.status(500).json({ error: sanitizeError(err) });
-  }
-});
-
-app.put("/api/account/:accountId/ea/:eaName/file", async (req, res) => {
-  const { accountId, eaName } = req.params;
-
-  // Enforcement
-  const check = validateExecution(accountId, 'EA_DEPLOYMENT');
-  if (!check.allowed) {
-    return res.status(403).json({ error: check.message });
-  }
-
-  const { fileBase64 } = req.body || {};
-  try {
-    const userId = await getUserIdFromRequest(req);
-    console.log(`[ORCHESTRATION] Uploading EA binary for ${eaName} on node ${accountId} via SDK...`);
-    
-    const account = await getAccount(accountId);
-    await getRPCConnection(accountId);
-    const buffer = Buffer.from(fileBase64, 'base64');
-
-    await resilientProvisioning(async () => {
-      const extension = account.version === 4 ? '.ex4' : '.ex5';
-      
-      const tryUpload = async (targetEaName: string) => {
-        // 1. Try SDK Method - If this fails with 404, we'll try the fallback or extension
-        try {
-          if ((account as any)._expertAdvisorClient && typeof (account as any)._expertAdvisorClient.uploadExpertAdvisorFile === 'function') {
-            console.log(`[ORCHESTRATION] Using SDK upload method for ${targetEaName}`);
-            return await (account as any)._expertAdvisorClient.uploadExpertAdvisorFile(accountId, targetEaName, buffer);
-          } else if (typeof (account as any).uploadExpertAdvisorFile === 'function') {
-            return await (account as any).uploadExpertAdvisorFile(targetEaName, buffer);
-          }
-        } catch (sdkErr: any) {
-          console.warn(`[ORCHESTRATION] SDK upload failed for ${targetEaName}: ${sdkErr.message}`);
-        }
-
-        // 2. REST Fallback - Using Multipart Form Data because the API often requires the 'file' field
-        const token = process.env.METAAPI_ADMIN_TOKEN;
-        if (!token) throw new Error("METAAPI_ADMIN_TOKEN is missing");
-        
-        const form = new FormData();
-        form.append('file', buffer, { filename: targetEaName, contentType: 'application/octet-stream' });
-
-        const domains = [
-          `mt-provisioning-api-v1.${account.region || 'london'}.agiliumtrade.ai`,
-          'mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai'
-        ];
-        
-        let lastError = null;
-        for (const d of domains) {
-          try {
-            const url = `https://${d}/users/current/accounts/${accountId}/expert-advisors/${encodeURIComponent(targetEaName)}/file`;
-            console.log(`[REST] Attempting ${targetEaName} upload via ${url} (multipart)`);
-            
-            await axios.put(url, form, {
-              headers: { 
-                'auth-token': token,
-                ...form.getHeaders()
-              },
-              timeout: 45000,
-              httpsAgent: new https.Agent({ rejectUnauthorized: false })
-            });
-            return true;
-          } catch (err: any) {
-            const status = err?.response?.status;
-            console.log(`[REST] Failed ${d} - ${status} ${err.message}`);
-            lastError = err;
-            if (status === 404) break; 
-          }
-        }
-        throw lastError || new Error("Failed to upload EA file on all domains");
-      };
-
-      try {
-        await tryUpload(eaName);
-      } catch (err: any) {
-        if (err?.response?.status === 404 || err.message.includes('404')) {
-          const extension = account.version === 4 ? '.ex4' : '.ex5';
-          if (!eaName.endsWith(extension)) {
-             console.log(`[ORCHESTRATION] 404 encountered for ${eaName}, retrying with extension ${extension}...`);
-             return await tryUpload(`${eaName}${extension}`);
-          }
-        }
-        throw err;
-      }
-    }, "UPLOAD_EA_FILE");
-
-    res.sendStatus(204);
-  } catch (err: any) {
-    console.error(`[ORCHESTRATION_ERROR] Error uploading EA binary:`, err.message);
-    res.status(500).json({ error: sanitizeError(err) });
-  }
-});
 
 app.post("/api/account/:accountId/redeploy", async (req, res) => {
   const { accountId } = req.params;
@@ -2163,7 +2146,7 @@ const resilientProvisioning = async (fn: () => Promise<any>, opName: string, ret
       }
       const backoff = (4 - retries) * 2000;
       console.warn(`[ORCHESTRATION_RETRY] Network failure for ${opName}. Retrying in ${backoff}ms... (${retries} left)`);
-      logEA(null, 'NETWORK_ERROR', `Retrying ${opName} due to connectivity issues: ${err.message}`, { op: opName });
+      logMessage(null, 'NETWORK_ERROR', `Retrying ${opName} due to connectivity issues: ${err.message}`, { op: opName });
       await new Promise(r => setTimeout(r, backoff));
       return resilientProvisioning(fn, opName, retries - 1);
     }
@@ -2182,16 +2165,16 @@ app.post('/api/trade/buy', async (req, res) => {
     // Enforcement
     const check = validateExecution(accountId, 'NODE_TRADE');
     if (!check.allowed) {
-      logEA(accountId, 'ERROR', check.message || 'Execution blocked');
+      logMessage(accountId, 'ERROR', check.message || 'Execution blocked');
       return res.status(403).json({ error: check.message });
     }
 
-    const source = getExecutionMode(accountId) === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
-    logEA(accountId, "SIGNAL", `Buy Signal processed for ${symbol}`, {}, source);
-    logEA(accountId, "EXECUTION", `Executing buy order for ${symbol}`, { lotSize, stopLoss, takeProfit }, source);
+    const source = 'NODE_STRATEGY';
+    logMessage(accountId, "SIGNAL", `Buy Signal processed for ${symbol}`, {}, source);
+    logMessage(accountId, "EXECUTION", `Executing buy order for ${symbol}`, { lotSize, stopLoss, takeProfit }, source);
 
     if (!lotSize || Number(lotSize) <= 0) {
-      logEA(accountId, 'ERROR', "Lot size required and must be positive");
+      logMessage(accountId, 'ERROR', "Lot size required and must be positive");
       return res.status(400).json({ error: "Lot size required and must be positive" });
     }
 
@@ -2221,11 +2204,11 @@ app.post('/api/trade/buy', async (req, res) => {
       { comment: req.body.comment || "ALGOTRADE" }
     );
 
-    logEA(accountId, 'SUCCESS', `Buy executed successfully for ${symbol}`, result);
+    logMessage(accountId, 'SUCCESS', `Buy executed successfully for ${symbol}`, result);
     console.log("[TRADE] BUY SUCCESS", result);
     res.json({ success: true, result });
   } catch (err: any) {
-    logEA(req.body?.accountId || null, 'ERROR', `Buy execution failed: ${err.message}`);
+    logMessage(req.body?.accountId || null, 'ERROR', `Buy execution failed: ${err.message}`);
     console.error("[TRADE] BUY FAILED", err);
     res.status(500).json({ error: sanitizeError(err) });
   }
@@ -2241,16 +2224,16 @@ app.post('/api/trade/sell', async (req, res) => {
     // Enforcement
     const check = validateExecution(accountId, 'NODE_TRADE');
     if (!check.allowed) {
-      logEA(accountId, 'ERROR', check.message || 'Execution blocked');
+      logMessage(accountId, 'ERROR', check.message || 'Execution blocked');
       return res.status(403).json({ error: check.message });
     }
 
-    const source = getExecutionMode(accountId) === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
-    logEA(accountId, "SIGNAL", `Sell Signal processed for ${symbol}`, {}, source);
-    logEA(accountId, "EXECUTION", `Executing sell order for ${symbol}`, { lotSize, stopLoss, takeProfit }, source);
+    const source = 'NODE_STRATEGY';
+    logMessage(accountId, "SIGNAL", `Sell Signal processed for ${symbol}`, {}, source);
+    logMessage(accountId, "EXECUTION", `Executing sell order for ${symbol}`, { lotSize, stopLoss, takeProfit }, source);
 
     if (!lotSize || Number(lotSize) <= 0) {
-      logEA(accountId, 'ERROR', "Lot size required and must be positive");
+      logMessage(accountId, 'ERROR', "Lot size required and must be positive");
       return res.status(400).json({ error: "Lot size required and must be positive" });
     }
 
@@ -2280,11 +2263,11 @@ app.post('/api/trade/sell', async (req, res) => {
       { comment: req.body.comment || "ALGOTRADE" }
     );
 
-    logEA(accountId, 'SUCCESS', `Sell executed successfully for ${symbol}`, result);
+    logMessage(accountId, 'SUCCESS', `Sell executed successfully for ${symbol}`, result);
     console.log("[TRADE] SELL SUCCESS", result);
     res.json({ success: true, result });
   } catch (err: any) {
-    logEA(req.body?.accountId || null, 'ERROR', `Sell execution failed: ${err.message}`);
+    logMessage(req.body?.accountId || null, 'ERROR', `Sell execution failed: ${err.message}`);
     console.error("[TRADE] SELL FAILED", err);
     res.status(500).json({ error: sanitizeError(err) });
   }
@@ -2380,8 +2363,8 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
   const { enabled } = req.body || {};
   try {
     const userId = await getUserIdFromRequest(req);
-    const mode = getExecutionMode(accountId);
-    const source = mode === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
+    const mode = 'STRATEGY';
+    const source = 'NODE_STRATEGY';
     
     if (enabled) {
       // VALIDATION: Ensure symbol is valid before starting
@@ -2415,11 +2398,7 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
     globalScope.ALGO_RUNNING.set(accountId, !!enabled);
     
     if (enabled) {
-      if (mode === 'EA') {
-        logEA(accountId, 'INFO', '[EA] Cloud Hub: Remote logic activation sequence engaged.', {}, 'EA_CLOUD');
-      } else {
-        logEA(accountId, 'INFO', '[STRATEGY] Node Engine: Local analysis cycle started.', {}, 'NODE_STRATEGY');
-      }
+      logMessage(accountId, 'INFO', '[STRATEGY] Node Engine: Local analysis cycle started.', {}, 'NODE_STRATEGY');
 
       // Ensure terminal-side algo trading is enabled
       try {
@@ -2432,7 +2411,7 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
         console.warn(`[ALGO] Could not enable terminal-side algo trading:`, e);
       }
     } else {
-      logEA(accountId, 'INFO', `[${mode}] Execution sequence terminated as requested.`, {}, source);
+      logMessage(accountId, 'INFO', `[${mode}] Execution sequence terminated as requested.`, {}, source);
     }
     
     console.log(`[ALGO] State for ${accountId} set to ${enabled} (${mode})`);
@@ -2522,10 +2501,10 @@ setInterval(() => {
   if (!globalScope.ALGO_RUNNING) return;
   for (const [accountId, isRunning] of globalScope.ALGO_RUNNING.entries()) {
     if (isRunning) {
-      const mode = getExecutionMode(accountId);
+      const mode = 'STRATEGY';
       
       // EA Mode: Skip internal analysis loop.
-      if (mode === 'EA') continue;
+      
 
       // 2. Determine target symbols: STRICT ENFORCEMENT
       const settings = globalScope.STRATEGY_SETTINGS.get(accountId);
@@ -2543,7 +2522,7 @@ setInterval(() => {
       const shouldLogAnalysis = Date.now() - lastAnalysisLog > 30000; // Log every 30 seconds if nothing interesting
 
       if (shouldLogAnalysis) {
-        logEA(accountId, "ANALYSIS", `Scanning market (${activeSymbol})...`, {
+        logMessage(accountId, "ANALYSIS", `Scanning market (${activeSymbol})...`, {
           symbol: activeSymbol,
           bufferSize: buffer.length,
           mode: 'STRATEGY'
@@ -2554,7 +2533,7 @@ setInterval(() => {
       
       if (!buffer || buffer.length < 50) {
         if (shouldLogAnalysis) {
-          logEA(accountId, "WARN", `Waiting for candle stream (Buffer < 50 for ${activeSymbol})...`, { 
+          logMessage(accountId, "WARN", `Waiting for candle stream (Buffer < 50 for ${activeSymbol})...`, { 
             count: buffer?.length || 0,
             symbol: activeSymbol,
             availableSymbols: globalScope.CANDLE_STORE[accountId] ? Object.keys(globalScope.CANDLE_STORE[accountId]) : []
@@ -2573,7 +2552,7 @@ setInterval(() => {
       if (hasOpenPosition) {
         // Only log skip once every few mins to keep journal clean
         if (Date.now() % 30000 < 1000) {
-          logEA(accountId, "SKIP", "Position active", { symbol: activeSymbol }, 'NODE_STRATEGY');
+          logMessage(accountId, "SKIP", "Position active", { symbol: activeSymbol }, 'NODE_STRATEGY');
         }
         continue;
       }
@@ -2591,7 +2570,7 @@ setInterval(() => {
         const detCount = analysis?.detections?.length || 0;
         const zoneCount = analysis?.zones?.length || 0;
         if (detCount > 0 || zoneCount > 0) {
-          logEA(accountId, "ANALYSIS", `Pattern Engine: Detected ${detCount} patterns and ${zoneCount} zones active on ${activeSymbol}.`, {
+          logMessage(accountId, "ANALYSIS", `Pattern Engine: Detected ${detCount} patterns and ${zoneCount} zones active on ${activeSymbol}.`, {
             detections: detCount,
             zones: zoneCount
           }, 'NODE_STRATEGY');
@@ -2628,7 +2607,7 @@ setInterval(() => {
                 const sig = `${accountId}:${activeSymbol}:${d.time}:${d.pattern}`;
                 if (!globalScope.NOTIFIED_PATTERNS.has(sig)) {
                     globalScope.NOTIFIED_PATTERNS.add(sig);
-                    logEA(accountId, "INFO", `Notable Pattern Identified on ${activeSymbol}: ${d.pattern.toUpperCase()}`, { pattern: d.pattern, polarity: d.polarity, close: lastClosed.close }, 'NODE_STRATEGY');
+                    logMessage(accountId, "INFO", `Notable Pattern Identified on ${activeSymbol}: ${d.pattern.toUpperCase()}`, { pattern: d.pattern, polarity: d.polarity, close: lastClosed.close }, 'NODE_STRATEGY');
                 }
             });
         }
@@ -2776,16 +2755,16 @@ setInterval(() => {
 
         if (bullCount > 0 && isValidBuyZone && buyConfidence >= 75 && buyConfidence > sellConfidence) {
             signal = 'BUY';
-            logEA(accountId, "SIGNAL", `STRATEGY BUY (Confidence: ${buyConfidence}%) - Reasons: ${buyConfluences.join(', ')}`, { confidence: buyConfidence, confluences: buyConfluences, close: lastCandle.close }, 'NODE_STRATEGY');
+            logMessage(accountId, "SIGNAL", `STRATEGY BUY (Confidence: ${buyConfidence}%) - Reasons: ${buyConfluences.join(', ')}`, { confidence: buyConfidence, confluences: buyConfluences, close: lastCandle.close }, 'NODE_STRATEGY');
         } else if (bearCount > 0 && isValidSellZone && sellConfidence >= 75 && sellConfidence > buyConfidence) {
             signal = 'SELL';
-            logEA(accountId, "SIGNAL", `STRATEGY SELL (Confidence: ${sellConfidence}%) - Reasons: ${sellConfluences.join(', ')}`, { confidence: sellConfidence, confluences: sellConfluences, close: lastCandle.close }, 'NODE_STRATEGY');
+            logMessage(accountId, "SIGNAL", `STRATEGY SELL (Confidence: ${sellConfidence}%) - Reasons: ${sellConfluences.join(', ')}`, { confidence: sellConfidence, confluences: sellConfluences, close: lastCandle.close }, 'NODE_STRATEGY');
         }
       }
 
       // 5. AUTO-EXECUTION BRIDGE (STRICT LIMITS)
       if (signal) {
-          const mode = getExecutionMode(accountId);
+          const mode = 'STRATEGY';
           if (mode === 'STRATEGY' && globalScope.ALGO_RUNNING.get(accountId)) {
               (async () => {
                   try {
@@ -2798,11 +2777,11 @@ setInterval(() => {
                       const currentTrades = Array.from(positionsMap.values()).filter((p: any) => p.comment === 'ALGOTRADE').length;
 
                       if (currentTrades >= maxTrades) {
-                          if (Date.now() % 5 === 0) logEA(accountId, "SKIP", `Max trade capacity reached (${currentTrades}/${maxTrades})`, {}, 'NODE_STRATEGY');
+                          if (Date.now() % 5 === 0) logMessage(accountId, "SKIP", `Max trade capacity reached (${currentTrades}/${maxTrades})`, {}, 'NODE_STRATEGY');
                           return;
                       }
 
-                      logEA(accountId, "TRADE", `Executing ${signal} on ${activeSymbol}`, { lotSize, currentTrades, maxTrades }, 'NODE_STRATEGY');
+                      logMessage(accountId, "TRADE", `Executing ${signal} on ${activeSymbol}`, { lotSize, currentTrades, maxTrades }, 'NODE_STRATEGY');
                       
                       const connection = await getRPCConnection(accountId);
                       if (connection) {
@@ -2812,11 +2791,11 @@ setInterval(() => {
                           } else {
                               await connection.createMarketSellOrder(activeSymbol, lotSize, 0, 0, orderParams);
                           }
-                          logEA(accountId, "SUCCESS", `Order Executed Successfully`, { signal, symbol: activeSymbol, lotSize }, 'NODE_STRATEGY');
+                          logMessage(accountId, "SUCCESS", `Order Executed Successfully`, { signal, symbol: activeSymbol, lotSize }, 'NODE_STRATEGY');
                           globalScope.LAST_TRADE_TIME.set(`${accountId}:${activeSymbol}`, Date.now());
                       }
                   } catch (e: any) {
-                      logEA(accountId, "ERROR", `Execution Failed: ${e.message}`, { symbol: activeSymbol }, 'NODE_STRATEGY');
+                      logMessage(accountId, "ERROR", `Execution Failed: ${e.message}`, { symbol: activeSymbol }, 'NODE_STRATEGY');
                   }
               })();
           }
@@ -2842,8 +2821,8 @@ async function startServer() {
     console.log("[WS] Client connected");
 
     ws.send(JSON.stringify({
-      type: 'EA_JOURNAL_SNAPSHOT',
-      data: EA_JOURNAL_STORE
+      type: 'TRADING_JOURNAL_SNAPSHOT',
+      data: TRADING_JOURNAL_STORE
     }));
 
     ws.on("message", (msg) => {
@@ -2873,7 +2852,7 @@ async function startServer() {
               ws.send(JSON.stringify({
                   type: 'EXECUTION_MODE_UPDATE',
                   accountId,
-                  mode: getExecutionMode(accountId)
+                  mode: 'STRATEGY'
               }));
 
               if (info) {
@@ -2983,9 +2962,9 @@ async function startServer() {
                    globalScope.CANDLE_STORE[accountId][symbol] = [...history].slice(-300);
                    globalScope.LATEST_CANDLES.set(`${accountId}:${symbol}`, globalScope.CANDLE_STORE[accountId][symbol]);
                    
-                   const hMode = getExecutionMode(accountId);
-                   const hSource = hMode === 'EA' ? 'EA_CLOUD' : 'NODE_STRATEGY';
-                   logEA(accountId, "INFO", `[${hMode}] History stream synchronized for ${symbol}`, { count: globalScope.CANDLE_STORE[accountId][symbol].length }, hSource);
+                   const hMode = 'STRATEGY';
+                   const hSource = 'NODE_STRATEGY';
+                   logMessage(accountId, "INFO", `[${hMode}] History stream synchronized for ${symbol}`, { count: globalScope.CANDLE_STORE[accountId][symbol].length }, hSource);
                 }
 
              } catch(err: any) {
@@ -3052,11 +3031,11 @@ async function startServer() {
            const currentMode = globalScope.EXECUTION_MODES.get(accountId) || 'STRATEGY';
            
            // User wants to lock EA mode for now, so we just allow the switch
-           logEA(accountId, "MODE", `SWITCH REQUESTED: ${currentMode} → ${mode}`, {}, 'SYSTEM');
+           logMessage(accountId, "MODE", `SWITCH REQUESTED: ${currentMode} → ${mode}`, {}, 'SYSTEM');
            
            globalScope.EXECUTION_MODES.set(accountId, mode);
-           logEA(accountId, "MODE", `${mode}_ACTIVE. Execution mode switched successfully.`, { oldMode: currentMode }, 'SYSTEM');
-           logEA(accountId, "EXECUTION_ROUTER", `Mode selected: ${mode}`, { accountId }, 'SYSTEM');
+           logMessage(accountId, "MODE", `${mode}_ACTIVE. Execution mode switched successfully.`, { oldMode: currentMode }, 'SYSTEM');
+           logMessage(accountId, "EXECUTION_ROUTER", `Mode selected: ${mode}`, { accountId }, 'SYSTEM');
            
            ws.send(JSON.stringify({
                type: 'EXECUTION_MODE_UPDATE',

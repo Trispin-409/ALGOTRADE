@@ -57,14 +57,14 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
   }, []);
 
   useEffect(() => {
-    // Listen for EA_JOURNAL
+    // Listen for TRADING_JOURNAL
     const unsub = connectionManager.subscribe((data) => {
-      if (data.type === 'EA_JOURNAL') {
+      if (data.type === 'TRADING_JOURNAL') {
         setLogs(prev => {
           const newLogs = [...prev, data.data || data];
           return newLogs.length > 500 ? newLogs.slice(newLogs.length - 500) : newLogs;
         });
-      } else if (data.type === 'EA_JOURNAL_SNAPSHOT') {
+      } else if (data.type === 'TRADING_JOURNAL_SNAPSHOT') {
         setLogs(prev => {
           const allLogs = [...(data.data || []), ...prev];
           const uniqueLogs = Array.from(new Map(allLogs.map(item => [item.timestamp + item.message, item])).values());
@@ -197,7 +197,12 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
           <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] sm:text-xs">
             {filteredLogs.length === 0 ? (
               <div className="text-slate-500 text-center mt-10">
-                <p>{activeTab === 'STRATEGY' ? 'Core Engine active.' : 'System readiness check...'}</p>
+                <p className="flex items-center justify-center gap-2">
+                  {activeTab === 'STRATEGY' ? 
+                    <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></div> Core Strategy Engine Listening...</> : 
+                    <><div className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></div> System Telemetry Standby</>
+                  }
+                </p>
                 <p className="mt-2 opacity-50 uppercase text-[8px] font-bold">No logs for {activeTab} yet</p>
               </div>
             ) : (

@@ -20,6 +20,7 @@ interface DashboardProps {
   lotSize?: number;
   setLotSize?: (val: number) => void;
   tradeStatus?: string;
+  hasActiveSubscription?: boolean;
 }
 
 import { connectionManager } from '../src/lib/ConnectionManager';
@@ -39,7 +40,8 @@ const Dashboard: React.FC<DashboardProps> = ({
   onToggleAlgo,
   lotSize = 0.01,
   setLotSize,
-  tradeStatus
+  tradeStatus,
+  hasActiveSubscription = true
 }) => {
   const [stats, setStats] = useState<MetaStats | null>(null);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
@@ -131,14 +133,14 @@ const Dashboard: React.FC<DashboardProps> = ({
   const displayCurrency = (totalBalance > 0 || totalEquity > 0) ? resolvedCurrency : lastValidValues.current.currency;
   
   const connectedCount = useMemo(() => 
-    accounts.filter(a => a.connectionStatus === 'CONNECTED' || a.connectionStatus === 'connected').length
+    accounts.filter(a => ['CONNECTED', 'READY'].includes(a.connectionStatus?.toUpperCase())).length
   , [accounts]);
   
   // Choose the first connected account for displaying stats/positions
-  const subscriberAccount = accounts.find(a => a.connectionStatus === 'CONNECTED' || a.connectionStatus === 'connected') || accounts[0];
+  const subscriberAccount = accounts.find(a => ['CONNECTED', 'READY'].includes(a.connectionStatus?.toUpperCase())) || accounts[0];
 
   const fetchStats = useCallback(async () => {
-    if (!subscriberAccount || (subscriberAccount.connectionStatus !== 'CONNECTED' && subscriberAccount.connectionStatus !== 'connected')) {
+    if (!subscriberAccount || !['CONNECTED', 'READY'].includes(subscriberAccount.connectionStatus?.toUpperCase())) {
       setPositions([]);
       setHistory([]);
       return;
@@ -188,6 +190,26 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700 w-full overflow-x-hidden">
+      {!hasActiveSubscription && (
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-amber-500/20 rounded-full">
+              <Zap className="w-6 h-6 text-amber-500" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white">No active plan. Please subscribe to start trading.</h3>
+              <p className="text-sm text-slate-400">Unlock MetaApi connections and live execution.</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => window.location.href = '/pricing'}
+            className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl whitespace-nowrap transition-colors shadow-lg"
+          >
+            View Plans
+          </button>
+        </div>
+      )}
+      
       <div className="flex items-center justify-between px-2">
         <div className="flex flex-col">
           <h2 className="text-lg sm:text-x font-black text-white tracking-tight uppercase italic flex items-center gap-2">

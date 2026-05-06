@@ -24,9 +24,6 @@ interface MarketDataProps {
   isAlgoRunning: boolean;
   tradeStatus: 'idle' | 'executing' | 'success' | 'error';
   connectionStatus: string;
-  executionMode: 'EA' | 'STRATEGY';
-  eaStatus?: { deployed: boolean; status: string };
-  onSwitchMode: (mode: 'EA' | 'STRATEGY') => void;
   onDeploy: () => Promise<void>;
   onUndeploy: () => Promise<void>;
   setActiveTab: (tab: string) => void;
@@ -77,10 +74,7 @@ const MarketData: React.FC<MarketDataProps> = ({
   isAlgoRunning,
   tradeStatus,
   connectionStatus,
-  executionMode,
-  eaStatus,
-  onSwitchMode,
-  onDeploy,
+        onDeploy,
   onUndeploy,
   setActiveTab,
   token,
@@ -441,8 +435,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                   height={500} 
                   deals={deals} 
                   positions={globalPositions}
-                  executionMode={executionMode}
-                  marketAnalysis={marketAnalysis}
+                                    marketAnalysis={marketAnalysis}
                   showAnalysis={showAnalysis}
                   upColor={chartSettings.upColor}
                   downColor={chartSettings.downColor}

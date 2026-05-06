@@ -41,6 +41,7 @@ import { supabase } from './src/lib/supabase';
 import { LoginForm } from './src/components/Auth/LoginForm';
 import { FullScreenLoader } from './src/components/Auth/FullScreenLoader';
 import { useStore } from './src/store';
+import { PricingPage } from './src/components/PricingPage';
 
 // No explicit SDK_URL needed for same-origin SDK proxy
 
@@ -188,7 +189,7 @@ const App: React.FC = () => {
       msg.startsWith('HEALTH:') || 
       msg.startsWith('BROKER:') || 
       msg.startsWith('RPC:') ||
-      msg.startsWith('EA:') ||
+      msg.startsWith('STRATEGY:') ||
       msg.startsWith('DATA:')
     ) && !msg.includes('ERROR') && !msg.includes('FATAL')) {
       return;
@@ -281,6 +282,13 @@ const App: React.FC = () => {
           if (data.accountId === selectedAccountId) {
               setSdkStatus(data.status === 'SYNCHRONIZED' ? 'CONNECTED' : data.status);
           }
+          setAccounts(prev => prev.map(acc => {
+            if (acc.id === data.accountId) {
+              const newStatus = (data.status === 'SYNCHRONIZED' || data.status === 'READY') ? 'CONNECTED' : data.status;
+              return { ...acc, connectionStatus: newStatus };
+            }
+            return acc;
+          }));
       }
       if (data.type === 'ERROR') {
           addLog(`SYSTEM: ${data.message}`);
@@ -291,6 +299,11 @@ const App: React.FC = () => {
       if (data.type === 'ACCOUNT_READY') {
         if (data.accountId) {
           connectionManager.setAccountSyncComplete(data.accountId);
+          
+          setAccounts(prev => prev.map(acc => 
+            acc.id === data.accountId ? { ...acc, connectionStatus: 'CONNECTED', ready: true } : acc
+          ));
+
           // TRIGGER: Re-fetch account status immediately upon sync completion
           verifyAndFetch();
         }
@@ -325,6 +338,7 @@ const App: React.FC = () => {
                 balance: (balance !== undefined && balance !== null) ? Number(balance) : acc.balance,
                 equity: (equity !== undefined && equity !== null) ? Number(equity) : acc.equity,
                 currency: currency !== undefined ? currency : acc.currency,
+                connectionStatus: isNowReady ? 'CONNECTED' : acc.connectionStatus,
                 ready: isNowReady
               };
             }
@@ -334,9 +348,9 @@ const App: React.FC = () => {
         });
       }
 
-      if (data.type === 'EA_JOURNAL') {
+      if (data.type === 'TRADING_JOURNAL') {
         const payloadStr = Object.keys(data.metadata || {}).length > 0 ? JSON.stringify(data.metadata) : '';
-        addLog(`[EA][${data.level}] ${data.message} ${payloadStr}`);
+        addLog(`[STRATEGY][${data.level}] ${data.message} ${payloadStr}`);
         
         // Push notification for signals or major alerts
         if (data.level === 'SIGNAL' || data.level === 'ALERT') {
@@ -362,7 +376,7 @@ const App: React.FC = () => {
             if (data.metadata && data.metadata.confidence) {
                 bodyText = `Confidence: ${data.metadata.confidence}%\nConfluences: ${(data.metadata.confluences || []).join(', ')}`;
             }
-            new Notification(`🔥 EA ${data.level}: ${data.message}`, {
+            new Notification(`🔥 STRATEGY ${data.level}: ${data.message}`, {
               body: bodyText,
               icon: '/vite.svg'
             });
@@ -725,7 +739,7 @@ const App: React.FC = () => {
             ? Number(acc.equity) 
             : (existingAcc?.equity ?? null),
           currency: acc.currency || existingAcc?.currency || 'USD',
-          ready: (acc.connectionStatus === 'CONNECTED') || (acc.balance !== null && Number(acc.balance) > 0) || (existingAcc?.ready || false)
+          ready: (['CONNECTED', 'READY'].includes(acc.connectionStatus?.toUpperCase())) || (acc.balance !== null && Number(acc.balance) > 0) || (existingAcc?.ready || false)
         };
         
         if (accId === selectedAccountId) {
@@ -828,6 +842,12 @@ const App: React.FC = () => {
   }, [selectedAccountId, isAlgoTradeRunning, openPositions, addLog]);
 
   if (loadingAuth) return <FullScreenLoader message="Checking authentication..." />;
+  
+  const path = window.location.pathname;
+  if (path === '/pricing') {
+    return <PricingPage session={session} bootData={bootData} />;
+  }
+  
   if (!session) return (
     <div className="relative flex items-center justify-center min-h-screen bg-[#090b14] overflow-hidden">
       {/* Deep robotic background */}
@@ -840,7 +860,15 @@ const App: React.FC = () => {
       <LoginForm />
     </div>
   );
+  
   if (loadingBootstrap || !bootData) return <FullScreenLoader message="Loading trading workspace..." />;
+
+  // Redirect to pricing if user has no active subscription and is not on the pricing page
+  if (!bootData.has_active_subscription && path !== '/pricing') {
+    window.location.href = '/pricing';
+    return <FullScreenLoader message="Redirecting to pricing..." />;
+  }
+
 
   return (
     <div className="flex h-screen bg-[#02040a] overflow-hidden text-slate-200 cyber-grid">
@@ -946,9 +974,10 @@ const App: React.FC = () => {
                     lotSize={lotSize}
                     setLotSize={setLotSize}
                     tradeStatus={tradeStatus}
+                    hasActiveSubscription={bootData.has_active_subscription}
                   />
                 )}
-                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab('ea-deployer'); }} />}
+                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
                 {activeTab === 'data' && (
                   <ErrorBoundary>
                     <MarketData 
@@ -969,9 +998,6 @@ const App: React.FC = () => {
                       isAlgoRunning={isAlgoTradeRunning}
                       tradeStatus={tradeStatus}
                       connectionStatus={sdkStatus}
-                      executionMode={executionModes[selectedAccountId] || 'EA'}
-                      eaStatus={eaStatuses[selectedAccountId]}
-                      onSwitchMode={handleSwitchMode}
                       onDeploy={handleDeployTerminal}
                       onUndeploy={handleUndeployTerminal}
                       setActiveTab={setActiveTab}

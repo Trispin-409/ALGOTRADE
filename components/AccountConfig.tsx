@@ -692,8 +692,8 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
 
                 <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-3 shrink-0">
                   <div className="flex flex-col items-end gap-1 shrink-0">
-                    <div className={`px-2 sm:px-3 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase border ${acc.connectionStatus === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
-                    {acc.connectionStatus !== 'CONNECTED' && acc.state === 'DEPLOYED' && (
+                    <div className={`px-2 sm:px-3 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase border ${acc.connectionStatus?.toUpperCase() === 'CONNECTED' || acc.connectionStatus?.toUpperCase() === 'READY' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
+                    {acc.connectionStatus?.toUpperCase() !== 'CONNECTED' && acc.connectionStatus?.toUpperCase() !== 'READY' && acc.state === 'DEPLOYED' && (
                       <span className="text-[6px] text-rose-500 font-bold uppercase tracking-tighter">Check Credentials</span>
                     )}
                   </div>
@@ -706,7 +706,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                     >
                       {actionLoading === `${acc.id}-delete` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Hide</span>}
                     </button>
-                    {acc.connectionStatus !== 'CONNECTED' && acc.state === 'DEPLOYED' && (
+                    {acc.connectionStatus?.toUpperCase() !== 'CONNECTED' && acc.connectionStatus?.toUpperCase() !== 'READY' && acc.state === 'DEPLOYED' && (
                       <button 
                         onClick={() => handleReconnect(acc.id)}
                         disabled={actionLoading === `${acc.id}-reconnect`}
