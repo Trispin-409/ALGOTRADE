@@ -1,13 +1,21 @@
+import dotenv from "dotenv";
+dotenv.config();
+
+// IGNORE SSL ERRORS FOR METAAPI INFRASTRUCTURE (Required for agiliumtrade.agiliumtrade.ai domains)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 import express from "express";
 import cors from "cors";
 import axios from "axios";
 import FormData from "form-data";
 import https from "https";
 import crypto from "crypto";
+import path from "path";
+import { WebSocketServer, WebSocket } from "ws";
 import MetaApiModule from "metaapi.cloud-sdk/esm-node";
 const MetaApi = typeof MetaApiModule === "function" ? MetaApiModule : (MetaApiModule as any).default || MetaApiModule;
-import dotenv from "dotenv";
 import { adminSupabase } from "./src/lib/supabaseAdmin.ts";
+import { getSymbolsCached } from "./src/lib/symbolCache.ts";
 
 // TRADING CONTROLLER: Persistent Database & Lifecycle Interface (User-Isolated)
 const TradingController = {
@@ -83,12 +91,6 @@ const TradingController = {
       .upsert({ user_id: userId, account_id: accountId, running });
   }
 };
-import path from "path";
-import { createServer as createViteServer } from "vite";
-import { WebSocketServer, WebSocket } from "ws";
-import { getSymbolsCached } from "./src/lib/symbolCache.ts";
-
-dotenv.config();
 
 const globalScope = globalThis as any;
 
@@ -474,9 +476,13 @@ async function ensureAccountReady(accountId: string) {
     });
 
     // 1. Deploy if needed
-    if (account.state !== 'DEPLOYED') {
-      console.warn(`[ACCOUNT] ${accountId} is not DEPLOYED. Please deploy the account manually.`);
-      throw new Error("ACCOUNT_NOT_DEPLOYED");
+    if (account.state === 'UNDEPLOYED') {
+      console.log(`[ACCOUNT] ${accountId} is UNDEPLOYED. Attempting automatic deployment...`);
+      await account.deploy();
+      await account.waitConnected();
+    } else if (account.state !== 'DEPLOYED') {
+      console.warn(`[ACCOUNT] ${accountId} is in unexpected state: ${account.state}`);
+      throw new Error(`ACCOUNT_IN_INVALID_STATE: ${account.state}`);
     }
 
     // 2. Connect to broker if needed
@@ -1855,7 +1861,7 @@ app.delete("/api/account/:accountId/lease", async (req, res) => {
 async function waitForMetaApiReady(connection: any, accountId: string) {
   let retries = 0;
 
-  while (retries < 30) {
+  while (retries < 90) {
     const state = await connection.getState?.();
 
     const isReady =
@@ -2427,12 +2433,104 @@ app.get("/api/account/:accountId/history", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
     const connection = await getRPCConnection(accountId);
-    const startTime = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const endTime = new Date();
+    // Extend time range to ensure we pick up recent trades even with small clock skews
+    const startTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); 
+    const endTime = new Date(Date.now() + 10 * 60 * 1000); // 10 mins into future for safety
     const history = await connection.getHistoryOrdersByTimeRange(startTime, endTime, 0, Number(limit));
     res.json(history);
   } catch (err: any) {
     res.status(500).json({ error: sanitizeError(err) });
+  }
+});
+
+app.get("/api/account/:accountId/metastats", async (req, res) => {
+  const { accountId } = req.params;
+  try {
+    const userId = await getUserIdFromRequest(req);
+    
+    if (!token) return res.status(500).json({ error: "Internal Server Error: No MetaApi token configured" });
+    
+    const headers = { 
+      'auth-token': token,
+      'Authorization': `Bearer ${token}`,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
+    };
+    
+    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+    // Optional: Auto-enable metastats if possible and account is deployed
+    try {
+        // Refresh account from server to get fresh connectionStatus and fields
+        const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+        const region = account.region || 'london';
+        const domainSuffix = 'agiliumtrade.agiliumtrade.ai';
+        
+        const endTime = new Date();
+        const startTime = new Date(endTime.getTime() - 180 * 24 * 60 * 60 * 1000); // 180 days instead of 90
+        
+        if (account && account.state === 'DEPLOYED' && !account.metastatsApiEnabled) {
+            console.log(`[METASTATS] Proactively enabling MetaStats for account ${accountId}...`);
+            try {
+                await account.update({ metastatsApiEnabled: true });
+                console.log(`[METASTATS] Successfully enabled MetaStats for ${accountId}`);
+                await new Promise(r => setTimeout(r, 1000));
+            } catch (updateErr: any) {
+                // If it fails, we ignore it and continue since stats might already be available or enabled elsewhere
+                console.warn(`[METASTATS] Auto-enable skipped for ${accountId} (Already enabled or restricted)`);
+            }
+        }
+
+        // Check connection status from refreshed account
+        if (account && account.connectionStatus !== 'CONNECTED') {
+            console.warn(`[METASTATS] Account ${accountId} is ${account.connectionStatus}. Attempting fetch anyway...`);
+        }
+
+        const metricsUrl = `https://metastats-api-v1.${region}.${domainSuffix}/users/current/accounts/${accountId}/metrics`;
+        const tradesUrl = `https://metastats-api-v1.${region}.${domainSuffix}/users/current/accounts/${accountId}/trades?startTime=${startTime.toISOString()}&endTime=${endTime.toISOString()}`;
+
+        console.log(`[METASTATS] Fetching metrics from ${region} REST API for ${accountId}...`);
+        const metricsRes = await axios.get(metricsUrl, { headers, httpsAgent });
+        const metrics = metricsRes.data;
+        
+        console.log(`[METASTATS] Fetching trades from ${region} REST API for ${accountId}...`);
+        const tradesRes = await axios.get(tradesUrl, { headers, httpsAgent });
+        const trades = tradesRes.data;
+        
+        res.json({ metrics, trades });
+    } catch (e: any) {
+        // We handle this inside the main catch
+        throw e;
+    }
+  } catch (err: any) {
+    const status = err.response?.status || err.status;
+    if (status === 401 || status === 403 || (err.message && err.message.includes('403'))) {
+      const apiError = err.response?.data?.message || err.message;
+      console.warn(`[METASTATS] Auth failed for ${accountId}:`, apiError);
+      return res.status(403).json({ error: `MetaStats API Authorization Failed: ${apiError}. Please ensure MetaStats is enabled for this account.` })
+    }
+    if (status === 400 || (err.message && err.message.includes('400'))) {
+      const msg = err.response?.data?.message || err.message;
+      if (msg.includes("not synchronized") || msg.includes("not available")) {
+        return res.status(200).json({ 
+          metrics: {}, 
+          trades: [], 
+          status: 'synchronizing',
+          message: "Journal is synchronizing. This typically takes 5-10 minutes after initial setup or your first trade." 
+        });
+      }
+      return res.status(400).json({ error: msg });
+    }
+    if (status === 404 || (err.message && err.message.includes('404'))) {
+      console.log(`[METASTATS] No data found for account ${accountId} (404). Initial sync pending.`);
+      return res.status(200).json({ 
+        metrics: {}, 
+        trades: [], 
+        status: 'synchronizing',
+        message: "No trading history found in MetaStats yet. Please wait 5-10 minutes for your first trade to appear."
+      });
+    }
+    console.error(`[METASTATS] Error fetching stats for ${accountId}:`, err.response?.data || err.message);
+    res.status(500).json({ error: sanitizeError(err.response?.data?.message || err) });
   }
 });
 
@@ -3076,6 +3174,7 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

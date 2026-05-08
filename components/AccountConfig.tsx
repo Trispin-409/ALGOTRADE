@@ -495,7 +495,8 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
         password: formData.password,
         platform: formData.platform === '5' ? 'mt5' : 'mt4',
         type: 'cloud-g2',
-        magic: 10101
+        magic: 10101,
+        metastatsApiEnabled: true
       };
 
       const accountData = await safeFetch(`/api/accounts`, {

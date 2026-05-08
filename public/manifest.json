@@ -1,25 +1,25 @@
 {
   "name": "ALGOTRADE",
-  "short_name": "MT Automation",
-  "description": "Professional MetaTrader 5 Cloud Automation and Analysis",
+  "short_name": "ALGOTRADE",
+  "description": "Enterprise-grade MetaTrader automation hub with real-time SDK telemetry",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#020617",
-  "theme_color": "#6366f1",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "scope": "/",
   "icons": [
     {
-      "src": "/icon.png",
-      "sizes": "192x192 512x512",
+      "src": "/icon-192.png",
+      "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
-  ],
-  "lang": "en",
-  "scope": "/",
-  "display_override": [
-    "standalone",
-    "fullscreen",
-    "window-controls-overlay",
-    "minimal-ui"
   ]
 }

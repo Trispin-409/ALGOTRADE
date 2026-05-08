@@ -6,15 +6,51 @@ interface PricingPageProps {
   bootData: any;
 }
 
+// Set this to 'live' when PayFast verification is complete
+const PAYMENT_MODE = 'test' as 'test' | 'live';
+
+const PAYFAST_CONFIG = {
+  merchant_id: '10000100', // Replace with real ID
+  merchant_key: '46f0cd694581a', // Replace with real key
+  sandbox: true // Toggle to false for production
+};
+
 export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) => {
   const [isSimulating, setIsSimulating] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
   const [step, setStep] = useState<'review' | 'paying' | 'success'>('review');
 
   const handleSubscribe = (plan: any) => {
-    setSelectedPlan(plan);
-    setStep('review');
-    setIsSimulating(true);
+    if (PAYMENT_MODE === 'live') {
+      initiateLivePayment(plan);
+    } else {
+      setSelectedPlan(plan);
+      setStep('review');
+      setIsSimulating(true);
+    }
+  };
+
+  const initiateLivePayment = (plan: any) => {
+    const baseUrl = PAYFAST_CONFIG.sandbox 
+      ? 'https://sandbox.payfast.co.za/eng/process'
+      : 'https://www.payfast.co.za/eng/process';
+
+    const params = new URLSearchParams({
+      merchant_id: PAYFAST_CONFIG.merchant_id,
+      merchant_key: PAYFAST_CONFIG.merchant_key,
+      return_url: `${window.location.origin}/dashboard?payment=success`,
+      cancel_url: `${window.location.origin}/pricing?payment=cancel`,
+      notify_url: `${window.location.origin}/api/webhooks/payfast`,
+      name_first: session?.user?.email?.split('@')[0] || 'Trader',
+      email_address: session?.user?.email || '',
+      m_payment_id: `sub_${Date.now()}`,
+      amount: plan.price.replace('R', ''),
+      item_name: `AlgoTrade ${plan.name} Subscription`,
+      custom_str1: session?.user?.id || '',
+      custom_str2: plan.name
+    });
+
+    window.location.href = `${baseUrl}?${params.toString()}`;
   };
 
   const processSimulation = () => {
@@ -65,6 +101,18 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
 
   return (
     <div className="min-h-screen bg-[#02040a] text-slate-200 py-12 md:py-24 pb-32 px-4 relative overflow-y-auto flex flex-col items-center">
+      {/* Payment Mode Badge - Developer Only/Visibility */}
+      <div className="relative z-20 mb-8">
+        <div className={`px-4 py-1.5 rounded-full border text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 ${
+          PAYMENT_MODE === 'test' 
+            ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' 
+            : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
+        }`}>
+          <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${PAYMENT_MODE === 'test' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+          Gateway: {PAYMENT_MODE} Mode
+        </div>
+      </div>
+
       {/* Background Pattern */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f1a_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f1a_1px,transparent_1px)] bg-[size:20px_30px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_110%)]"></div>
       

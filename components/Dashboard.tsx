@@ -44,19 +44,22 @@ const Dashboard: React.FC<DashboardProps> = ({
   hasActiveSubscription = true
 }) => {
   const [stats, setStats] = useState<MetaStats | null>(null);
+  const [journalTrades, setJournalTrades] = useState<any[]>([]);
+  const [journalMetrics, setJournalMetrics] = useState<any>(null);
+  const [journalError, setJournalError] = useState<string | null>(null);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
   const positions = useStore(state => state.positions);
   const history = useStore(state => state.history);
   const setPositions = useStore(state => state.setPositions);
   const setHistory = useStore(state => state.setHistory);
 
-  const [isSynced, setIsSynced] = useState(tradeStatus === 'READY');
+  const [isSynced, setIsSynced] = useState(isTradingReady);
 
   useEffect(() => {
-    if (tradeStatus === 'READY') {
+    if (isTradingReady) {
       setIsSynced(true);
     }
-  }, [tradeStatus]);
+  }, [isTradingReady]);
 
   useEffect(() => {
     // Component unmounted state handled by global App.tsx subscription
@@ -154,6 +157,25 @@ const Dashboard: React.FC<DashboardProps> = ({
           headers: token ? { Authorization: `Bearer ${token}` } : {}
         });
         setHistory(Array.isArray(historyData) ? historyData : (historyData.historyOrders || []));
+        
+        try {
+          setJournalError(null);
+          const metaStatsData = await safeFetch(`/api/account/${subscriberAccount.id}/metastats`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {}
+          });
+          if (metaStatsData) {
+            setJournalTrades(metaStatsData.trades || []);
+            setJournalMetrics(metaStatsData.metrics || {});
+            if (metaStatsData.message && (!metaStatsData.trades || metaStatsData.trades.length === 0)) {
+              setJournalError(metaStatsData.message);
+            } else {
+              setJournalError(null);
+            }
+          }
+        } catch (e: any) {
+          console.error("Failed to fetch metastats data:", e);
+          if (e.message) setJournalError(e.message);
+        }
       }
     } catch (e) {
       console.error("Failed to fetch terminal data:", e);
@@ -174,6 +196,7 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  const stopRefreshing = () => setIsRefreshing(false);
   const manualRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -184,9 +207,45 @@ const Dashboard: React.FC<DashboardProps> = ({
     } catch (err) {
       console.error(err);
     } finally {
-      setTimeout(() => setIsRefreshing(false), 2000);
+      setTimeout(stopRefreshing, 2000);
     }
   };
+
+  const tradesByDay = useMemo(() => {
+    if (!journalTrades || journalTrades.length === 0) return [];
+    // Filter closed trades only
+    const closed = journalTrades.filter(t => t.closeTime);
+    
+    const groups: Record<string, any[]> = {};
+    closed.forEach(t => {
+      const dateKey = new Date(t.closeTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      if (!groups[dateKey]) groups[dateKey] = [];
+      groups[dateKey].push(t);
+    });
+    
+    return Object.keys(groups)
+      // Sort by actual date
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+      .map(key => {
+        const dayTrades = groups[key];
+        const won = dayTrades.filter(t => ((typeof t.profit === 'number' ? t.profit : t.gain) || 0) > 0).length;
+        const lost = dayTrades.filter(t => ((typeof t.profit === 'number' ? t.profit : t.gain) || 0) < 0).length;
+        const total = won + lost;
+        const wonPercent = total > 0 ? Math.round((won / total) * 100) : 0;
+        const lostPercent = total > 0 ? Math.round((lost / total) * 100) : 0;
+        const totalProfit = dayTrades.reduce((sum, t) => sum + (typeof t.profit === 'number' ? t.profit : t.gain || 0), 0);
+        return {
+          date: key,
+          trades: dayTrades,
+          won,
+          lost,
+          total,
+          wonPercent,
+          lostPercent,
+          totalProfit
+        };
+      });
+  }, [journalTrades]);
 
   return (
     <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700 w-full overflow-x-hidden">
@@ -254,6 +313,118 @@ const Dashboard: React.FC<DashboardProps> = ({
           color="amber" 
         />
       </div>
+
+      {hasActiveSubscription && isStable && (
+        <div className="mt-8 space-y-6">
+          <div className="flex flex-col">
+            <h2 className="text-lg sm:text-xl font-black text-white tracking-tight uppercase italic flex items-center gap-2">
+              <History className="w-5 h-5 text-indigo-500" />
+              Trade Journal
+            </h2>
+            <p className="text-[10px] text-slate-500 font-bold tracking-widest uppercase mt-0.5">Historical Analysis & Metrics</p>
+          </div>
+
+          {journalError ? (
+            <div className="bg-slate-900/40 border border-rose-500/20 p-8 rounded-[24px] shadow-lg text-center">
+              <History className="w-10 h-10 text-rose-500/50 mx-auto mb-3" />
+              <h3 className="text-lg font-black text-rose-400 uppercase tracking-tight">Journal Unavailable</h3>
+              <p className="text-xs text-rose-500/70 font-bold mt-1 px-4">{journalError}</p>
+            </div>
+          ) : (
+             <>
+                {journalMetrics && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-900/60 border border-indigo-500/20 p-4 rounded-2xl shadow-lg backdrop-blur-md mb-6">
+              <div className="flex flex-col">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Total Trades</span>
+                <span className="text-xl font-black text-white">{journalMetrics.trades || 0}</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Win Rate</span>
+                <span className="text-xl font-black text-emerald-400">{journalMetrics.wonTradesPercent ? Math.round(journalMetrics.wonTradesPercent) : 0}%</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Won / Lost</span>
+                <span className="text-xl font-black text-white">
+                  <span className="text-emerald-400">{journalMetrics.wonTrades || 0}</span>
+                  <span className="text-slate-600 mx-2">/</span>
+                  <span className="text-rose-400">{journalMetrics.lostTrades || 0}</span>
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Net Profit</span>
+                <span className={`text-xl font-black ${(journalMetrics.profit ?? journalMetrics.gain) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {(journalMetrics.profit ?? journalMetrics.gain) >= 0 ? '+' : ''}{formatCurrency((journalMetrics.profit ?? journalMetrics.gain) || 0, displayCurrency)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {tradesByDay.length > 0 ? (
+            <div className="space-y-6">
+              {tradesByDay.map(day => (
+              <div key={day.date} className="bg-slate-900/40 border border-white/5 p-6 rounded-[24px] shadow-lg backdrop-blur-md">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 pb-4 border-b border-white/5">
+                  <h3 className="text-lg font-black text-white uppercase tracking-tight">{day.date}</h3>
+                  <div className="flex items-center gap-4 mt-2 sm:mt-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Profit</span>
+                      <span className={`font-black tracking-tight ${day.totalProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {day.totalProfit >= 0 ? '+' : ''}{formatCurrency(day.totalProfit, displayCurrency)}
+                      </span>
+                    </div>
+                    <div className="w-1 h-1 rounded-full bg-slate-700"></div>
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                        <span className="text-xs font-bold text-emerald-400">{day.won} Won ({day.wonPercent}%)</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                        <span className="text-xs font-bold text-rose-400">{day.lost} Lost ({day.lostPercent}%)</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                  {day.trades.map((trade: any) => (
+                    <div key={trade._id} className="bg-slate-800/40 border border-white/5 p-4 rounded-xl hover:bg-slate-800 transition-colors">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-black text-white">{trade.symbol}</span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-widest ${trade.type?.includes('BUY') || trade.type?.toLowerCase() === 'buy' ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                            {trade.type ? trade.type.replace('POSITION_TYPE_', '').replace('ORDER_TYPE_', '') : 'TRADE'}
+                          </span>
+                        </div>
+                      <div className={`text-base font-black tracking-tight mb-3 ${((typeof trade.profit === 'number' ? trade.profit : trade.gain) || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {((typeof trade.profit === 'number' ? trade.profit : trade.gain) || 0) >= 0 ? '+' : ''}{formatCurrency(((typeof trade.profit === 'number' ? trade.profit : trade.gain) || 0), displayCurrency)}
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px] text-slate-500 font-medium">
+                          <span>Open</span>
+                          <span>{new Date(trade.openTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-slate-500 font-medium">
+                          <span>Close</span>
+                          <span>{new Date(trade.closeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            </div>
+          ) : (
+            <div className="bg-slate-900/40 border border-white/5 p-8 rounded-[24px] shadow-lg text-center">
+              <History className="w-10 h-10 text-slate-700 mx-auto mb-3" />
+              <h3 className="text-lg font-black text-slate-400 uppercase tracking-tight">No Recent Trades</h3>
+              <p className="text-xs text-slate-500 font-bold mt-1">There are no closed trades in the past 90 days.</p>
+            </div>
+          )}
+          </>
+          )}
+        </div>
+      )}
     </div>
   );
 };
