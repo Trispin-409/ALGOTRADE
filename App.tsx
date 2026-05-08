@@ -378,7 +378,7 @@ const App: React.FC = () => {
             }
             new Notification(`🔥 STRATEGY ${data.level}: ${data.message}`, {
               body: bodyText,
-              icon: '/vite.svg'
+              icon: '/icon-192.png'
             });
           }
         }
@@ -852,10 +852,19 @@ const App: React.FC = () => {
     <div className="relative flex items-center justify-center min-h-screen bg-[#090b14] overflow-hidden">
       {/* Deep robotic background */}
       <div className="absolute inset-0 z-0">
-        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-slate-900/50 to-cyan-900/20 z-0 mix-blend-overlay"></div>
-        <div className="absolute inset-0 bg-[url('https://storage.googleapis.com/aida-uploads/default/14cb5da6-8f37-4d9e-bdb3-fc14b74bbde8/image.webp')] bg-cover bg-center bg-no-repeat opacity-60 z-0"></div>
-        <div className="absolute inset-0 bg-gradient-to-t from-[#02040a] via-transparent to-transparent z-0 opacity-80"></div>
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:14px_24px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_110%)]"></div>
+        {/* Main robot background image */}
+        <div 
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-80 z-0 scale-105"
+          style={{ 
+            backgroundImage: "url('/bot-logo.png?v=2')",
+            backgroundColor: "#090b14"
+          }}
+        ></div>
+        
+        {/* Gradients on top but more transparent */}
+        <div className="absolute inset-0 bg-gradient-to-br from-[#090b14]/50 via-transparent to-[#1f2a57]/30 z-10"></div>
+        <div className="absolute inset-0 bg-gradient-to-t from-[#090b14] via-transparent to-transparent z-10"></div>
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f1a_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f1a_1px,transparent_1px)] bg-[size:14px_24px] z-10"></div>
       </div>
       <LoginForm />
     </div>

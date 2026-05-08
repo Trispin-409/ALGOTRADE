@@ -63,11 +63,18 @@ export function LoginForm() {
         <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-cyan-500 rounded-tl-xl opacity-70"></div>
         <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-purple-500 rounded-br-xl opacity-70"></div>
 
-        <div className="flex flex-col items-center gap-3 mb-2">
-          <div className="w-20 h-20 rounded-full border-2 border-cyan-500 overflow-hidden shadow-[0_0_20px_rgba(6,182,212,0.3)] bg-slate-900/50">
-            <img src="/regenerated_image_1777449324214.webp" alt="Bot" className="w-full h-full object-cover mix-blend-screen" />
+        <div className="flex flex-col items-center gap-3 mb-6">
+          <div className="w-24 h-24 rounded-2xl border-2 border-cyan-500/50 overflow-hidden shadow-[0_0_30px_rgba(6,182,212,0.2)] bg-slate-900 p-1">
+            <div className="w-full h-full rounded-xl overflow-hidden bg-[#090b14] flex items-center justify-center">
+              <img 
+                src="/bot-logo.png?v=2" 
+                alt="Bot Logo" 
+                className="w-full h-full object-contain"
+                referrerPolicy="no-referrer"
+              />
+            </div>
           </div>
-          <h2 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400 uppercase tracking-[0.2em]">
+          <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400 uppercase tracking-[0.3em]">
             ALGOTRADE
           </h2>
           <div className="flex items-center gap-2 text-xs font-mono text-cyan-500/70 tracking-widest uppercase">

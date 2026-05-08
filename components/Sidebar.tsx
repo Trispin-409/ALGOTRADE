@@ -64,9 +64,9 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center shadow-lg shadow-white/5 shrink-0 overflow-hidden">
             <img 
-              src={chartSettings.bgImageUrl || "/icon-512.png"} 
+              src={chartSettings.bgImageUrl && chartSettings.bgImageUrl !== "https://storage.googleapis.com/aida-uploads/default/14cb5da6-8f37-4d9e-bdb3-fc14b74bbde8/image.webp" ? chartSettings.bgImageUrl : "/bot-logo.png?v=2"} 
               alt="ALGOTRADE Logo" 
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
               referrerPolicy="no-referrer"
             />
           </div>
