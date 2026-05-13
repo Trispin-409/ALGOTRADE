@@ -197,12 +197,12 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
           <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] sm:text-xs">
             {filteredLogs.length === 0 ? (
               <div className="text-slate-500 text-center mt-10">
-                <p className="flex items-center justify-center gap-2">
+                <div className="flex items-center justify-center gap-2">
                   {activeTab === 'STRATEGY' ? 
                     <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></div> Core Strategy Engine Listening...</> : 
                     <><div className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></div> System Telemetry Standby</>
                   }
-                </p>
+                </div>
                 <p className="mt-2 opacity-50 uppercase text-[8px] font-bold">No logs for {activeTab} yet</p>
               </div>
             ) : (

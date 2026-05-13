@@ -28,6 +28,7 @@ import { PlatformType, TradingAccount } from './types';
 import Dashboard from './components/Dashboard';
 import Sidebar from './components/Sidebar';
 import AccountConfig from './components/AccountConfig';
+import News from './components/News';
   // Remove ea-deployer state
 
 import SystemMonitor from './components/SystemMonitor';
@@ -55,6 +56,26 @@ const App: React.FC = () => {
   const setConnectionStatus = useStore(state => state.setConnectionStatus);
   const updateAccount = useStore(state => state.updateAccount);
   const connectionStatus = useStore(state => state.connectionStatus);
+  const globalHistory = useStore(state => state.history);
+
+  // Compute theme based on streak
+  const streakThemeClasses = React.useMemo(() => {
+    if (!globalHistory || globalHistory.length === 0) return 'shadow-[inset_0_0_100px_rgba(0,0,0,0.5)]';
+    let winStreak = 0;
+    let loseStreak = 0;
+    for (const t of globalHistory) {
+      if (t.profit > 0) {
+        if (loseStreak > 0) break;
+        winStreak++;
+      } else if (t.profit < 0) {
+        if (winStreak > 0) break;
+        loseStreak++;
+      }
+    }
+    if (winStreak >= 3) return 'shadow-[inset_0_0_150px_rgba(16,185,129,0.15)] bg-emerald-900/5';
+    if (loseStreak >= 3) return 'shadow-[inset_0_0_150px_rgba(244,63,94,0.15)] bg-rose-900/5';
+    return 'shadow-[inset_0_0_100px_rgba(0,0,0,0.5)]';
+  }, [globalHistory]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -849,24 +870,25 @@ const App: React.FC = () => {
   }
   
   if (!session) return (
-    <div className="relative flex items-center justify-center min-h-screen bg-[#090b14] overflow-hidden">
+    <div className="relative flex items-center justify-center min-h-screen bg-black overflow-hidden">
       {/* Deep robotic background */}
-      <div className="absolute inset-0 z-0">
+      <div className="absolute inset-0 z-0 pointer-events-none">
         {/* Main robot background image */}
         <div 
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-80 z-0 scale-105"
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-90 z-0 scale-105"
           style={{ 
             backgroundImage: "url('/bot-logo.png?v=2')",
-            backgroundColor: "#090b14"
+            backgroundColor: "#000"
           }}
         ></div>
         
-        {/* Gradients on top but more transparent */}
-        <div className="absolute inset-0 bg-gradient-to-br from-[#090b14]/50 via-transparent to-[#1f2a57]/30 z-10"></div>
-        <div className="absolute inset-0 bg-gradient-to-t from-[#090b14] via-transparent to-transparent z-10"></div>
+        {/* Subtle overlays */}
+        <div className="absolute inset-0 bg-black/40 z-10"></div>
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f1a_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f1a_1px,transparent_1px)] bg-[size:14px_24px] z-10"></div>
       </div>
-      <LoginForm />
+      <div className="relative z-20 pointer-events-auto">
+        <LoginForm />
+      </div>
     </div>
   );
   
@@ -880,85 +902,95 @@ const App: React.FC = () => {
 
 
   return (
-    <div className="flex h-screen bg-[#02040a] overflow-hidden text-slate-200 cyber-grid">
-      <ExpertLogPanel executionMode="STRATEGY" />
-      {/* Sidebar - Desktop & Mobile overlay */}
-      <div className={`fixed inset-0 bg-black/60 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
-      <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full`}>
-        <Sidebar activeTab={activeTab} setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} />
+    <div className={`flex h-screen bg-[#02040a] overflow-hidden text-slate-200 transition-colors duration-1000 ${streakThemeClasses}`}>
+      <div className="absolute inset-0 z-0 pointer-events-none opacity-20">
+        <div 
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat z-0"
+          style={{ backgroundImage: "url('/bot-logo.png?v=2')" }}
+        ></div>
+        <div className="absolute inset-0 bg-[#02040a]/80 z-10 cyber-grid"></div>
       </div>
-      
-      <main className="flex-1 flex flex-col overflow-hidden relative w-full">
-        <header className="h-16 sm:h-20 border-b border-white/5 flex items-center justify-between px-3 sm:px-10 bg-slate-900/10 backdrop-blur-3xl shrink-0 z-20">
-          <div className="flex items-center gap-2 sm:gap-4">
-            <button 
-              onClick={() => setIsSidebarOpen(true)} 
-              className="lg:hidden p-2 hover:bg-white/5 rounded-xl text-slate-400"
-            >
-              <Menu className="w-6 h-6" />
-            </button>
-            <h1 className="text-lg sm:text-2xl font-black text-white tracking-tighter uppercase truncate ml-2">
-              ALGOTRADE
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-2 sm:gap-5 flex-1 min-w-0 justify-end">
-            <div className="flex items-center">
-              {tradingStatus === 'BOOTING' || tradingStatus === 'INIT' ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl animate-pulse">
-                  <Cloud className="w-3.5 h-3.5 text-indigo-500 animate-bounce" />
-                  <span className="text-[8px] sm:text-[12px] font-black text-indigo-500 uppercase tracking-widest whitespace-nowrap">BOOTING</span>
-                </div>
-              ) : tradingStatus === 'SYNCING' ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-                  <RefreshCw className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-                  <span className="text-[8px] sm:text-[12px] font-black text-blue-500 uppercase tracking-widest whitespace-nowrap">SYNCING</span>
-                </div>
-              ) : tradingStatus === 'OFFLINE' ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-500/10 border border-rose-500/20 rounded-xl">
-                  <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
-                  <span className="text-[8px] sm:text-[12px] font-black text-rose-500 uppercase tracking-widest whitespace-nowrap">OFFLINE</span>
-                </div>
-              ) : tradingStatus === 'READY' ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.1)]">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                  <span className="text-[8px] sm:text-[12px] font-black text-emerald-500 uppercase tracking-widest whitespace-nowrap">CONNECTED</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-500/10 border border-slate-500/20 rounded-xl">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="text-[8px] sm:text-[12px] font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">{tradingStatus}</span>
-                </div>
-              )}
+
+      <div className="relative z-10 flex w-full h-full">
+        <ExpertLogPanel executionMode="STRATEGY" />
+        
+        {/* Sidebar - Desktop & Mobile overlay */}
+        <div className={`fixed inset-0 bg-black/80 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
+        <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full border-r border-white/5 bg-[#02040a]/90 backdrop-blur-xl`}>
+          <Sidebar activeTab={activeTab} setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} />
+        </div>
+        
+        <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/20">
+          <header className="h-14 sm:h-16 border-b border-white/5 flex items-center justify-between px-3 sm:px-6 bg-[#02040a]/60 backdrop-blur-3xl shrink-0 z-20">
+            <div className="flex items-center gap-2 sm:gap-4">
+              <button 
+                onClick={() => setIsSidebarOpen(true)} 
+                className="lg:hidden p-2 hover:bg-white/5 rounded-lg text-slate-400"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <h1 className="text-base sm:text-xl font-black text-white tracking-widest uppercase truncate ml-2 font-mono">
+                ALGOTRADE
+              </h1>
             </div>
+            
+            <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
+              <div className="flex items-center">
+                {tradingStatus === 'BOOTING' || tradingStatus === 'INIT' ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-md animate-pulse">
+                    <Cloud className="w-3 h-3 text-indigo-500 animate-bounce" />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-indigo-500 uppercase tracking-widest whitespace-nowrap">BOOTING</span>
+                  </div>
+                ) : tradingStatus === 'SYNCING' ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/20 rounded-md">
+                    <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-blue-500 uppercase tracking-widest whitespace-nowrap">SYNCING</span>
+                  </div>
+                ) : tradingStatus === 'OFFLINE' ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-500/10 border border-rose-500/20 rounded-md">
+                    <AlertCircle className="w-3 h-3 text-rose-500" />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-rose-500 uppercase tracking-widest whitespace-nowrap">OFFLINE</span>
+                  </div>
+                ) : tradingStatus === 'READY' ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-md shadow-[0_0_10px_rgba(16,185,129,0.1)]">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-emerald-500 uppercase tracking-widest whitespace-nowrap">CONNECTED</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-500/10 border border-slate-500/20 rounded-md">
+                    <CheckCircle2 className="w-3 h-3 text-slate-500" />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest whitespace-nowrap">{tradingStatus}</span>
+                  </div>
+                )}
+              </div>
 
-             <button
-               onClick={async () => { await supabase.auth.signOut(); window.location.reload(); }}
-               className="hidden sm:inline-block text-[10px] sm:text-xs font-black text-rose-500 hover:text-white uppercase tracking-widest px-3 py-1.5 transition-colors"
-             >
-               Logout
-             </button>
+               <button
+                 onClick={async () => { await supabase.auth.signOut(); window.location.reload(); }}
+                 className="hidden sm:inline-block text-[9px] sm:text-[10px] font-mono font-bold text-rose-500 hover:text-white uppercase tracking-widest px-2 py-1 transition-colors"
+               >
+                 Logout
+               </button>
 
-            <button 
-              onClick={() => setIsDNDActive(!isDNDActive)}
-              title={isDNDActive ? "Disable Do Not Disturb" : "Enable Do Not Disturb"}
-              className={`p-2 sm:p-2.5 rounded-xl border transition-all active:scale-95 ${
-                isDNDActive 
-                  ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' 
-                  : 'hover:bg-white/5 border-white/5 text-slate-400'
-              }`}
-            >
-              {isDNDActive ? <BellOff className="w-4 h-4 sm:w-5 h-5" /> : <Bell className="w-4 h-4 sm:w-5 h-5" />}
-            </button>
+              <button 
+                onClick={() => setIsDNDActive(!isDNDActive)}
+                title={isDNDActive ? "Disable Do Not Disturb" : "Enable Do Not Disturb"}
+                className={`p-1.5 sm:p-2 rounded-lg border transition-all active:scale-95 ${
+                  isDNDActive 
+                    ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' 
+                    : 'hover:bg-white/5 border-white/5 text-slate-400'
+                }`}
+              >
+                {isDNDActive ? <BellOff className="w-3.5 h-3.5 sm:w-4 h-4" /> : <Bell className="w-3.5 h-3.5 sm:w-4 h-4" />}
+              </button>
 
-            <button onClick={verifyAndFetch} className="p-2 sm:p-2.5 hover:bg-white/5 rounded-xl border border-white/5 transition-all active:scale-95">
-              <RefreshCw className={`w-4 h-4 sm:w-5 h-5 text-slate-400 ${isLoading ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
-        </header>
+              <button onClick={verifyAndFetch} className="p-1.5 sm:p-2 hover:bg-white/5 rounded-lg border border-white/5 transition-all active:scale-95">
+                <RefreshCw className={`w-3.5 h-3.5 sm:w-4 h-4 text-slate-400 ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          </header>
 
-        <div className="flex-1 overflow-y-auto p-4 sm:p-8 custom-scrollbar z-10 w-full overflow-x-hidden">
-          <div className="max-w-[1600px] mx-auto w-full space-y-6">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 custom-scrollbar z-10 w-full overflow-x-hidden">
+            <div className="max-w-[1600px] mx-auto w-full space-y-4">
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
@@ -987,7 +1019,7 @@ const App: React.FC = () => {
                   />
                 )}
                 {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
-                {activeTab === 'data' && (
+                <div style={{ display: activeTab === 'data' ? 'block' : 'none' }}>
                   <ErrorBoundary>
                     <MarketData 
                       accounts={accounts} 
@@ -1014,10 +1046,21 @@ const App: React.FC = () => {
                       isLoading={isLoading}
                     />
                   </ErrorBoundary>
-                )}
+                </div>
                 {activeTab === 'settings' && (
                   <ErrorBoundary>
                     <ChartSettings />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'news' && (
+                  <ErrorBoundary>
+                    <News 
+                      activeSymbol={selectedSymbol} 
+                      onSymbolChange={setSelectedSymbol} 
+                      availableBrokerSymbols={availableBrokerSymbols}
+                      selectedAccountId={selectedAccountId || ''}
+                      selectedTimeframe={selectedTimeframe}
+                    />
                   </ErrorBoundary>
                 )}
                 {activeTab === 'logs' && (
@@ -1089,21 +1132,22 @@ const App: React.FC = () => {
         </footer>
 
         {/* Bottom Navigation */}
-        <nav className="h-16 lg:h-20 bg-slate-900 border-t border-white/5 flex items-center justify-center gap-8 sm:gap-16 px-4 shrink-0 z-20 pb-safe w-full">
+        <nav className="h-14 sm:h-16 bg-black/60 backdrop-blur-md border-t border-white/5 flex items-center justify-center gap-6 sm:gap-16 px-4 shrink-0 z-20 pb-safe w-full">
           <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'dashboard' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
-            <Activity className="w-5 h-5 lg:w-6 lg:h-6" />
-            <span className="text-[10px] lg:text-xs font-bold">Metrics</span>
+            <Activity className="w-5 h-5 sm:w-6 sm:h-6" />
+            <span className="text-[10px] font-mono font-bold uppercase">Metrics</span>
           </button>
           <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'data' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
-            <TrendingUp className="w-5 h-5 lg:w-6 lg:h-6" />
-            <span className="text-[10px] lg:text-xs font-bold">Market</span>
+            <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
+            <span className="text-[10px] font-mono font-bold uppercase">Market</span>
           </button>
           <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'accounts' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
-            <Users className="w-5 h-5 lg:w-6 lg:h-6" />
-            <span className="text-[10px] lg:text-xs font-bold">Account</span>
+            <Users className="w-5 h-5 sm:w-6 sm:h-6" />
+            <span className="text-[10px] font-mono font-bold uppercase">Account</span>
           </button>
         </nav>
       </main>
+      </div>
     </div>
   );
 };

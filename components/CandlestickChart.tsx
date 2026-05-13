@@ -85,19 +85,34 @@ export default function CandlestickChart({
   }, [data, latestTick]);
 
   const rightPadding = 65;
-  const mainW = width - rightPadding;
+  const mainW = Math.max(0, width - rightPadding);
   
+  // Panning and zooming
+  const [panX, setPanX] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, panX: 0 });
+
   // Calculate spatial layout
-  const baseCandleW = Math.max(mainW / chartData.length, 4);
+  const baseCandleW = Math.max(mainW / chartData.length, 4) * zoom;
   const candleW = baseCandleW;
   const totalW = chartData.length * candleW;
   
-  // Align right edge organically (no panning allowed)
-  const currentPan = mainW - totalW - 20;
+  // Align right edge organically
+  // panX acts as an additional offset that the user controls
+  const defaultPan = mainW - totalW - 20;
+  const currentPan = defaultPan + panX;
 
   // Calculate rendering constraints dynamically based on visible data bounds
-  const minP = chartData.length ? Math.min(...chartData.map(d => d.low)) * 0.9995 : 0;
-  const maxP = chartData.length ? Math.max(...chartData.map(d => d.high)) * 1.0005 : 1;
+  // We only consider candles that are currently visible on screen to get min/max
+  const visibleCandles = chartData.filter((d, i) => {
+    const x = currentPan + i * candleW + candleW / 2;
+    return x >= -candleW && x <= mainW + candleW;
+  });
+  const renderData = visibleCandles.length > 0 ? visibleCandles : chartData;
+
+  const minP = renderData.length ? Math.min(...renderData.map(d => d.low)) * 0.9995 : 0;
+  const maxP = renderData.length ? Math.max(...renderData.map(d => d.high)) * 1.0005 : 1;
   const range = (maxP - minP) || 1;
 
   // Axis Coordinate Helpers
@@ -105,10 +120,45 @@ export default function CandlestickChart({
   const getX = useCallback((i: number) => currentPan + i * candleW + candleW / 2, [currentPan, candleW]);
   const getPrice = useCallback((y: number) => maxP - (y / height) * range, [maxP, range, height]);
 
-  const handleMove = (e: React.MouseEvent) => {
+  const handleMouseMove = (e: React.MouseEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) setMouse({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    if (rect) {
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setMouse({ x, y });
+      
+      if (isDragging) {
+        setPanX(Math.min(dragStart.panX + (x - dragStart.x), -defaultPan + mainW - 50)); // Allow panning, constrain to not go way past right edge
+      }
+    }
   };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - rect.left, panX });
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    if (containerRef.current) {
+        setZoom(prev => Math.max(0.1, Math.min(prev - e.deltaY * 0.002, 10)));
+    }
+  };
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (el) {
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        return () => el.removeEventListener('wheel', handleWheel);
+    }
+  }, []);
 
   // Convert generic trade timestamps directly into physical canvas X coordinates
   const matchTimeX = useCallback((timeStr: any) => {
@@ -140,7 +190,7 @@ export default function CandlestickChart({
           position: 'relative', 
           overflow: 'hidden', 
           backgroundColor: 'transparent',
-          cursor: 'crosshair', 
+          cursor: isDragging ? 'grabbing' : 'crosshair', 
           borderRadius: '12px', 
           border: '1px solid #1e293b',
           backgroundImage: bgImageUrl ? `url(${bgImageUrl})` : 'none',
@@ -148,8 +198,10 @@ export default function CandlestickChart({
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat'
       }}
-      onMouseLeave={() => setMouse(null)} 
-      onMouseMove={handleMove} 
+      onMouseLeave={() => { setMouse(null); handleMouseUp(); }} 
+      onMouseMove={handleMouseMove}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
     >
       {bgImageUrl && <div className="absolute inset-0 bg-slate-950/70" /> /* overlay to dim background */}
       <svg width={width} height={height} style={{ position: 'absolute', top: 0, left: 0, userSelect: 'none' }}>

@@ -17,8 +17,19 @@ export const formatCurrency = (value: number, currency?: string) => {
 export const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export const getVerifiedSession = async () => {
-  const { data: { session }, error } = await supabase.auth.getSession();
+  let { data: { session }, error } = await supabase.auth.getSession();
   if (error || !session) return null;
+  
+  if (session.expires_at && Date.now() / 1000 > session.expires_at - 10) {
+    // Token is expiring very soon or is expired. Try to refresh.
+    const refresh = await supabase.auth.refreshSession();
+    if (refresh.data.session) {
+      session = refresh.data.session;
+    } else {
+      return null;
+    }
+  }
+  
   return session;
 };
 
@@ -31,8 +42,13 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
   
   const headers = finalOptions.headers as Record<string, string>;
   
-  // If no auth header or it's a generic one, try to get a fresh one
-  if (!headers['Authorization'] || headers['Authorization'].includes('undefined')) {
+  // Always inject fresh auth for internal API routes
+  if (url.startsWith('/api/')) {
+    const session = await getVerifiedSession();
+    if (session) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+  } else if (!headers['Authorization'] || headers['Authorization'].includes('undefined')) {
     const session = await getVerifiedSession();
     if (session) {
       headers['Authorization'] = `Bearer ${session.access_token}`;

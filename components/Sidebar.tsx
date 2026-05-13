@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
@@ -40,6 +40,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   const menuItems = [
     { id: 'accounts', label: 'Accounts', icon: Users },
     { id: 'settings', label: 'Chart Settings', icon: Settings },
+    { id: 'news', label: 'Fundamentals Analysis', icon: Newspaper },
     { id: 'logs', label: 'Logs', icon: Terminal },
   ];
 

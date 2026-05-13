@@ -56,7 +56,10 @@ export function LoginForm() {
       {/* Glow effect behind form */}
       <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-purple-600 rounded-xl blur opacity-20 group-hover:opacity-40 transition duration-1000 group-hover:duration-200"></div>
       
-      <form className="relative flex flex-col gap-6 p-8 bg-slate-900/80 backdrop-blur-xl border-y border-x border-white/10 rounded-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] overflow-hidden">
+      <form 
+        className="relative flex flex-col gap-6 p-8 bg-transparent overflow-hidden"
+        style={{ borderStyle: 'groove', borderRadius: '36px', border: '1px groove rgba(255, 255, 255, 0.2)' }}
+      >
         
         {/* Robotic UI Accent Lines */}
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-500 to-transparent opacity-50"></div>
@@ -64,8 +67,8 @@ export function LoginForm() {
         <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-purple-500 rounded-br-xl opacity-70"></div>
 
         <div className="flex flex-col items-center gap-3 mb-6">
-          <div className="w-24 h-24 rounded-2xl border-2 border-cyan-500/50 overflow-hidden shadow-[0_0_30px_rgba(6,182,212,0.2)] bg-slate-900 p-1">
-            <div className="w-full h-full rounded-xl overflow-hidden bg-[#090b14] flex items-center justify-center">
+          <div className="w-24 h-24 rounded-2xl border-2 border-cyan-500/50 overflow-hidden shadow-[0_0_30px_rgba(6,182,212,0.2)] bg-transparent p-1">
+            <div className="w-full h-full rounded-xl overflow-hidden bg-transparent flex items-center justify-center">
               <img 
                 src="/bot-logo.png?v=2" 
                 alt="Bot Logo" 
@@ -77,9 +80,9 @@ export function LoginForm() {
           <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-400 uppercase tracking-[0.3em]">
             ALGOTRADE
           </h2>
-          <div className="flex items-center gap-2 text-xs font-mono text-cyan-500/70 tracking-widest uppercase">
-            <Terminal className="w-3.5 h-3.5" />
-            <span>{mode === 'login' ? 'Awaiting Authentication' : 'New Identity Registration'}</span>
+          <div className="flex items-center gap-2 text-xs font-mono tracking-widest uppercase">
+            <Terminal className="w-3.5 h-3.5 text-cyan-500/70" />
+            <span style={{ borderColor: '#009cdb', color: '#00dbd7', fontFamily: 'Arial' }}>{mode === 'login' ? 'Awaiting Authentication' : 'New Identity Registration'}</span>
           </div>
         </div>
 
@@ -98,7 +101,8 @@ export function LoginForm() {
                 placeholder="Full Name" 
                 value={fullName} 
                 onChange={(e) => setFullName(e.target.value)} 
-                className="w-full bg-slate-950/50 border border-white/10 rounded-lg py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all" 
+                className="w-full border-b border-white/20 py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/80 transition-all" 
+                style={{ backgroundColor: '#3b3a71' }}
               />
             </div>
           )}
@@ -110,7 +114,8 @@ export function LoginForm() {
               placeholder="Email Address" 
               value={email} 
               onChange={(e) => setEmail(e.target.value)} 
-              className="w-full bg-slate-950/50 border border-white/10 rounded-lg py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all" 
+              className="w-full border-b border-white/20 py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/80 transition-all" 
+              style={{ backgroundColor: '#3b3a71' }}
             />
           </div>
           
@@ -121,7 +126,8 @@ export function LoginForm() {
               placeholder="Password" 
               value={password} 
               onChange={(e) => setPassword(e.target.value)} 
-              className="w-full bg-slate-950/50 border border-white/10 rounded-lg py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all" 
+              className="w-full border-b border-white/20 py-3 px-12 text-sm font-mono text-cyan-50 placeholder:text-slate-500 focus:outline-none focus:border-cyan-500/80 transition-all" 
+              style={{ backgroundColor: '#3b3a71' }}
             />
           </div>
         </div>

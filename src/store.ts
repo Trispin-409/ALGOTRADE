@@ -112,11 +112,14 @@ export const useStore = create<AccountStore>((set) => ({
   
   addCandle: (candle) => set((state) => {
     // Only update LAST candle or push if new
-    const newCandles = [...state.candles];
+    let newCandles = [...state.candles];
     if (newCandles.length > 0 && newCandles[newCandles.length - 1].time === candle.time) {
       newCandles[newCandles.length - 1] = candle;
     } else {
       newCandles.push(candle);
+    }
+    if (newCandles.length > 500) {
+      newCandles = newCandles.slice(-500);
     }
     return { candles: newCandles };
   }),

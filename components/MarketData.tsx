@@ -311,28 +311,28 @@ const MarketData: React.FC<MarketDataProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* SYMBOL MISMATCH ALERT (Global Context Guard) */}
       {!isLoading && availableBrokerSymbols.length > 0 && symbol && !availableBrokerSymbols.includes(symbol) && (
-        <div className="mx-2 bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl flex items-center gap-3 animate-pulse">
-           <Zap className="w-5 h-5 text-amber-500" />
+        <div className="mx-2 bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl flex items-center gap-3 animate-pulse">
+           <Zap className="w-4 h-4 text-amber-500" />
            <div className="flex-1">
-             <p className="text-xs font-bold text-amber-200 uppercase tracking-tighter">Symbol Conflict Detected</p>
-             <p className="text-[10px] text-amber-400/80 uppercase font-medium leading-relaxed">
-               "{symbol}" is not recognized by your broker. Using a mismatched symbol will cause "SYMBOL NOT FOUND" errors.
+             <p className="text-[10px] font-mono font-bold text-amber-200 uppercase tracking-tighter">Symbol Conflict Detected</p>
+             <p className="text-[9px] font-mono text-amber-400/80 uppercase font-medium leading-relaxed">
+               "{symbol}" is not recognized by your broker.
              </p>
            </div>
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 p-2">
-        <div className="flex flex-wrap items-center gap-3 w-full justify-between sm:justify-start">
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Account</span>
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-2 p-2">
+        <div className="flex flex-col sm:flex-row flex-wrap items-start sm:items-center gap-2 w-full justify-between sm:justify-start">
+          <div className="flex flex-col gap-0.5 w-full sm:w-auto">
+            <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Terminal</span>
             <select 
               value={selectedAccountId}
               onChange={(e) => setSelectedAccountId(e.target.value)}
-              className="bg-slate-800 border border-slate-700 text-white text-sm rounded-xl px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none min-w-[150px]"
+              className="bg-black/40 border border-slate-700/50 text-white text-xs font-mono rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-indigo-500 outline-none min-w-[150px] w-full sm:w-auto"
             >
               {accounts.map(acc => (
                 <option key={acc.id} value={acc.id}>{acc.login} ({acc.platform})</option>
@@ -340,46 +340,41 @@ const MarketData: React.FC<MarketDataProps> = ({
             </select>
           </div>
 
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Symbol</span>
-            <div className="relative">
-              <div className={`flex bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500 group ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
+          <div className="flex flex-col gap-0.5 w-full sm:w-auto">
+            <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Asset</span>
+            <div className="relative w-full sm:w-auto">
+              <div className={`flex bg-black/40 border border-slate-700/50 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-indigo-500 group ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
                 <input 
                   type="text"
                   list="broker-symbols"
                   value={localSymbol}
                   disabled={isAlgoRunning}
                   onChange={(e) => setLocalSymbol(e.target.value)}
-                  className={`bg-transparent text-white text-sm px-4 py-2 outline-none w-[120px] font-bold tracking-tight ${(availableBrokerSymbols.length > 0 && !availableBrokerSymbols.includes(localSymbol)) ? 'text-amber-400' : ''} ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
+                  className={`bg-transparent text-white text-xs px-3 py-1.5 outline-none w-full sm:w-[120px] font-mono font-bold tracking-tight ${(availableBrokerSymbols.length > 0 && !availableBrokerSymbols.includes(localSymbol)) ? 'text-amber-400' : ''} ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
                   placeholder="XAUUSDm"
                 />
                 <datalist id="broker-symbols" className="bg-slate-900">
                   {availableBrokerSymbols.map(s => <option key={s} value={s} />)}
                 </datalist>
-                <div className="bg-slate-700/50 px-2 flex items-center border-l border-slate-700">
-                  <Activity className={`w-3 h-3 ${availableBrokerSymbols.includes(symbol) ? 'text-emerald-500' : 'text-slate-500'}`} />
+                <div className="bg-slate-800 px-2 flex items-center border-l border-slate-700/50">
+                  <Activity className={`w-3 h-3 ${availableBrokerSymbols.includes(symbol) ? 'text-emerald-500' : 'text-slate-600'}`} />
                 </div>
               </div>
-              {isAlgoRunning && (
-                <div className="absolute -bottom-4 left-1 flex items-center gap-1 text-[8px] font-black text-rose-500 uppercase tracking-widest animate-pulse">
-                  <Lock className="w-2 h-2" /> Locked during active strategy
-                </div>
-              )}
             </div>
           </div>
 
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Interval</span>
-            <div className={`flex bg-slate-800 rounded-xl p-1 border border-slate-700 ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
+          <div className="flex flex-col gap-0.5 w-full sm:w-auto">
+            <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Interval</span>
+            <div className={`flex bg-black/40 rounded-lg p-0.5 border border-slate-700/50 w-full sm:w-auto overflow-x-auto ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''} custom-scrollbar`}>
               {timeframes.map(tf => (
                 <button
                   key={tf}
                   disabled={isAlgoRunning}
                   onClick={() => setTimeframe(tf)}
-                  className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
+                  className={`px-3 py-1 text-[10px] font-mono font-bold rounded-md transition-all shrink-0 ${
                     timeframe === tf 
-                      ? 'bg-indigo-500 text-white shadow-md' 
-                      : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                      ? 'bg-indigo-600 text-white shadow-sm' 
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
                   } ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
                 >
                   {tf}
@@ -388,54 +383,53 @@ const MarketData: React.FC<MarketDataProps> = ({
             </div>
           </div>
           
-          {/* Removed selectedAccount balance from here as per user request */}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 lg:gap-12">
-        <div className="lg:col-span-2 space-y-8">
-          <div className="p-2 min-h-[500px] flex flex-col relative w-full">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-              <div className="flex items-center gap-3">
-                <h3 className="text-lg font-bold text-white">{symbol}</h3>
-                <span className="px-2 py-1 bg-slate-800 rounded text-xs font-medium text-slate-300 border border-slate-700">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
+        <div className="lg:col-span-2 space-y-6">
+          <div className="p-2 min-h-[400px] sm:min-h-[500px] flex flex-col relative w-full bg-black/20 border border-white/5 rounded-xl">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2 z-20">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-mono font-black text-white px-2 py-1 bg-slate-900 rounded-md border border-white/10 uppercase">{symbol}</h3>
+                <span className="px-2 py-1 bg-indigo-500/10 rounded-md text-[10px] font-mono font-bold text-indigo-400 border border-indigo-500/20">
                   {timeframe}
                 </span>
-                {isSubscribing && <RefreshCw className="w-4 h-4 text-indigo-400 animate-spin" />}
+                {isSubscribing && <RefreshCw className="w-3 h-3 text-indigo-400 animate-spin" />}
               </div>
               <button
                 onClick={() => setShowAnalysis(!showAnalysis)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-mono font-black uppercase tracking-widest transition-all ${
                   showAnalysis 
-                    ? 'bg-indigo-500 text-white shadow-[0_0_15px_rgba(99,102,241,0.4)]' 
-                    : 'bg-slate-800 text-slate-400 border border-white/5 hover:text-white'
+                    ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' 
+                    : 'bg-black/40 text-slate-500 border border-white/5 hover:text-white'
                 }`}
               >
-                <Zap className={`w-3.5 h-3.5 ${showAnalysis ? 'fill-white' : ''}`} />
-                {showAnalysis ? 'Analysis ON' : 'Show Analysis'}
+                <Zap className={`w-3 h-3 ${showAnalysis ? 'fill-indigo-300' : ''}`} />
+                {showAnalysis ? 'Analysis ON' : 'Analysis OFF'}
               </button>
             </div>
 
-          <div className="flex-1 w-full relative min-h-[450px] lg:min-h-[550px]">
+          <div className="flex-1 w-full relative min-h-[350px] lg:min-h-[450px]">
             {/* Background Symbol Text */}
-            <div className="absolute inset-0 flex flex-col pt-4 pl-4 md:pt-10 md:pl-10 pointer-events-none opacity-[0.03] z-0 select-none overflow-hidden">
-              <span className="text-7xl md:text-[12rem] font-black text-white leading-none tracking-tighter uppercase">{symbol}</span>
-              <span className="text-4xl md:text-8xl font-black text-indigo-400 mt-[-10px] md:mt-[-30px] uppercase tracking-widest">{timeframe}</span>
+            <div className="absolute inset-0 flex flex-col pt-4 pl-4 md:pt-10 md:pl-10 pointer-events-none opacity-[0.02] z-0 select-none overflow-hidden">
+              <span className="text-6xl md:text-[10rem] font-black text-white leading-none tracking-tighter uppercase">{symbol}</span>
+              <span className="text-3xl md:text-6xl font-black text-indigo-400 mt-[-10px] uppercase tracking-widest">{timeframe}</span>
             </div>
             {(!chartData) ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-indigo-400 z-10">
-                <RefreshCw className="w-10 h-10 animate-spin mb-4" />
-                <p>Initializing Chart...</p>
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-indigo-400/50 z-10">
+                <RefreshCw className="w-8 h-8 animate-spin mb-3" />
+                <p className="text-[10px] font-mono uppercase tracking-widest">Initializing Feed</p>
               </div>
             ) : chartData.length > 0 ? (
-              <div className="absolute inset-0 z-10">
+              <div className="absolute inset-0 z-10 p-1">
                 <CandlestickChart 
                   data={chartData} 
                   latestTick={latestTick} 
-                  height={500} 
+                  height={450} 
                   deals={deals} 
                   positions={globalPositions}
-                                    marketAnalysis={marketAnalysis}
+                  marketAnalysis={marketAnalysis}
                   showAnalysis={showAnalysis}
                   upColor={chartSettings.upColor}
                   downColor={chartSettings.downColor}
@@ -443,192 +437,191 @@ const MarketData: React.FC<MarketDataProps> = ({
                 />
               </div>
             ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
-                <Activity className="w-12 h-12 mb-4 opacity-20" />
-                <p>Waiting for market data stream...</p>
-                <p className="text-xs mt-2 opacity-60">Ensure the selected terminal is SYNCED</p>
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
+                <Activity className="w-10 h-10 mb-3 opacity-20" />
+                <p className="text-[10px] font-mono uppercase tracking-widest">Waiting for tick stream...</p>
+                <p className="text-[9px] mt-1 opacity-50 font-mono">Ensure terminal is SYNCED</p>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      <div className="space-y-6 lg:mt-0 mt-8">
+      <div className="space-y-4 lg:mt-0 mt-6 lg:border-l border-white/5 lg:pl-6">
           {/* TRADING TERMINAL PANEL */}
-          <div className="p-2 mb-10">
-            <div className="flex items-center justify-between mb-8">
-              <h3 className="text-sm font-black text-white/90 flex items-center gap-2 uppercase tracking-[0.2em]">
-                <Workflow className="w-4 h-4 text-indigo-400" />
-                Strategy Engine
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-mono font-black text-white/90 flex items-center gap-2 uppercase tracking-[0.2em]">
+                <Workflow className="w-3.5 h-3.5 text-indigo-400" />
+                Engine
               </h3>
-              <div className="flex items-center gap-1.5 px-2 py-1 bg-white/5 rounded-lg border border-white/5">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 rounded border border-white/5">
                 <div className={`w-1.5 h-1.5 rounded-full ${connectionStatus === 'READY' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-                <span className="text-[9px] font-black text-slate-400 uppercase">{connectionStatus}</span>
+                <span className="text-[9px] font-mono font-black text-slate-400 uppercase">{connectionStatus}</span>
               </div>
             </div>
 
-            <div className="space-y-6">
+            <div className="space-y-4">
               {/* Strategy Settings */}
-              <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-4 animate-in slide-in-from-top-4 duration-500">
+              <div className="p-3 bg-black/40 rounded-xl border border-white/5 space-y-3 animate-in slide-in-from-top-4 duration-500">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Execution Engine</span>
-                  <button onClick={() => setActiveTab('settings')} className="text-[9px] font-black text-slate-500 hover:text-white uppercase">Engine Specs</button>
+                  <span className="text-[9px] font-mono font-black uppercase tracking-widest text-indigo-400">Parameters</span>
+                  <button onClick={() => setActiveTab('settings')} className="text-[8px] font-mono font-black text-slate-500 hover:text-white uppercase transition-colors shrink-0">Engine Setup</button>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Lot Size</label>
+                    <label className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-widest">Volume</label>
                     <input 
                       type="number" 
                       step="0.01" 
                       value={lotSize} 
                       onChange={(e) => setLotSize(parseFloat(e.target.value))}
-                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white outline-none focus:border-indigo-500/50" 
+                      className="w-full bg-slate-900/80 border border-white/10 rounded-lg px-2 py-1.5 text-[10px] font-mono text-white outline-none focus:border-indigo-500/50" 
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Asset</label>
+                    <label className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-widest">Asset</label>
                     <input 
                       type="text" 
                       value={symbol} 
                       readOnly
-                      className="w-full bg-black/20 border border-white/5 rounded-lg px-3 py-1.5 text-xs text-slate-400 outline-none" 
+                      className="w-full bg-black/20 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] font-mono text-slate-400 outline-none" 
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 animate-in fade-in zoom-in duration-300">
+              <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
                 <button
                   onClick={onBuy}
                   disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                  className={`group relative flex flex-col items-center justify-center gap-1 py-2.5 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'SYNCING') ? 'hover:bg-emerald-600/10 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
+                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'SYNCING') ? 'hover:bg-emerald-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
                 >
-                  <div className="absolute top-0 left-0 w-full h-0.5 bg-emerald-500/30" />
-                  <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <span className="text-base font-black text-white">FORCE BUY</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-400 mb-1" />
+                  <span className="text-xs font-mono font-black text-emerald-400 uppercase tracking-widest">BUY</span>
                 </button>
 
                 <button
                   onClick={onSell}
                   disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                  className={`group relative flex flex-col items-center justify-center gap-1 py-2.5 bg-rose-500/5 border border-rose-500/10 rounded-2xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'SYNCING') ? 'hover:bg-rose-600/10 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
+                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-rose-500/10 border border-rose-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'SYNCING') ? 'hover:bg-rose-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
                 >
-                  <div className="absolute top-0 left-0 w-full h-0.5 bg-rose-500/30" />
-                  <TrendingDown className="w-4 h-4 text-rose-400" />
-                  <span className="text-base font-black text-white">FORCE SELL</span>
+                  <TrendingDown className="w-4 h-4 text-rose-400 mb-1" />
+                  <span className="text-xs font-mono font-black text-rose-400 uppercase tracking-widest">SELL</span>
                 </button>
               </div>
 
-              {/* Main Execution Toggle (Green Triangle / Red Stop) */}
+              {/* Main Execution Toggle */}
               <button
                 onClick={onToggleAlgo}
                 disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                className={`w-full flex items-center justify-center gap-3 py-5 rounded-2xl border transition-all ${
+                className={`w-full flex items-center justify-center gap-2 py-4 rounded-xl border transition-all ${
                   isAlgoRunning 
-                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-500 hover:bg-rose-500/20 shadow-[0_0_20px_rgba(244,63,94,0.1)]' 
-                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.1)]'
+                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-400 hover:bg-rose-500/30 shadow-[0_0_15px_rgba(244,63,94,0.15)]' 
+                    : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.15)]'
                 } ${((connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : 'active:scale-95'}`}
               >
                 {isAlgoRunning ? (
                   <>
-                    <Square className="w-5 h-5 fill-rose-500/50" />
-                    <span className="text-sm font-black uppercase tracking-widest">
-                      STOP
+                    <Square className="w-4 h-4 fill-rose-500/50" />
+                    <span className="text-[10px] font-mono font-black uppercase tracking-widest">
+                      HALT ENGINE
                     </span>
                   </>
                 ) : (
                   <>
-                    <Play className="w-5 h-5 fill-emerald-400/50 ml-1" />
-                    <span className="text-sm font-black uppercase tracking-widest">
-                      START
+                    <Play className="w-4 h-4 fill-emerald-500/50 ml-0.5" />
+                    <span className="text-[10px] font-mono font-black uppercase tracking-widest">
+                      START ENGINE
                     </span>
                   </>
                 )}
               </button>
 
-              <div className="grid grid-cols-1 gap-2 mt-4">
-                <button 
-                  onClick={() => setActiveTab('accounts')}
-                  className="flex items-center justify-center gap-2 py-3 bg-white/5 rounded-xl text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-white hover:bg-white/10 transition-all border border-transparent"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Terminal Console
-                </button>
-              </div>
-
               {tradeStatus === 'executing' && (
-                <div className="flex items-center justify-center gap-2 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl animate-pulse mt-4">
+                <div className="flex items-center justify-center gap-2 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg animate-pulse mt-2">
                   <RefreshCw className="w-3 h-3 text-amber-500 animate-spin" />
-                  <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Transmitting Execution...</span>
+                  <span className="text-[9px] font-mono font-black text-amber-500 uppercase tracking-widest">Transmitting...</span>
                 </div>
               )}
               {tradeStatus === 'success' && (
-                <div className="flex items-center justify-center gap-2 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl mt-4">
-                  <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">✅ Order Executed</span>
+                <div className="flex items-center justify-center gap-2 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg mt-2">
+                  <span className="text-[9px] font-mono font-black text-emerald-500 uppercase tracking-widest">✅ Broadcasted</span>
                 </div>
               )}
             </div>
           </div>
 
-          <div className="p-2">
-            <div className="flex items-center gap-2 mb-4">
-              <Layers className="w-4 h-4 text-indigo-400" />
-              <h4 className="text-sm font-black text-white tracking-widest">Open Positions</h4>
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-3">
+              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              <h4 className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Open Ops</h4>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2">
               {globalPositions.length === 0 ? (
-                <p className="text-sm text-slate-600 text-center py-8">No active positions</p>
+                <p className="text-[10px] font-mono text-slate-600 text-center py-4 bg-black/20 rounded-lg">No active logic</p>
               ) : (
-                globalPositions.map((pos: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5">
+                globalPositions.map((pos: any, i: number) => {
+                  const isBuy = pos.type === 'POSITION_TYPE_BUY' || pos.type?.toLowerCase() === 'buy';
+                  return (
+                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5">
                     <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-bold text-white">{pos.symbol}</p>
-                        <span className="text-[8px] font-black px-1 py-0.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded uppercase">{pos.comment || 'Engine'}</span>
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-[10px] font-mono font-black text-white">{pos.symbol}</span>
+                        <span className="text-[7px] font-mono font-black px-1 py-0.5 bg-slate-800 text-slate-400 rounded uppercase">{pos.comment || 'SYS'}</span>
                       </div>
-                      <p className={`text-[10px] font-black uppercase ${pos.type === 'POSITION_TYPE_BUY' ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        {pos.type ? pos.type.replace('POSITION_TYPE_', '') : 'UNKNOWN'} {pos.volume}
+                      <p className={`text-[8px] font-mono font-black uppercase tracking-widest ${isBuy ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {isBuy ? 'BUY' : 'SELL'} {pos.volume}
                       </p>
                     </div>
-                    <div className={`text-sm font-mono ${pos.unrealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    <div className={`text-[10px] font-mono font-black ${pos.unrealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {pos.unrealizedProfit >= 0 ? '+' : ''}{pos.unrealizedProfit ? pos.unrealizedProfit.toFixed(2) : '0.00'}
                     </div>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
 
-          <div className="p-2 mt-6">
-            <div className="flex items-center justify-between mb-4">
+          <div>
+            <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <History className="w-4 h-4 text-indigo-400" />
-                <h4 className="text-sm font-black text-white tracking-widest">Recent History</h4>
+                <History className="w-3.5 h-3.5 text-indigo-400" />
+                <h4 className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Feed</h4>
               </div>
               {globalHistory.length > 0 && (
                 <button 
                   onClick={() => setHistory([])}
-                  className="text-[10px] font-black text-rose-500 hover:text-rose-400 uppercase tracking-widest transition-colors"
+                  className="text-[8px] font-mono font-black text-rose-500 hover:text-rose-400 uppercase tracking-widest transition-colors"
                 >
-                  Clear
+                  Flush
                 </button>
               )}
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2">
               {globalHistory.length === 0 ? (
-                <p className="text-sm text-slate-600 text-center py-8">No recent history</p>
+                <p className="text-[10px] font-mono text-slate-600 text-center py-4 bg-black/20 rounded-lg">Log empty</p>
               ) : (
-                globalHistory.map((order: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between p-3 bg-white/5 rounded-xl">
-                    <div>
-                      <p className="text-sm font-bold text-white">{order.symbol}</p>
-                      <p className="text-[10px] text-slate-500">{new Date(order.time).toLocaleTimeString()}</p>
+                globalHistory.slice(0, 10).map((order: any, i: number) => {
+                  const isBuy = order.type?.toUpperCase().includes('BUY');
+                  return (
+                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5">
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-mono font-black text-white">{order.symbol}</span>
+                        <span className={`text-[7px] font-mono font-black px-1 py-0.5 rounded uppercase tracking-widest ${isBuy ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>{isBuy ? 'BUY' : 'SELL'}</span>
+                      </div>
+                      <p className="text-[8px] font-mono text-slate-500 uppercase">{new Date(order.time).toLocaleTimeString()}</p>
                     </div>
-                    <div className={`text-sm font-mono ${order.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {order.profit >= 0 ? '+' : ''}{order.profit?.toFixed(2) || '0.00'}
-                    </div>
+                    {order.profit !== undefined && (
+                      <div className={`text-[10px] font-mono font-black ${order.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {order.profit >= 0 ? '+' : ''}{order.profit?.toFixed(2) || '0.00'}
+                      </div>
+                    )}
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

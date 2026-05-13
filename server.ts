@@ -403,11 +403,11 @@ function getMetaApiInstance() {
     globalScope.METAAPI = new MetaApiClass(token, {
       clientId,
       domain: 'agiliumtrade.agiliumtrade.ai',
-      requestTimeout: 120000,
+      requestTimeout: 180000,
       retryOpts: {
-        maxRetries: 10,
-        minDelayInMs: 1000,
-        maxDelayInMs: 30000
+        maxRetries: 15,
+        minDelayInMs: 2000,
+        maxDelayInMs: 60000
       }
     });
     console.log(`[SDK] MetaApi initialized: ${clientId}`);
@@ -863,7 +863,7 @@ async function setupStreaming(accountId: string) {
       
       // Wait for account to be DEPLOYED if it's currently DEPLOYING/REDEPLOYING
       let waitCount = 0;
-      while ((account.state === 'DEPLOYING' || account.state === 'REDEPLOYING') && waitCount < 24) { // Wait up to 2 mins
+      while ((account.state === 'DEPLOYING' || account.state === 'REDEPLOYING') && waitCount < 36) { // Wait up to 3 mins
         console.log(`[SDK] Account ${accountId} is currently ${account.state}. Waiting for it to settle... (Attempt ${waitCount+1})`);
         await new Promise(r => setTimeout(r, 5000));
         account = await metaapi.metatraderAccountApi.getAccount(accountId);
@@ -943,6 +943,17 @@ async function setupStreaming(accountId: string) {
   return promise;
 }
 
+// FRED API PROXY
+app.get("/api/fred", async (req, res) => {
+  const { series_id } = req.query;
+  try {
+    const response = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=${series_id}&api_key=3f7616a1fc27586c2a083e232aec6a8f&file_type=json&sort_order=desc&limit=2`);
+    res.json(response.data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // INFRA HEALTH (Strict SDK Heartbeat)
 app.get("/api/infra-health", (req, res) => {
   if (!metaapi) return res.status(503).json({ status: 'BOOTING', reason: 'SDK_INITIALIZING' });
@@ -966,9 +977,11 @@ async function waitForTrueConnection(connection: any, accountId: string) {
 
   // Retry logic: 5 minutes timeout for cold starts/broker reconnects
   let retries = 0;
+  let consecutiveSuccesses = 0;
+  const REQUIRED_SUCCESSES = 2; // Must be stable for 2 cycles
   const TIMEOUT = 300000;
   const INTERVAL = 5000;
-  const maxRetries = TIMEOUT / INTERVAL;
+  const maxRetries = Math.floor(TIMEOUT / INTERVAL);
 
   while (retries < maxRetries) {
     const isTerminalConnected = connection.terminalState?.connected === true;
@@ -980,8 +993,16 @@ async function waitForTrueConnection(connection: any, accountId: string) {
     const isHealthy = healthStatus.connected === true;
 
     if (isTerminalConnected && isBrokerConnected && isSynchronized) {
-      console.log(`[STABILIZER] SUCCESS: Broker confirmed for ${accountId} (Attempt ${retries + 1})`);
-      return true;
+      consecutiveSuccesses++;
+      if (consecutiveSuccesses >= REQUIRED_SUCCESSES) {
+        console.log(`[STABILIZER] SUCCESS: Broker confirmed STABLE for ${accountId} (Attempt ${retries + 1})`);
+        // Final grace period for internal SDK state to settle
+        await new Promise(r => setTimeout(r, 2000));
+        return true;
+      }
+      console.log(`[STABILIZER] Readiness detected, confirming stability... (${consecutiveSuccesses}/${REQUIRED_SUCCESSES})`);
+    } else {
+      consecutiveSuccesses = 0;
     }
 
     if (retries % 6 === 0) { // Log every 30s
@@ -1036,10 +1057,13 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
       console.log(`[STREAM] Subscribed successfully to ${symbol} on ${accountId}`);
       return;
     } catch (err: any) {
-      const isNotConnected = err.message?.toLowerCase().includes('not connected to broker') || 
-                             err.message?.toLowerCase().includes('transport close');
-      const isTimeout = err.message?.toLowerCase().includes('timeout');
-      const isSymbolNotExist = err.message?.toLowerCase().includes('does not exist') || err.message?.toLowerCase().includes('invalid symbol');
+      const errorMsg = err.message?.toLowerCase() || "";
+      const isNotConnected = errorMsg.includes('not connected to broker') || 
+                             errorMsg.includes('not connected to broker yet') ||
+                             errorMsg.includes('region') || // Handle the "region mismatch" hint from MetaApi
+                             errorMsg.includes('transport close');
+      const isTimeout = errorMsg.includes('timeout');
+      const isSymbolNotExist = errorMsg.includes('does not exist') || errorMsg.includes('invalid symbol');
       
       console.warn(`[STREAM] Subscription attempt ${i + 1} failed for ${symbol} on ${accountId}: ${err.message}.`);
       
