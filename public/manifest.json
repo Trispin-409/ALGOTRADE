@@ -1,13 +1,25 @@
 {
+  "id": "https://algotrade-tristech.com/",
   "name": "ALGOTRADE",
   "short_name": "ALGOTRADE",
   "description": "Enterprise-grade MetaTrader automation hub with real-time SDK telemetry",
+
   "start_url": "/",
+  "scope": "/",
+
   "display": "standalone",
+  "display_override": ["standalone", "fullscreen", "minimal-ui"],
+
   "orientation": "portrait",
+
   "background_color": "#000000",
   "theme_color": "#000000",
-  "scope": "/",
+
+  "lang": "en",
+  "dir": "ltr",
+
+  "categories": ["finance", "business", "productivity"],
+
   "icons": [
     {
       "src": "/icon-192.png",
@@ -20,6 +32,18 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    }
+  ],
+
+  "prefer_related_applications": false,
+
+  "related_applications": [],
+
+  "iarc_rating_id": "",
+
+  "scope_extensions": [
+    {
+      "origin": "https://algotrade-tristech.com"
     }
   ]
 }
