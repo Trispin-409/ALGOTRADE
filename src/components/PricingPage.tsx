@@ -29,12 +29,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
   };
 
   const handleWhatsAppSend = () => {
-    let text = `Hello, I've just paid for the ${selectedPlan?.name} plan. My email is ${session?.user?.email}.`;
-    if (proofFile) {
-        text += ` I have attached my proof of payment (${proofFile.name}) for verification.`;
-    } else {
-        text += ` I am about to send my proof of payment.`;
-    }
+    let text = `Hello, I've just paid for the ${selectedPlan?.name} plan. My email is ${session?.user?.email}. I am attaching my proof of payment now. Please send me my access key.`;
     window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(text)}`, '_blank');
   };
 
@@ -220,51 +215,50 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
                      If you are renewing an existing subscription, no new key is needed; the admin will extend your access.
                  </p>
 
-                 <div className="space-y-4">
-                      <div className="relative">
-                        <input 
-                            type="file" 
-                            accept=".pdf,image/*" 
-                            onChange={handleFileChange}
-                            className="hidden" 
-                            id="pop-upload"
-                        />
-                        <label 
-                            htmlFor="pop-upload"
-                            className="w-full py-4 border-2 border-dashed border-white/10 hover:border-emerald-500/50 hover:bg-emerald-500/5 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all gap-1"
+                  <div className="space-y-4">
+                      <div className="space-y-2">
+                        <label className="text-[10px] text-slate-500 uppercase tracking-widest font-black block">Step 1: Enter Access Key (If you already have one)</label>
+                        <div className="relative group">
+                          <input 
+                              type="text" 
+                              value={activationKey}
+                              onChange={(e) => setActivationKey(e.target.value)}
+                              placeholder="ALGO-XXXX-XXXX"
+                              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 font-mono text-emerald-400 text-sm focus:outline-none focus:border-emerald-500 uppercase tracking-[0.2em] text-center transition-all group-hover:border-white/20"
+                          />
+                          {activationKey.trim().length > 5 && (
+                             <button
+                                onClick={handleActivate}
+                                disabled={activating}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all shadow-lg disabled:opacity-50"
+                             >
+                                {activating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Activate Now'}
+                             </button>
+                          )}
+                        </div>
+                      </div>
+
+                     <div className="grid grid-cols-2 gap-3">
+                        <button 
+                            onClick={() => {
+                                navigator.clipboard.writeText("1947270883");
+                                alert("Account number copied! Please use your banking app to complete the payment.");
+                            }}
+                            className="w-full py-4 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 border border-indigo-600/30 font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 active:scale-95 text-[10px]"
                         >
-                            {proofFile ? (
-                                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-widest animate-pulse">
-                                    <Check className="w-4 h-4" /> POP Attached: {proofFile.name.length > 15 ? proofFile.name.substring(0, 12) + '...' : proofFile.name}
-                                </div>
-                            ) : (
-                                <>
-                                    <span className="text-slate-300 font-black uppercase tracking-[0.2em] text-[10px]">Step 1: Attach POP PDF/Image</span>
-                                    <span className="text-[10px] text-slate-500 uppercase tracking-widest leading-none">Mandatory for verification</span>
-                                </>
-                            )}
-                        </label>
+                            Step 2: Copy Acc Num
+                        </button>
+                        
+                        <button 
+                            onClick={handleWhatsAppSend}
+                            className="w-full py-4 bg-[#25D366] hover:bg-[#1DA851] text-white font-black uppercase tracking-widest rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 active:scale-95 shadow-emerald-500/20 text-[10px]"
+                        >
+                            Step 3: WhatsApp POP
+                        </button>
                      </div>
 
-                     <button 
-                         onClick={() => {
-                             navigator.clipboard.writeText("1947270883");
-                             alert("Account number copied! Please use your banking app to complete the payment.");
-                         }}
-                         className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase tracking-widest rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 active:scale-95 shadow-indigo-500/20"
-                     >
-                        Step 2: Copy Account Number
-                     </button>
-                     
-                     <button 
-                         onClick={handleWhatsAppSend}
-                         className="w-full py-4 bg-[#25D366] hover:bg-[#1DA851] text-white font-black uppercase tracking-widest rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 active:scale-95 shadow-emerald-500/20"
-                     >
-                        Step 3: Submit to WhatsApp
-                     </button>
-
-                     <p className="text-[10px] text-slate-500 text-center italic mt-2">
-                        * Note: After clicking Step 3, please manually attach your POP in the WhatsApp chat.
+                     <p className="text-[10px] text-slate-500 text-center italic mt-2 leading-relaxed">
+                        * Note: If you don't have a key, complete Step 2 and 3. You MUST send your proof of payment via WhatsApp to the admin to receive your unique access key.
                      </p>
                      
                      <button 

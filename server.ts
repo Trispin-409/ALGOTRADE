@@ -1464,67 +1464,70 @@ app.post("/api/subscription/activate-device", async (req, res) => {
     if (!key) return res.status(400).json({ error: "Access key is required" });
     if (!adminSupabase) return res.status(500).json({ error: "Database not available" });
 
-    // Validate the key
+    const authHeader = req.headers.authorization?.replace("Bearer ", "");
+    const { data: userData } = await adminSupabase.auth.getUser(authHeader!);
+    const userEmail = userData.user?.email;
+
+    if (!userEmail) return res.status(400).json({ error: "Could not identify user email" });
+
+    // Validate the key from access_licenses
     const { data: keyData, error: keyError } = await adminSupabase
-      .from("access_keys")
+      .from("access_licenses")
       .select("*")
-      .eq("key", key)
+      .eq("access_key", key)
       .single();
 
     if (keyError || !keyData) {
       return res.status(400).json({ error: "Invalid access key" });
     }
 
-    if (keyData.status === "revoked") {
-      return res.status(400).json({ error: "Access key has been revoked" });
+    const isExpired = keyData.expires_at && new Date(keyData.expires_at).getTime() < Date.now();
+    if (isExpired) {
+       return res.status(400).json({ error: "Access key has expired" });
     }
 
-    // Protection: Key is permanently linked to the assigned email (user_id)
-    if (keyData.user_id && keyData.user_id !== userId) {
+    // Protection: Key is permanently linked to the assigned email
+    if (keyData.email && keyData.email !== userEmail) {
       return res.status(400).json({ error: "Activation denied: This access key is assigned to a different email account." });
     }
 
-    if (keyData.status === "used" && keyData.user_id !== userId) {
-      return res.status(400).json({ error: "Access key has already been used by another user" });
+    // If key is already used
+    if (keyData.used) {
+         return res.json({ success: true, message: "Workspace activated successfully" });
     }
 
-    // If key is already used by THIS user, they are already activated
-    if (keyData.status === "used" && keyData.user_id === userId) {
-        // We log the latest fingerprint just to track, but don't block them
-        await adminSupabase.from("access_keys").update({
-            device_fingerprint: fingerprint || "unknown",
-            used_at: keyData.used_at || new Date().toISOString()
-        }).eq("id", keyData.id);
-
-        return res.json({ success: true, message: "Workspace activated successfully" });
-    }
-
-    // Mark key as used
-    await adminSupabase.from("access_keys").update({
-      status: "used",
-      user_id: userId,
-      device_fingerprint: fingerprint || "unknown",
-      used_at: new Date().toISOString()
+    // Mark key as used and bind to email if unassigned
+    await adminSupabase.from("access_licenses").update({
+      used: true,
+      email: userEmail // Bind to the email that activated it
     }).eq("id", keyData.id);
 
-    const planType = keyData.plan_type;
-    const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
-
-    // Set old subscriptions to expired
-    await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("user_id", userId).eq("status", "active");
-
+    // Update public.users
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + 30);
 
-    // Create new subscription
-    await adminSupabase.from("subscriptions").insert({
-      user_id: userId,
-      plan_type: planType,
-      status: 'active',
-      metaapi_account_limit: metaapiAccountLimit,
-      expiry_date: expiryDate.toISOString(),
-      access_key_id: keyData.id
-    });
+    const { data: userRecord } = await adminSupabase.from("users").select("*").eq("id", userId).maybeSingle();
+
+    if (userRecord) {
+        await adminSupabase.from("users").update({
+             has_access: true,
+             payment_status: 'active',
+             expires_at: expiryDate.toISOString()
+        }).eq("id", userId);
+    } else {
+        await adminSupabase.from("users").insert({
+             id: userId,
+             email: userEmail,
+             has_access: true,
+             access_key: key,
+             payment_status: 'active',
+             expires_at: expiryDate.toISOString()
+        });
+    }
+
+    // Retain legacy behaviors for automation logic compat
+    const planType = userRecord?.plan || 'Starter';
+    const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
 
     await activateUserAutomations(userId, metaapiAccountLimit);
     broadcast({ type: 'subscription:activated', userId, plan: planType, limit: metaapiAccountLimit });
@@ -1552,14 +1555,16 @@ app.post("/api/admin/generate-key", async (req, res) => {
 
      const newKey = `ALGO-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
-     const { error } = await adminSupabase.from("access_keys").insert({
-       key: newKey,
-       plan_type: planType || 'Starter',
-       status: 'pending',
-       created_by: adminId
+     const { error } = await adminSupabase.from("access_licenses").insert({
+       access_key: newKey,
+       email: "unassigned@local",
+       used: false
      });
 
-     if (error) throw error;
+     if (error) {
+       console.error("Supabase insert error:", error);
+       throw new Error(`Failed to insert key: ${error.message || JSON.stringify(error)}`);
+     }
      
      await adminSupabase.from("audit_logs").insert({
        admin_id: adminId,
@@ -1596,31 +1601,9 @@ app.get("/api/admin/keys", async (req, res) => {
                return res.status(403).json({ error: "Forbidden" });
            }
        }
-       const { data: keysData } = await adminSupabase.from("access_keys").select("*").order("created_at", { ascending: false });
+       const { data: keysData } = await adminSupabase.from("access_licenses").select("*").order("created_at", { ascending: false });
        
-       let userMap = new Map();
-       try {
-         const { data: usersData } = await adminSupabase.auth.admin.listUsers();
-         if (usersData && usersData.users) {
-            usersData.users.forEach((u: any) => userMap.set(u.id, u.email));
-         }
-       } catch (err) {
-         console.warn("Could not list users from admin API", err);
-       }
-       
-       const { data: subsData } = await adminSupabase.from("subscriptions").select("*");
-       
-       const enhancedKeys = keysData?.map(k => {
-          const email = k.user_id ? userMap.get(k.user_id) : null;
-          const sub = subsData?.find(s => s.access_key_id === k.id || (s.user_id === k.user_id && s.status === 'active'));
-          return {
-             ...k,
-             email,
-             subscription: sub || null
-          };
-       }) || [];
-       
-       res.json(enhancedKeys);
+       res.json(keysData || []);
    } catch(e: any) {
        res.status(500).json({ error: e.message || String(e) });
    }
@@ -1639,38 +1622,33 @@ app.post("/api/admin/renew-subscription", async (req, res) => {
         if (!await isUserAdmin(token, adminId)) {
             return res.status(403).json({ error: "Forbidden: Admin access required" });
         }
-        
-        let subData = null;
+
+        const newExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
         if (keyId) {
-            const { data } = await adminSupabase.from("subscriptions").select("*").eq("access_key_id", keyId).single();
-            subData = data;
+             const { data: keyRecord } = await adminSupabase.from("access_licenses").update({
+                  expires_at: newExpiry.toISOString()
+             }).eq("id", keyId).select().single();
+             
+             if (keyRecord && keyRecord.email) {
+                 await adminSupabase.from("users").update({
+                      expires_at: newExpiry.toISOString(),
+                      has_access: true,
+                      payment_status: 'active'
+                 }).eq("email", keyRecord.email);
+             }
         } else if (targetUserId) {
-            const { data } = await adminSupabase.from("subscriptions").select("*").eq("user_id", targetUserId).eq("status", "active").single();
-            subData = data;
+            await adminSupabase.from("users").update({
+                 expires_at: newExpiry.toISOString(),
+                 has_access: true,
+                 payment_status: 'active'
+            }).eq("id", targetUserId);
         }
 
-        if (!subData) {
-           return res.status(404).json({ error: "Active subscription not found" });
-        }
-        
-        const currentExpiry = new Date(subData.expiry_date);
-        const now = new Date();
-        const startFrom = currentExpiry > now ? currentExpiry : now;
-        const newExpiry = new Date(startFrom.getTime() + 30 * 24 * 60 * 60 * 1000);
-        
-        await adminSupabase.from("subscriptions").update({ 
-            expiry_date: newExpiry.toISOString(),
-            status: 'active'
-        }).eq("id", subData.id);
-        
-        if (subData.access_key_id) {
-            await adminSupabase.from("access_keys").update({ status: 'used' }).eq("id", subData.access_key_id);
-        }
-        
         await adminSupabase.from("audit_logs").insert({
           admin_id: adminId,
           action: "renewed_subscription",
-          details: { sub_id: subData.id, user_id: subData.user_id, new_expiry: newExpiry.toISOString() }
+          details: { key_id: keyId, user_id: targetUserId, new_expiry: newExpiry.toISOString() }
         });
         
         res.json({ success: true, newExpiry });
@@ -1706,32 +1684,25 @@ app.get("/api/admin/users", async (req, res) => {
             return res.status(403).json({ error: "Forbidden: Admin access required" });
         }
 
-        const { data: usersResponse, error: usersError } = await adminSupabase.auth.admin.listUsers({
-            perPage: 1000
-        });
+        const { data: usersResponse, error: usersError } = await adminSupabase.auth.admin.listUsers();
         if (usersError) throw usersError;
         
-        const users = usersResponse?.users || [];
+        const authUsers = usersResponse?.users || [];
 
-        // Fetch subscriptions and keys in parallel
-        const [subsDataRes, keysDataRes] = await Promise.all([
-            adminSupabase.from("subscriptions").select("*"),
-            adminSupabase.from("access_keys").select("*")
-        ]);
-
-        const subsData = subsDataRes.data || [];
-        const keysData = keysDataRes.data || [];
-
-        const enhancedUsers = users.map((u: any) => {
-            const sub = subsData.find((s: any) => s.user_id === u.id && s.status === 'active');
-            const key = keysData.find((k: any) => k.user_id === u.id);
+        const { data: licenses, error: licensesError } = await adminSupabase.from("access_licenses").select("*");
+        if (licensesError) throw licensesError;
+        
+        const enhancedUsers = authUsers.map((u: any) => {
+            const license = (licenses || []).find((l: any) => l.email === u.email && l.used);
             return {
                 id: u.id,
                 email: u.email,
                 created_at: u.created_at,
                 last_sign_in_at: u.last_sign_in_at,
-                subscription: sub || null,
-                key: key || null
+                has_access: !!license,
+                access_key: license?.access_key || null,
+                expires_at: license?.expires_at || null,
+                plan: license ? 'Premium' : 'Starter' // Simplified
             };
         });
 
@@ -1756,30 +1727,41 @@ app.post("/api/admin/approve-user", async (req, res) => {
             return res.status(403).json({ error: "Forbidden: Admin access required" });
         }
 
-        console.log(`[ADMIN] Approving user ${targetUserId} for plan ${planType} (Generating Unused Key)`);
-
-        // Check if user exists
-        const { data: userRecord, error: userError } = await adminSupabase.auth.admin.getUserById(targetUserId);
-        if (userError || !userRecord) throw new Error("User not found");
+        const { data: userResponse, error: userError } = await adminSupabase.auth.admin.getUserById(targetUserId);
+        if (userError || !userResponse?.user) throw new Error("User not found in Supabase Auth");
+        const targetUser = userResponse.user;
 
         const newKey = `ALG-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
-        const { data: keyData, error: keyErr } = await adminSupabase.from("access_keys").insert({
-            key: newKey,
-            plan_type: planType || 'Starter',
-            status: 'pending',
-            user_id: targetUserId,
-            created_by: adminId
-        }).select().single();
+        
+        // We use upsert to replace any existing key for this email if it exists
+        // Or we better delete first to avoid conflicts if email is not the primary key
+        await adminSupabase.from("access_licenses").delete().eq("email", targetUser.email);
+
+        const { error: keyErr } = await adminSupabase.from("access_licenses").insert({
+            email: targetUser.email,
+            access_key: newKey,
+            used: true, // It's directly assigned, so we mark it as used
+            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        });
 
         if (keyErr) {
             console.error("[ADMIN] KEY INSERT ERROR:", keyErr);
             throw keyErr;
         }
 
+        // Also update the users table for immediate UI reflection
+        await adminSupabase.from("users").upsert({
+            id: targetUserId,
+            email: targetUser.email,
+            has_access: true,
+            plan: planType || 'Premium',
+            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        });
+
         await adminSupabase.from("audit_logs").insert({
           admin_id: adminId,
           action: "generate_manual_key",
-          details: { user_id: targetUserId, key: newKey, plan: planType }
+          details: { user_id: targetUserId, email: targetUser.email, key: newKey, plan: planType }
         });
 
         res.json({ success: true, message: `Access Key Generated: ${newKey}. Send this to the user to activate.`, key: newKey });
@@ -1803,10 +1785,11 @@ app.post("/api/admin/suspend-key", async (req, res) => {
             return res.status(403).json({ error: "Forbidden: Admin access required" });
         }
 
-        await adminSupabase.from("access_keys").update({ status: 'revoked' }).eq("id", keyId);
+        const { data: keyRecord } = await adminSupabase.from("access_licenses").delete().eq("id", keyId).select().single();
         
-        // Expire any subscription using this key
-        await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("access_key_id", keyId);
+        if (keyRecord && keyRecord.email) {
+            await adminSupabase.from("users").update({ has_access: false, payment_status: 'revoked' }).eq("email", keyRecord.email);
+        }
 
         await adminSupabase.from("audit_logs").insert({
           admin_id: adminId,
@@ -1814,38 +1797,9 @@ app.post("/api/admin/suspend-key", async (req, res) => {
           details: { key_id: keyId }
         });
 
-        res.status(200).json({ success: true, message: "Key suspended successfully" });
+        res.status(200).json({ success: true, message: "Key revoked successfully" });
     } catch (e: any) {
         console.error("[ADMIN] Suspend Key error:", e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post("/api/admin/reset-device", async (req, res) => {
-    try {
-        const authHeader = req.headers.authorization;
-        if (!authHeader) return res.status(401).json({ error: "No token" });
-        const token = authHeader.replace("Bearer ", "");
-        const adminId = await getUserIdFromRequest(req);
-        const { keyId } = req.body;
-        
-        if (!adminSupabase) return res.status(500).json({error: "No DB"});
-
-        if (!await isUserAdmin(token, adminId)) {
-            return res.status(403).json({ error: "Forbidden: Admin access required" });
-        }
-
-        await adminSupabase.from("access_keys").update({ device_fingerprint: null }).eq("id", keyId);
-        
-        await adminSupabase.from("audit_logs").insert({
-          admin_id: adminId,
-          action: "reset_device",
-          details: { key_id: keyId }
-        });
-
-        res.status(200).json({ success: true, message: "Device bind reset successfully" });
-    } catch (e: any) {
-        console.error("[ADMIN] Reset Device error:", e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -1854,12 +1808,13 @@ app.get("/api/subscription/status", async (req, res) => {
    try {
      const userId = await getUserIdFromRequest(req);
      if (!adminSupabase) return res.status(500).json({error: "No DB"});
-     const { data } = await adminSupabase.from("subscriptions")
+     const { data } = await adminSupabase.from("users")
        .select("*")
-       .eq("user_id", userId)
-       .eq("status", "active")
+       .eq("id", userId)
        .single();
-     if (data) return res.json(data);
+     if (data && data.has_access) {
+         return res.json({ status: 'active', plan_type: data.plan, expiry_date: data.expires_at });
+     }
      res.json({ status: 'inactive' });
    } catch(e: any) {
      res.status(500).json({ error: e.message });
@@ -1915,16 +1870,27 @@ app.get("/api/user/bootstrap", async (req, res) => {
     }
 
     if (!has_active_subscription && adminSupabase) {
-       const { data: sub } = await adminSupabase.from("subscriptions")
-          .select("plan_type, status, access_key_id")
-          .eq("user_id", userId)
-          .eq("status", "active")
-          .single();
-          
-       if (sub) {
-          has_active_subscription = true;
-          subscription_plan = sub.plan_type;
-       }
+        // Fetch user email first to look up in access_licenses
+        const authHeader = req.headers.authorization?.replace("Bearer ", "");
+        const { data: userData } = await adminSupabase.auth.getUser(authHeader!);
+        const userEmail = userData.user?.email;
+
+        if (userEmail) {
+            const { data: license } = await adminSupabase.from("access_licenses")
+                .select("used, expires_at, access_key")
+                .eq("email", userEmail)
+                .eq("used", true)
+                .maybeSingle();
+                
+            if (license && license.used) {
+                const isExpired = license.expires_at && new Date(license.expires_at).getTime() < Date.now();
+                if (!isExpired) {
+                    has_active_subscription = true;
+                    subscription_plan = "Premium"; // Default plan name
+                    (res as any).license_key = license.access_key;
+                }
+            }
+        }
     }
     
     res.json({
@@ -1934,7 +1900,8 @@ app.get("/api/user/bootstrap", async (req, res) => {
       meta_api_url: process.env.VITE_METAAPI_BASE_URL || `http://${req.headers.host}`,
       ui_state: "READY",
       has_active_subscription,
-      subscription_plan
+      subscription_plan,
+      license_key: (res as any).license_key
     });
   } catch (err: any) {
     res.status(401).json({ error: sanitizeError(err) });

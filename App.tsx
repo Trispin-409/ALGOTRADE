@@ -123,6 +123,7 @@ const App: React.FC = () => {
 
   // Global State
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
+  const [adminSubTab, setAdminSubTab] = useState<'keys' | 'users' | 'logs'>('keys');
   const [accounts, setAccounts] = useState<TradingAccount[]>(() => {
     try {
       const cached = localStorage.getItem('accounts_cache');
@@ -136,9 +137,6 @@ const App: React.FC = () => {
   const [lastError, setLastError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [isLogsUnlocked, setIsLogsUnlocked] = useState(() => localStorage.getItem('isLogsUnlocked') === 'true');
-  const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState(false);
   const [openPositions, setOpenPositions] = useState<number>(0);
   const [isAlgoTradeRunning, setIsAlgoTradeRunning] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState(() => localStorage.getItem('selectedAccountId') || '');
@@ -454,11 +452,6 @@ const App: React.FC = () => {
     localStorage.setItem('activeTab', activeTab);
   }, [activeTab]);
 
-  useEffect(() => {
-    localStorage.setItem('isLogsUnlocked', isLogsUnlocked.toString());
-  }, [isLogsUnlocked]);
-
-
 
   // Handle Available Symbols fetch
   useEffect(() => {
@@ -540,18 +533,6 @@ const App: React.FC = () => {
     syncSettings();
   }, [strategySettings, selectedAccountId, session]);
 
-  const handleUnlockLogs = (e: React.FormEvent) => {
-    e.preventDefault();
-    const correctPassword = import.meta.env.VITE_SYSTEM_LOG || import.meta.env.VITE_SYSTEM_LOGS_PASSWORD || 'vite system log';
-    if (passwordInput === correctPassword) {
-      setIsLogsUnlocked(true);
-      setPasswordError(false);
-      addLog("ADMIN: System logs unlocked.");
-    } else {
-      setPasswordError(true);
-      addLog("SECURITY: Unauthorized access attempt.");
-    }
-  };
 
   const handleToggleAlgo = async () => {
     if (!selectedAccountId || !session) return;
@@ -922,7 +903,17 @@ const App: React.FC = () => {
         {/* Sidebar - Desktop & Mobile overlay */}
         <div className={`fixed inset-0 bg-black/80 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
         <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full border-r border-white/5 bg-[#02040a]/90 backdrop-blur-xl`}>
-          <Sidebar activeTab={activeTab} setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} subscriptionPlan={bootData.subscription_plan} />
+          <Sidebar 
+            activeTab={activeTab} 
+            setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} 
+            onTabChange={(tab, sub) => {
+              setActiveTab(tab);
+              if (tab === 'admin' && sub) setAdminSubTab(sub as any);
+              setIsSidebarOpen(false);
+            }}
+            subscriptionPlan={bootData.subscription_plan}
+            licenseKey={bootData.license_key}
+          />
         </div>
         
         <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/20">
@@ -1071,58 +1062,23 @@ const App: React.FC = () => {
                 )}
                 {activeTab === 'admin' && (
                   <ErrorBoundary>
-                    <AdminDashboard session={session} />
+                    <AdminDashboard session={session} initialTab={adminSubTab} />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'admin-logs' && (
+                  <ErrorBoundary>
+                    <AdminDashboard session={session} initialTab="logs" />
                   </ErrorBoundary>
                 )}
                 {activeTab === 'logs' && (
                   <ErrorBoundary>
-                    {isLogsUnlocked ? (
-                      <SystemMonitor 
-                        logs={logs} 
-                        isAuthValid={isAuthValid} 
-                        lastError={lastError} 
-                        sdkStatus={sdkStatus}
-                        onLock={() => {
-                          setIsLogsUnlocked(false);
-                          setPasswordInput('');
-                          addLog("ACCESS: System logs locked by administrator.");
-                        }} 
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center justify-center h-[600px] animate-in fade-in zoom-in-95 duration-500">
-                        <div className="bg-slate-900/40 border border-white/10 p-10 rounded-[40px] shadow-2xl backdrop-blur-xl max-w-md w-full space-y-8 text-center">
-                          <div className="w-20 h-20 bg-indigo-500/10 rounded-[30px] flex items-center justify-center border border-indigo-500/20 mx-auto">
-                            <LockIcon className="text-indigo-500 w-10 h-10" />
-                          </div>
-                          <div className="space-y-2">
-                            <h2 className="text-2xl font-black text-white uppercase tracking-tighter">Encrypted Access</h2>
-                            <p className="text-slate-500 text-xs font-bold uppercase tracking-widest">System logs are restricted to authorized personnel only.</p>
-                          </div>
-                          
-                          <form onSubmit={handleUnlockLogs} className="space-y-4">
-                            <div className="relative">
-                              <input 
-                                type="password" 
-                                value={passwordInput}
-                                onChange={(e) => setPasswordInput(e.target.value)}
-                                placeholder="ENTER ACCESS KEY"
-                                className={`w-full bg-black/40 border ${passwordError ? 'border-rose-500/50' : 'border-white/10'} rounded-2xl px-6 py-4 text-center font-mono text-sm tracking-[0.3em] focus:outline-none focus:border-indigo-500/50 transition-all placeholder:text-slate-700`}
-                                autoFocus
-                              />
-                              {passwordError && (
-                                <p className="text-rose-500 text-[10px] font-black uppercase tracking-widest mt-2 animate-pulse">Invalid Access Key</p>
-                              )}
-                            </div>
-                            <button 
-                              type="submit"
-                              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-xs transition-all active:scale-95 shadow-lg shadow-indigo-500/20"
-                            >
-                              Authorize Access
-                            </button>
-                          </form>
-                        </div>
-                      </div>
-                    )}
+                    <SystemMonitor 
+                      logs={logs} 
+                      isAuthValid={isAuthValid} 
+                      lastError={lastError} 
+                      sdkStatus={sdkStatus}
+                      onLock={() => setActiveTab('dashboard')} 
+                    />
                   </ErrorBoundary>
                 )}
               </motion.div>

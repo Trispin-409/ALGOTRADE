@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { safeFetch } from '../src/lib/utils';
 import { Key, Plus, Trash2, Smartphone, Shield, Clock, RefreshCw } from 'lucide-react';
 
-export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
+export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'users' | 'logs' }> = ({ session, initialTab }) => {
   const [keys, setKeys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -10,7 +10,13 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
   const [planType, setPlanType] = useState('Starter');
-  const [activeTab, setActiveTab] = useState<'keys' | 'users'>('keys');
+  const [activeTab, setActiveTab] = useState<'keys' | 'users' | 'logs'>(initialTab || 'keys');
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+
+  useEffect(() => {
+    if (initialTab) setActiveTab(initialTab);
+  }, [initialTab]);
 
   const fetchKeys = async () => {
     setLoading(true);
@@ -44,9 +50,26 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
     }
   };
 
+  const fetchLogs = async () => {
+    setLoadingLogs(true);
+    try {
+      const data = await safeFetch('/api/admin/audit-logs', {
+        headers: {
+          'Authorization': `Bearer ${session?.access_token}`
+        }
+      });
+      setAuditLogs(data || []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'keys') fetchKeys();
-    else fetchUsers();
+    else if (activeTab === 'users') fetchUsers();
+    else fetchLogs();
   }, [session, activeTab]);
 
   const generateKey = async () => {
@@ -60,7 +83,10 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
         },
         body: JSON.stringify({ planType })
       });
-      if (res.key) alert(`Generated Key: ${res.key}`);
+      if (res.key) {
+        navigator.clipboard.writeText(res.key);
+        alert(`New Unassigned Key Generated and Copied: ${res.key}\n\nYou can now send this key to a user for activation.`);
+      }
       fetchKeys();
     } catch (err: any) {
       setError(err.message);
@@ -70,8 +96,9 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
   };
 
   const approveUser = async (targetUserId: string) => {
-    if (!confirm('Generate a new Access Key bound to this email account? The user will need to activate it.')) return;
+    if (!confirm('Generate a new Access Key bound to this email account? This will grant immediate access.')) return;
     try {
+      setLoadingUsers(true);
       const res = await safeFetch('/api/admin/approve-user', {
         method: 'POST',
         headers: {
@@ -81,9 +108,11 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
         body: JSON.stringify({ targetUserId, planType })
       });
       if (res.message) alert(res.message);
-      fetchUsers();
+      await Promise.all([fetchUsers(), fetchKeys()]);
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setLoadingUsers(false);
     }
   };
 
@@ -143,9 +172,15 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
                 >
                   Manage Users
                 </button>
+                <button 
+                  onClick={() => setActiveTab('logs')}
+                  className={`px-3 py-2 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-[0.2em] transition-all ${activeTab === 'logs' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                  Admin Logs
+                </button>
              </div>
              <button 
-               onClick={activeTab === 'keys' ? fetchKeys : fetchUsers}
+               onClick={activeTab === 'keys' ? fetchKeys : activeTab === 'users' ? fetchUsers : fetchLogs}
                className="p-2 hover:bg-white/5 rounded-lg text-slate-500 hover:text-white transition-all"
                title="Refresh List"
              >
@@ -199,13 +234,13 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
               ) : keys.length === 0 ? (
                 <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-500 italic">No access keys found.</td></tr>
               ) : (
-                keys.map(k => (
+                        keys.map(k => (
                   <tr key={k.id} className="hover:bg-white/5 transition-colors group">
                     <td className="px-6 py-4 font-mono text-emerald-400 font-bold text-xs tracking-tighter flex items-center gap-2">
-                        <span className="truncate max-w-[120px]" title={k.key}>{k.key}</span>
+                        <span className="truncate max-w-[120px]" title={k.access_key}>{k.access_key}</span>
                         <button 
                             onClick={() => {
-                                navigator.clipboard.writeText(k.key);
+                                navigator.clipboard.writeText(k.access_key);
                                 alert('Key copied to clipboard');
                             }}
                             className="p-1 hover:bg-white/10 rounded transition-colors"
@@ -215,42 +250,27 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
                         </button>
                     </td>
                     <td className="px-6 py-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest border ${
-                            k.plan_type === 'Elite' ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20' :
-                            k.plan_type === 'Pro' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
-                            'bg-slate-500/10 text-slate-400 border-slate-500/20'
-                        }`}>
-                            {k.plan_type}
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest border bg-slate-500/10 text-slate-400 border-slate-500/20">
+                            Pre-Assigned
                         </span>
                     </td>
                     <td className="px-6 py-4 text-slate-300">
-                      {k.email ? (
-                         <span className="truncate max-w-[180px] block font-medium" title={k.email}>{k.email}</span>
-                      ) : (
-                         <span className="text-slate-600 italic text-xs">Unbound Key</span>
-                      )}
+                      <span className="truncate max-w-[180px] block font-medium" title={k.email}>{k.email}</span>
                     </td>
                     <td className="px-6 py-4">
                       <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-[0.1em] ${
-                        k.status === 'pending' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' :
-                        k.status === 'used' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' :
-                        'bg-rose-500/10 text-rose-500 border border-rose-500/20'
+                        !k.used ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' :
+                        'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
                       }`}>
-                        {k.status}
+                        {k.used ? 'Used' : 'Pending'}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-slate-400 flex items-center gap-2 text-xs">
-                      {k.subscription ? (
-                          <>
-                             <Clock className="w-3 h-3" /> {new Date(k.subscription.expiry_date).toLocaleDateString()}
-                          </>
-                      ) : (
-                          <span className="text-slate-600">-</span>
-                      )}
+                       <Clock className="w-3 h-3" /> {new Date(k.expires_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2 flex-wrap">
-                        {k.status === 'used' && k.subscription && (
+                        {k.used && (
                           <button 
                             onClick={() => renewSubscription(k.id)}
                             className="text-[10px] uppercase tracking-widest text-emerald-400 hover:text-emerald-300 font-bold border border-emerald-400/20 rounded px-2 py-1 transition-all hover:bg-emerald-400/5"
@@ -258,14 +278,12 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
                             Renew
                           </button>
                         )}
-                        {k.status !== 'revoked' && (
-                          <button 
-                            onClick={() => suspendKey(k.id)}
-                            className="text-[10px] uppercase tracking-widest text-rose-400 hover:text-rose-300 font-bold border border-rose-400/20 rounded px-2 py-1 flex items-center gap-1 transition-all hover:bg-rose-400/5"
-                          >
-                            <Trash2 className="w-3 h-3" /> Revoke
-                          </button>
-                        )}
+                        <button 
+                          onClick={() => suspendKey(k.id)}
+                          className="text-[10px] uppercase tracking-widest text-rose-400 hover:text-rose-300 font-bold border border-rose-400/20 rounded px-2 py-1 flex items-center gap-1 transition-all hover:bg-rose-400/5"
+                        >
+                          <Trash2 className="w-3 h-3" /> Revoke
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -299,12 +317,12 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
                         {u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleDateString() : 'Never'}
                     </td>
                     <td className="px-6 py-4">
-                        {u.key ? (
+                        {u.access_key ? (
                             <div className="flex items-center gap-2 font-mono text-[10px] text-emerald-400 font-bold">
-                                <span>{u.key.key}</span>
+                                <span>{u.access_key}</span>
                                 <button 
                                     onClick={() => {
-                                        navigator.clipboard.writeText(u.key.key);
+                                        navigator.clipboard.writeText(u.access_key);
                                         alert('Key copied to clipboard');
                                     }}
                                     className="p-1 hover:bg-white/10 rounded transition-colors"
@@ -317,9 +335,9 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
                         )}
                     </td>
                     <td className="px-6 py-4">
-                      {u.subscription ? (
+                      {u.has_access ? (
                         <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                          {u.subscription.plan_type} Active
+                          {u.plan} Active
                         </span>
                       ) : (
                         <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-500 border border-slate-500/20">
@@ -329,7 +347,7 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {!u.subscription ? (
+                        {!u.has_access ? (
                             <button 
                                 onClick={() => approveUser(u.id)}
                                 className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-emerald-900/20"
@@ -370,6 +388,51 @@ export const AdminDashboard: React.FC<{ session: any }> = ({ session }) => {
               )}
             </tbody>
           </table>
+        )}
+
+        {activeTab === 'logs' && (
+          <div className="bg-slate-900 shadow-xl overflow-hidden rounded-xl border border-white/5">
+            <div className="p-4 border-b border-white/5 flex justify-between items-center text-[10px] font-black uppercase tracking-[0.2em]">
+              <span className="text-slate-500">Operation Audit Trail</span>
+              {loadingLogs && <RefreshCw className="w-3 h-3 animate-spin text-indigo-500" />}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-black/50 text-slate-500 uppercase font-bold text-[9px] tracking-widest border-b border-white/5">
+                  <tr>
+                    <th className="px-6 py-4">Timestamp</th>
+                    <th className="px-6 py-4">Action</th>
+                    <th className="px-6 py-4">Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5 font-mono">
+                  {auditLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-6 py-10 text-center text-slate-600 font-mono italic">No audit records found</td>
+                    </tr>
+                  ) : (
+                    auditLogs.map((log: any) => (
+                      <tr key={log.id} className="hover:bg-white/5 transition-colors">
+                        <td className="px-6 py-4 text-[10px] text-slate-400">
+                          {new Date(log.created_at).toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-black uppercase text-[9px] tracking-widest border border-indigo-500/20">
+                            {log.action}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 space-y-1">
+                          <code className="text-[9px] text-slate-300 block max-w-lg overflow-x-auto">
+                            {JSON.stringify(log.details)}
+                          </code>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
       </div>
     </div>

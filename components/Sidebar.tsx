@@ -1,15 +1,17 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, Key, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut, Copy } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  onTabChange?: (tab: string, subTab?: string) => void;
   subscriptionPlan?: string;
+  licenseKey?: string;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, subscriptionPlan }) => {
+const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange, subscriptionPlan, licenseKey }) => {
   const [isLogsLocked, setIsLogsLocked] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
@@ -43,23 +45,19 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, subscription
     { id: 'risk', label: 'Risk Management', icon: ShieldAlert },
     { id: 'settings', label: 'Chart Settings', icon: Settings },
     { id: 'news', label: 'Fundamentals Analysis', icon: Newspaper },
-    { id: 'logs', label: 'Logs', icon: Terminal },
   ];
 
   if (subscriptionPlan === 'Developer' || subscriptionPlan === 'admin') {
+     menuItems.push({ id: 'logs', label: 'Logs', icon: Terminal });
      menuItems.push({ id: 'admin', label: 'Admin Dashboard', icon: Shield });
+     if (subscriptionPlan === 'Developer') {
+        menuItems.push({ id: 'admin-logs', label: 'Admin Logs', icon: Database });
+     }
   }
 
   const handleMenuClick = (id: string) => {
-    if (id === 'logs' && isLogsLocked) {
-       const key = prompt("Enter Access Key for System Logs:");
-       const validKey = import.meta.env.VITE_SYSTEM_LOG || "vite system log";
-       if (key === validKey) {
-         setIsLogsLocked(false);
-         setActiveTab(id);
-       } else {
-         alert("Invalid Access Key");
-       }
+    if (id === 'admin-logs') {
+       setActiveTab('admin-logs');
        return;
     }
     setActiveTab(id);
@@ -131,6 +129,40 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, subscription
           <LogOut className="w-4 h-4" />
           Log Out
         </button>
+
+        {licenseKey && (
+          <div className="bg-slate-800/50 rounded-2xl p-4 border border-slate-700/50">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2">
+                <Key className="w-3 h-3 text-emerald-500" />
+                <span className="text-[10px] font-bold text-slate-400 uppercase">License Key</span>
+              </div>
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(licenseKey);
+                  alert('Key copied to clipboard');
+                }}
+                className="p-1 hover:bg-white/10 rounded transition-colors"
+                title="Copy Key"
+              >
+                <Copy className="w-3 h-3 text-slate-500 hover:text-emerald-400" />
+              </button>
+            </div>
+            <div className="font-mono text-[9px] text-emerald-400/70 truncate bg-black/40 p-2 rounded border border-emerald-500/10 flex justify-between items-center group/key">
+              <span className="truncate">{licenseKey}</span>
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(licenseKey);
+                  alert('Key copied to clipboard');
+                }}
+                className="opacity-0 group-hover/key:opacity-100 transition-opacity text-slate-500 hover:text-white"
+              >
+                <Copy className="w-2.5 h-2.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="bg-slate-800/50 rounded-2xl p-4 border border-slate-700/50">
           <div className="flex items-center gap-2 mb-2">
             <div className="w-2 h-2 rounded-full bg-blue-500"></div>
