@@ -1,15 +1,16 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  subscriptionPlan?: string;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
-  const [isLogsLocked, setIsLogsLocked] = useState(true);
+const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, subscriptionPlan }) => {
+  const [isLogsLocked, setIsLogsLocked] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
   
@@ -39,10 +40,15 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   const chartSettings = useStore(state => state.chartSettings);
   const menuItems = [
     { id: 'accounts', label: 'Accounts', icon: Users },
+    { id: 'risk', label: 'Risk Management', icon: ShieldAlert },
     { id: 'settings', label: 'Chart Settings', icon: Settings },
     { id: 'news', label: 'Fundamentals Analysis', icon: Newspaper },
     { id: 'logs', label: 'Logs', icon: Terminal },
   ];
+
+  if (subscriptionPlan === 'Developer' || subscriptionPlan === 'admin') {
+     menuItems.push({ id: 'admin', label: 'Admin Dashboard', icon: Shield });
+  }
 
   const handleMenuClick = (id: string) => {
     if (id === 'logs' && isLogsLocked) {
@@ -114,6 +120,17 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
           <MessageCircle className="w-5 h-5" />
           WhatsApp Support
         </a>
+        <button 
+          onClick={async () => {
+            const { supabase } = await import('../src/lib/supabase');
+            await supabase.auth.signOut();
+            window.location.reload();
+          }}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/20 rounded-xl transition-all duration-200 font-bold text-sm"
+        >
+          <LogOut className="w-4 h-4" />
+          Log Out
+        </button>
         <div className="bg-slate-800/50 rounded-2xl p-4 border border-slate-700/50">
           <div className="flex items-center gap-2 mb-2">
             <div className="w-2 h-2 rounded-full bg-blue-500"></div>

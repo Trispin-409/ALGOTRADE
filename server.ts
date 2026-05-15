@@ -927,12 +927,15 @@ async function setupStreaming(accountId: string) {
       // EXTRA: Ensure true broker connectivity before considering ready
       await waitForTrueConnection(connection, accountId);
       
+      console.log(`[SDK] Streaming established successfully for ${accountId}`);
       REGISTRY.stream.set(accountId, connection);
       
       return connection;
-    } catch (err) {
-      console.error(`[SDK] Connection failed for ${accountId}:`, err);
+    } catch (err: any) {
+      console.error(`[SDK] Connection FAILED for ${accountId}:`, err);
+      // FORCE REGISTRY CLEANUP
       REGISTRY.stream.delete(accountId);
+      globalScope.STREAM_PENDING.delete(accountId);
       throw err;
     } finally {
       globalScope.STREAM_PENDING.delete(accountId);
@@ -996,8 +999,8 @@ async function waitForTrueConnection(connection: any, accountId: string) {
       consecutiveSuccesses++;
       if (consecutiveSuccesses >= REQUIRED_SUCCESSES) {
         console.log(`[STABILIZER] SUCCESS: Broker confirmed STABLE for ${accountId} (Attempt ${retries + 1})`);
-        // Final grace period for internal SDK state to settle
-        await new Promise(r => setTimeout(r, 2000));
+        // Final grace period for internal SDK state to settle - increased for stability
+        await new Promise(r => setTimeout(r, 5000));
         return true;
       }
       console.log(`[STABILIZER] Readiness detected, confirming stability... (${consecutiveSuccesses}/${REQUIRED_SUCCESSES})`);
@@ -1064,8 +1067,15 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
                              errorMsg.includes('transport close');
       const isTimeout = errorMsg.includes('timeout');
       const isSymbolNotExist = errorMsg.includes('does not exist') || errorMsg.includes('invalid symbol');
+      const isNotDeployed = errorMsg.includes('no accounts deployed yet') || errorMsg.includes('undeployed');
       
       console.warn(`[STREAM] Subscription attempt ${i + 1} failed for ${symbol} on ${accountId}: ${err.message}.`);
+      
+      if (isNotDeployed) {
+         console.error(`[STREAM] Abortion: Account ${accountId} is not fully deployed on backend or has undeployed. Closing stale connection.`);
+         await closeConnection(accountId, "REDEPLOYING");
+         throw new Error("ACCOUNT_NOT_DEPLOYED");
+      }
       
       if (isSymbolNotExist) {
         console.warn(`[STREAM] Symbol ${symbol} not found. Attempting fuzzy match recovery...`);
@@ -1090,16 +1100,30 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
       const isRateLimit = err.message?.toLowerCase().includes('rate limit') || err.message?.toLowerCase().includes('saturated');
       
       if (isNotConnected || isTimeout) {
-        console.log(`[STREAM] Connectivity issue for ${accountId}. Waiting for stabilization...`);
-        // Trigger explicit session reconnect if disconnected
+        console.log(`[STREAM] Connectivity issue for ${accountId} (${isTimeout ? 'Timeout' : 'Disconnected'}). Waiting for stabilization...`);
+        // Proactive waitSynchronized to ensure SDK and server are aligned
         try {
-          const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-          if (account.connectionStatus !== 'CONNECTED') {
-             console.log(`[STREAM] Triggering account reconnect for ${accountId}...`);
-             await account.connect();
-             await account.waitConnected();
-          }
-        } catch(e) {}
+          await connection.waitSynchronized({ timeoutInSeconds: 90 });
+        } catch (e: any) {
+          console.warn(`[STREAM] waitSynchronized recovery failed/timed out: ${e.message}`);
+        }
+        
+        // Trigger explicit session reconnect if disconnected and not recently tried
+        const now = Date.now();
+        const lastReconnect = globalScope.LAST_RECONNECT_ATTEMPT?.get(accountId) || 0;
+        if (now - lastReconnect > 60000) {
+          try {
+            if (!globalScope.LAST_RECONNECT_ATTEMPT) globalScope.LAST_RECONNECT_ATTEMPT = new Map();
+            globalScope.LAST_RECONNECT_ATTEMPT.set(accountId, now);
+            
+            const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+            if (account.connectionStatus !== 'CONNECTED') {
+               console.log(`[STREAM] Triggering account reconnect for ${accountId}...`);
+               await account.connect();
+               await account.waitConnected();
+            }
+          } catch(e) {}
+        }
       }
 
       const backoff = isRateLimit ? 20000 : Math.min(2000 * Math.pow(1.6, i), 30000);
@@ -1432,121 +1456,398 @@ async function activateUserAutomations(userId: string, limit: number) {
 }
 
 // ============== SAAS & SUBSCRIPTION ENDPOINTS ==============
-app.post("/api/payfast/webhook", async (req, res) => {
+app.post("/api/subscription/activate-device", async (req, res) => {
   try {
-    const pfData = req.body;
-    let pfParamString = "";
-    Object.keys(pfData).sort().forEach(key => {
-      if(key !== "signature"){
-        pfParamString += `${key}=${encodeURIComponent(pfData[key].trim()).replace(/%20/g, "+")}&`;
-      }
-    });
-    pfParamString = pfParamString.slice(0, -1);
+    const userId = await getUserIdFromRequest(req);
+    const { key, fingerprint } = req.body;
     
-    const passPhrase = process.env.PAYFAST_PASSPHRASE || "";
-    if (passPhrase) {
-        pfParamString += `&passphrase=${encodeURIComponent(passPhrase.trim()).replace(/%20/g, "+")}`;
-    }
-    
-    const signature = crypto.createHash("md5").update(pfParamString).digest("hex");
-    if (signature !== pfData.signature) {
-       console.error("[PAYFAST] Invalid signature");
-       return res.status(400).send("Invalid signature");
+    if (!key) return res.status(400).json({ error: "Access key is required" });
+    if (!adminSupabase) return res.status(500).json({ error: "Database not available" });
+
+    // Validate the key
+    const { data: keyData, error: keyError } = await adminSupabase
+      .from("access_keys")
+      .select("*")
+      .eq("key", key)
+      .single();
+
+    if (keyError || !keyData) {
+      return res.status(400).json({ error: "Invalid access key" });
     }
 
-    const userId = pfData.custom_str1;
-    const planType = pfData.custom_str2;
-    const paymentStatus = pfData.payment_status;
-    const amountGross = parseFloat(pfData.amount_gross);
-
-    const plans: Record<string, number> = { 'Starter': 550, 'Pro': 899, 'Elite': 1199 };
-    const expectedAmount = plans[planType];
-    
-    if (adminSupabase) {
-      await adminSupabase.from("payment_logs").insert({
-         user_id: userId,
-         reference: pfData.pf_payment_id,
-         amount: amountGross,
-         status: paymentStatus,
-         payload: pfData
-      });
+    if (keyData.status === "revoked") {
+      return res.status(400).json({ error: "Access key has been revoked" });
     }
 
-    if (paymentStatus !== "COMPLETE") return res.status(200).send("Not complete");
-    if (!expectedAmount || amountGross !== expectedAmount) {
-       console.error(`[PAYFAST] Amount mismatch for ${planType}. Expected ${expectedAmount}, got ${amountGross}`);
-       return res.status(400).send("Amount mismatch");
+    // Protection: Key is permanently linked to the assigned email (user_id)
+    if (keyData.user_id && keyData.user_id !== userId) {
+      return res.status(400).json({ error: "Activation denied: This access key is assigned to a different email account." });
     }
-   
+
+    if (keyData.status === "used" && keyData.user_id !== userId) {
+      return res.status(400).json({ error: "Access key has already been used by another user" });
+    }
+
+    // If key is already used by THIS user, they are already activated
+    if (keyData.status === "used" && keyData.user_id === userId) {
+        // We log the latest fingerprint just to track, but don't block them
+        await adminSupabase.from("access_keys").update({
+            device_fingerprint: fingerprint || "unknown",
+            used_at: keyData.used_at || new Date().toISOString()
+        }).eq("id", keyData.id);
+
+        return res.json({ success: true, message: "Workspace activated successfully" });
+    }
+
+    // Mark key as used
+    await adminSupabase.from("access_keys").update({
+      status: "used",
+      user_id: userId,
+      device_fingerprint: fingerprint || "unknown",
+      used_at: new Date().toISOString()
+    }).eq("id", keyData.id);
+
+    const planType = keyData.plan_type;
     const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
 
-    if (adminSupabase) {
-      await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("user_id", userId).eq("status", "active");
+    // Set old subscriptions to expired
+    await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("user_id", userId).eq("status", "active");
 
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + 30);
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30);
 
-      const { error } = await adminSupabase.from("subscriptions").insert({
-        user_id: userId,
-        plan_type: planType,
-        status: 'active',
-        metaapi_account_limit: metaapiAccountLimit,
-        expiry_date: expiryDate.toISOString()
-      });
-
-      if (error) console.error("[PAYFAST] Subscription DB error", error.message);
-    }
+    // Create new subscription
+    await adminSupabase.from("subscriptions").insert({
+      user_id: userId,
+      plan_type: planType,
+      status: 'active',
+      metaapi_account_limit: metaapiAccountLimit,
+      expiry_date: expiryDate.toISOString(),
+      access_key_id: keyData.id
+    });
 
     await activateUserAutomations(userId, metaapiAccountLimit);
-
     broadcast({ type: 'subscription:activated', userId, plan: planType, limit: metaapiAccountLimit });
-    return res.status(200).send("OK");
-  } catch(e: any) {
-    console.error("[PAYFAST] Error:", e.message);
-    res.status(500).send("Server Error");
+
+    return res.status(200).json({ success: true, message: "Device activated and subscription updated" });
+  } catch (e: any) {
+    console.error("[ACTIVATE] Error:", e.message);
+    res.status(500).json({ error: "Server error during activation" });
   }
 });
 
-app.post("/api/subscription/activate", async (req, res) => {
+app.post("/api/admin/generate-key", async (req, res) => {
    try {
-     const userId = await getUserIdFromRequest(req);
-     const { targetUserId, planType } = req.body;
+     const authHeader = req.headers.authorization;
+     if (!authHeader) return res.status(401).json({ error: "No token" });
+     const token = authHeader.replace("Bearer ", "");
+     const adminId = await getUserIdFromRequest(req);
+     const { planType } = req.body;
      
      if (!adminSupabase) return res.status(500).json({error: "No DB"});
-     const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
-     if (!roleData || (roleData.role !== 'developer' && roleData.role !== 'admin')) {
-         return res.status(403).json({ error: "Forbidden: Not an admin/developer" });
+
+     if (!await isUserAdmin(token, adminId)) {
+         return res.status(403).json({ error: "Forbidden: Admin access required" });
      }
+
+     const newKey = `ALGO-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+
+     const { error } = await adminSupabase.from("access_keys").insert({
+       key: newKey,
+       plan_type: planType || 'Starter',
+       status: 'pending',
+       created_by: adminId
+     });
+
+     if (error) throw error;
      
-     const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
-
      await adminSupabase.from("audit_logs").insert({
-       admin_id: userId,
-       action: "activate_subscription",
-       target_user_id: targetUserId,
-       details: { plan_type: planType }
+       admin_id: adminId,
+       action: "generate_key",
+       details: { plan_type: planType, key: newKey }
      });
 
-     await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("user_id", targetUserId).eq("status", "active");
-
-     const expiryDate = new Date();
-     expiryDate.setDate(expiryDate.getDate() + 30);
-
-     await adminSupabase.from("subscriptions").insert({
-        user_id: targetUserId,
-        plan_type: planType,
-        status: 'active',
-        metaapi_account_limit: metaapiAccountLimit,
-        expiry_date: expiryDate.toISOString()
-     });
-
-     await activateUserAutomations(targetUserId, metaapiAccountLimit);
-
-     broadcast({ type: 'subscription:activated', userId: targetUserId, plan: planType, limit: metaapiAccountLimit });
-     res.status(200).json({ success: true, message: `Activated ${planType} for ${targetUserId}` });
+     res.status(200).json({ success: true, key: newKey });
    } catch (e: any) {
+     console.error("[ADMIN] Generate Key error:", e);
      res.status(500).json({ error: e.message });
    }
+});
+
+app.get("/api/admin/keys", async (req, res) => {
+   try {
+       const userId = await getUserIdFromRequest(req);
+       if (!adminSupabase) return res.status(500).json({error: "No DB"});
+
+       // Role check with master email override
+       const authHeader = req.headers.authorization;
+       let isMasterAdmin = false;
+       if (authHeader) {
+           const token = authHeader.replace("Bearer ", "");
+           const { data: userData } = await adminSupabase.auth.getUser(token);
+           if (userData.user?.email?.toLowerCase() === "trispinblackops@gmail.com") {
+               isMasterAdmin = true;
+           }
+       }
+
+       if (!isMasterAdmin) {
+           const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
+           if (!roleData || (roleData.role !== 'developer' && roleData.role !== 'admin')) {
+               return res.status(403).json({ error: "Forbidden" });
+           }
+       }
+       const { data: keysData } = await adminSupabase.from("access_keys").select("*").order("created_at", { ascending: false });
+       
+       let userMap = new Map();
+       try {
+         const { data: usersData } = await adminSupabase.auth.admin.listUsers();
+         if (usersData && usersData.users) {
+            usersData.users.forEach((u: any) => userMap.set(u.id, u.email));
+         }
+       } catch (err) {
+         console.warn("Could not list users from admin API", err);
+       }
+       
+       const { data: subsData } = await adminSupabase.from("subscriptions").select("*");
+       
+       const enhancedKeys = keysData?.map(k => {
+          const email = k.user_id ? userMap.get(k.user_id) : null;
+          const sub = subsData?.find(s => s.access_key_id === k.id || (s.user_id === k.user_id && s.status === 'active'));
+          return {
+             ...k,
+             email,
+             subscription: sub || null
+          };
+       }) || [];
+       
+       res.json(enhancedKeys);
+   } catch(e: any) {
+       res.status(500).json({ error: e.message || String(e) });
+   }
+});
+
+app.post("/api/admin/renew-subscription", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) return res.status(401).json({ error: "No token" });
+        const token = authHeader.replace("Bearer ", "");
+        const adminId = await getUserIdFromRequest(req);
+        
+        const { keyId, userId: targetUserId } = req.body;
+        if (!adminSupabase) return res.status(500).json({error: "No DB"});
+
+        if (!await isUserAdmin(token, adminId)) {
+            return res.status(403).json({ error: "Forbidden: Admin access required" });
+        }
+        
+        let subData = null;
+        if (keyId) {
+            const { data } = await adminSupabase.from("subscriptions").select("*").eq("access_key_id", keyId).single();
+            subData = data;
+        } else if (targetUserId) {
+            const { data } = await adminSupabase.from("subscriptions").select("*").eq("user_id", targetUserId).eq("status", "active").single();
+            subData = data;
+        }
+
+        if (!subData) {
+           return res.status(404).json({ error: "Active subscription not found" });
+        }
+        
+        const currentExpiry = new Date(subData.expiry_date);
+        const now = new Date();
+        const startFrom = currentExpiry > now ? currentExpiry : now;
+        const newExpiry = new Date(startFrom.getTime() + 30 * 24 * 60 * 60 * 1000);
+        
+        await adminSupabase.from("subscriptions").update({ 
+            expiry_date: newExpiry.toISOString(),
+            status: 'active'
+        }).eq("id", subData.id);
+        
+        if (subData.access_key_id) {
+            await adminSupabase.from("access_keys").update({ status: 'used' }).eq("id", subData.access_key_id);
+        }
+        
+        await adminSupabase.from("audit_logs").insert({
+          admin_id: adminId,
+          action: "renewed_subscription",
+          details: { sub_id: subData.id, user_id: subData.user_id, new_expiry: newExpiry.toISOString() }
+        });
+        
+        res.json({ success: true, newExpiry });
+    } catch(e: any) {
+        console.error("[ADMIN] Renew Subscription error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+async function isUserAdmin(token: string, userId: string): Promise<boolean> {
+    if (!adminSupabase) return false;
+    
+    // Master Admin Override
+    const { data: userData } = await adminSupabase.auth.getUser(token);
+    const userEmail = userData?.user?.email?.toLowerCase();
+    if (userEmail === "trispinblackops@gmail.com" || userEmail === "admin@algotrade.com") {
+        return true;
+    }
+
+    // Database Role Check
+    const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
+    return roleData && (roleData.role === 'admin' || roleData.role === 'developer');
+}
+
+app.get("/api/admin/users", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) return res.status(401).json({ error: "No token" });
+        const token = authHeader.replace("Bearer ", "");
+        const userId = await getUserIdFromRequest(req);
+        
+        if (!await isUserAdmin(token, userId)) {
+            return res.status(403).json({ error: "Forbidden: Admin access required" });
+        }
+
+        const { data: usersResponse, error: usersError } = await adminSupabase.auth.admin.listUsers({
+            perPage: 1000
+        });
+        if (usersError) throw usersError;
+        
+        const users = usersResponse?.users || [];
+
+        // Fetch subscriptions and keys in parallel
+        const [subsDataRes, keysDataRes] = await Promise.all([
+            adminSupabase.from("subscriptions").select("*"),
+            adminSupabase.from("access_keys").select("*")
+        ]);
+
+        const subsData = subsDataRes.data || [];
+        const keysData = keysDataRes.data || [];
+
+        const enhancedUsers = users.map((u: any) => {
+            const sub = subsData.find((s: any) => s.user_id === u.id && s.status === 'active');
+            const key = keysData.find((k: any) => k.user_id === u.id);
+            return {
+                id: u.id,
+                email: u.email,
+                created_at: u.created_at,
+                last_sign_in_at: u.last_sign_in_at,
+                subscription: sub || null,
+                key: key || null
+            };
+        });
+
+        res.json(enhancedUsers);
+    } catch (e: any) {
+        console.error("[ADMIN] Users fetch error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/admin/approve-user", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) return res.status(401).json({ error: "No token" });
+        const token = authHeader.replace("Bearer ", "");
+        const adminId = await getUserIdFromRequest(req);
+        
+        const { targetUserId, planType } = req.body;
+        if (!adminSupabase) return res.status(500).json({error: "No DB"});
+
+        if (!await isUserAdmin(token, adminId)) {
+            return res.status(403).json({ error: "Forbidden: Admin access required" });
+        }
+
+        console.log(`[ADMIN] Approving user ${targetUserId} for plan ${planType} (Generating Unused Key)`);
+
+        // Check if user exists
+        const { data: userRecord, error: userError } = await adminSupabase.auth.admin.getUserById(targetUserId);
+        if (userError || !userRecord) throw new Error("User not found");
+
+        const newKey = `ALG-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+        const { data: keyData, error: keyErr } = await adminSupabase.from("access_keys").insert({
+            key: newKey,
+            plan_type: planType || 'Starter',
+            status: 'pending',
+            user_id: targetUserId,
+            created_by: adminId
+        }).select().single();
+
+        if (keyErr) {
+            console.error("[ADMIN] KEY INSERT ERROR:", keyErr);
+            throw keyErr;
+        }
+
+        await adminSupabase.from("audit_logs").insert({
+          admin_id: adminId,
+          action: "generate_manual_key",
+          details: { user_id: targetUserId, key: newKey, plan: planType }
+        });
+
+        res.json({ success: true, message: `Access Key Generated: ${newKey}. Send this to the user to activate.`, key: newKey });
+    } catch (e: any) {
+        console.error("[ADMIN] Approve User error:", e);
+        res.status(500).json({ error: e.message || String(e) });
+    }
+});
+
+app.post("/api/admin/suspend-key", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) return res.status(401).json({ error: "No token" });
+        const token = authHeader.replace("Bearer ", "");
+        const adminId = await getUserIdFromRequest(req);
+        const { keyId } = req.body;
+        
+        if (!adminSupabase) return res.status(500).json({error: "No DB"});
+
+        if (!await isUserAdmin(token, adminId)) {
+            return res.status(403).json({ error: "Forbidden: Admin access required" });
+        }
+
+        await adminSupabase.from("access_keys").update({ status: 'revoked' }).eq("id", keyId);
+        
+        // Expire any subscription using this key
+        await adminSupabase.from("subscriptions").update({ status: 'expired' }).eq("access_key_id", keyId);
+
+        await adminSupabase.from("audit_logs").insert({
+          admin_id: adminId,
+          action: "suspend_key",
+          details: { key_id: keyId }
+        });
+
+        res.status(200).json({ success: true, message: "Key suspended successfully" });
+    } catch (e: any) {
+        console.error("[ADMIN] Suspend Key error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/admin/reset-device", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) return res.status(401).json({ error: "No token" });
+        const token = authHeader.replace("Bearer ", "");
+        const adminId = await getUserIdFromRequest(req);
+        const { keyId } = req.body;
+        
+        if (!adminSupabase) return res.status(500).json({error: "No DB"});
+
+        if (!await isUserAdmin(token, adminId)) {
+            return res.status(403).json({ error: "Forbidden: Admin access required" });
+        }
+
+        await adminSupabase.from("access_keys").update({ device_fingerprint: null }).eq("id", keyId);
+        
+        await adminSupabase.from("audit_logs").insert({
+          admin_id: adminId,
+          action: "reset_device",
+          details: { key_id: keyId }
+        });
+
+        res.status(200).json({ success: true, message: "Device bind reset successfully" });
+    } catch (e: any) {
+        console.error("[ADMIN] Reset Device error:", e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.get("/api/subscription/status", async (req, res) => {
@@ -1567,12 +1868,17 @@ app.get("/api/subscription/status", async (req, res) => {
 
 app.get("/api/admin/audit-logs", async (req, res) => {
    try {
+       const authHeader = req.headers.authorization;
+       if (!authHeader) return res.status(401).json({ error: "No token" });
+       const token = authHeader.replace("Bearer ", "");
        const userId = await getUserIdFromRequest(req);
+       
        if (!adminSupabase) return res.status(500).json({error: "No DB"});
-       const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
-       if (!roleData || (roleData.role !== 'developer' && roleData.role !== 'admin')) {
-           return res.status(403).json({ error: "Forbidden" });
+       
+       if (!await isUserAdmin(token, userId)) {
+           return res.status(403).json({ error: "Forbidden: Admin access required" });
        }
+
        const { data } = await adminSupabase.from("audit_logs").select("*").order("created_at", { ascending: false });
        res.json(data || []);
    } catch(e: any) {
@@ -1610,10 +1916,11 @@ app.get("/api/user/bootstrap", async (req, res) => {
 
     if (!has_active_subscription && adminSupabase) {
        const { data: sub } = await adminSupabase.from("subscriptions")
-          .select("plan_type, status")
+          .select("plan_type, status, access_key_id")
           .eq("user_id", userId)
           .eq("status", "active")
           .single();
+          
        if (sub) {
           has_active_subscription = true;
           subscription_plan = sub.plan_type;
@@ -3017,9 +3324,7 @@ async function startServer() {
                     currency: info?.currency ?? 'USD'
                 }));
                 
-                // 3. Load Initial History (Strict Adherence)
-                const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-                
+                // 3. Hydrate candles on stream connect
                 let history = [];
                 const isShortSymbol = !symbol || symbol.length < 3;
                 
@@ -3030,26 +3335,20 @@ async function startServer() {
                     try {
                         let finalSymbol = symbol;
                         
-                        // 1. Attempt lookup
                         const fetchCandles = async (s: string) => {
+                            const account = await metaapi.metatraderAccountApi.getAccount(accountId);
                             if (typeof account.getHistoricalCandles === 'function') {
-                               return await account.getHistoricalCandles(s, timeframe, undefined, 300);
+                                return await account.getHistoricalCandles(s, timeframe, undefined, 300);
                             } else {
-                               const rpc = await getRPCConnection(accountId);
-                               if (typeof rpc.getHistoricalCandles === 'function') {
-                                   return await rpc.getHistoricalCandles(s, timeframe, undefined, 300);
-                               } else if (rpc.account && typeof rpc.account.getHistoricalCandles === 'function') {
-                                   return await rpc.account.getHistoricalCandles(s, timeframe, undefined, 300);
-                               } else {
-                                   throw new Error("Could not map getHistoricalCandles to connection context");
-                               }
+                                console.warn('[SDK_RPC] account.getHistoricalCandles is not a function. Falling back to RPC directly on account...');
+                                // G2 / non-G1 might not support it, return empty and rely on streaming
+                                return [];
                             }
                         };
 
                         try {
                             history = await fetchCandles(finalSymbol);
                         } catch (err: any) {
-                            // 2. Fuzzy Match Recovery (Auto-Suffix Detection)
                             if (err.message.includes('not exist') || err.message.includes('invalid')) {
                                 console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
                                 const specifications = await getSymbolsCached(metaapi, accountId);
@@ -3207,6 +3506,15 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    
+    // Explicitly serve icons with correct MIME type and no SPA fallback
+    app.use('/icons', express.static(path.join(process.cwd(), 'public', 'icons'), {
+      setHeaders: (res) => {
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+      }
+    }));
+
     app.get('*all', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

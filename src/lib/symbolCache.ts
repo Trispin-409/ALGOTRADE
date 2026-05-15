@@ -41,7 +41,7 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
       
       // Ensure the account is deployed before trying to fetch symbols
       if (account.state !== 'DEPLOYED') {
-        throw new Error(`Account is in ${account.state} state. Cannot fetch symbols.`);
+        throw new Error(`UNDEPLOYED_STATE`);
       }
       
       let symbols: string[] = [];
@@ -99,6 +99,11 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
         console.warn(`[SYMBOL_CACHE] Rate limited for ${accountId}. Retrying in ${delay/1000}s... (Attempt ${attempt})`);
         await new Promise(r => setTimeout(r, delay));
         return fetchWithRetry(attempt + 1);
+      }
+
+      if (err.message === 'UNDEPLOYED_STATE') {
+         // Silently return empty array, this is expected for undeployed accounts
+         return [];
       }
 
       console.error(`[SYMBOL_CACHE] Failed to fetch symbols for ${accountId}:`, err.message);

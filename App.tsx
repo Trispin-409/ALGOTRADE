@@ -29,6 +29,7 @@ import Dashboard from './components/Dashboard';
 import Sidebar from './components/Sidebar';
 import AccountConfig from './components/AccountConfig';
 import News from './components/News';
+import RiskManagement from './components/RiskManagement';
   // Remove ea-deployer state
 
 import SystemMonitor from './components/SystemMonitor';
@@ -36,13 +37,14 @@ import { ExpertLogPanel } from './components/ExpertLogPanel';
 import MarketData from './components/MarketData';
 import ChartSettings from './components/ChartSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { connectionManager } from './src/lib/ConnectionManager';
+import { connectionManager, TradingPhase } from './src/lib/ConnectionManager';
 import { safeFetch } from './src/lib/utils';
 import { supabase } from './src/lib/supabase';
 import { LoginForm } from './src/components/Auth/LoginForm';
 import { FullScreenLoader } from './src/components/Auth/FullScreenLoader';
 import { useStore } from './src/store';
 import { PricingPage } from './src/components/PricingPage';
+import { AdminDashboard } from './components/AdminDashboard';
 
 // No explicit SDK_URL needed for same-origin SDK proxy
 
@@ -77,7 +79,12 @@ const App: React.FC = () => {
     return 'shadow-[inset_0_0_100px_rgba(0,0,0,0.5)]';
   }, [globalHistory]);
 
+  const authReadyRef = useRef(false);
+
   useEffect(() => {
+    if (authReadyRef.current) return;
+    authReadyRef.current = true;
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setLoadingAuth(false);
@@ -94,7 +101,7 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || bootData) return;
     setLoadingBootstrap(true);
 
     safeFetch("/api/user/bootstrap", {
@@ -112,7 +119,7 @@ const App: React.FC = () => {
     .finally(() => {
       setLoadingBootstrap(false);
     });
-  }, [session]);
+  }, [session, bootData]);
 
   // Global State
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
@@ -280,19 +287,17 @@ const App: React.FC = () => {
 
     const unsubPhase = connectionManager.subscribePhase((phase) => {
       setTradingStatus(phase);
-      // Logic remained for global connection status
-      if (phase === 'READY') {
+      if (phase === TradingPhase.ACCOUNT_READY || phase === TradingPhase.STREAMING) {
           setConnectionStatus('READY');
           setSdkStatus('CONNECTED');
-      } else if (phase === 'SYNCING') {
+      } else if (phase === TradingPhase.ACCOUNT_SYNCING) {
           setConnectionStatus('SYNCING');
           setSdkStatus('SYNCING');
-      } else if (phase === 'CONNECTING') {
+      } else if (phase === TradingPhase.CONNECTING_META || phase === TradingPhase.META_CONNECTED) {
           setConnectionStatus('CONNECTING');
           setSdkStatus('BOOTING');
-      } else if (phase === 'OFFLINE') {
+      } else if (phase === TradingPhase.INIT) {
           setConnectionStatus('OFFLINE');
-          // Removed: setSdkStatus('OFFLINE'); // Don't flip to offline just because WS disconnected briefly
       } else {
           setConnectionStatus('INIT');
       }
@@ -764,7 +769,7 @@ const App: React.FC = () => {
         };
         
         if (accId === selectedAccountId) {
-            connectionManager.setRestHydrated(accId, true);
+            // connectionManager.setRestHydrated(accId, true);
         }
 
         console.log(`[DEBUG] Normalizing Terminal ${newAcc.login}: status=${newAcc.connectionStatus}, ready=${newAcc.ready}`);
@@ -917,7 +922,7 @@ const App: React.FC = () => {
         {/* Sidebar - Desktop & Mobile overlay */}
         <div className={`fixed inset-0 bg-black/80 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
         <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full border-r border-white/5 bg-[#02040a]/90 backdrop-blur-xl`}>
-          <Sidebar activeTab={activeTab} setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} />
+          <Sidebar activeTab={activeTab} setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} subscriptionPlan={bootData.subscription_plan} />
         </div>
         
         <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/20">
@@ -1019,6 +1024,7 @@ const App: React.FC = () => {
                   />
                 )}
                 {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
+                {activeTab === 'risk' && <RiskManagement />}
                 <div style={{ display: activeTab === 'data' ? 'block' : 'none' }}>
                   <ErrorBoundary>
                     <MarketData 
@@ -1061,6 +1067,11 @@ const App: React.FC = () => {
                       selectedAccountId={selectedAccountId || ''}
                       selectedTimeframe={selectedTimeframe}
                     />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'admin' && (
+                  <ErrorBoundary>
+                    <AdminDashboard session={session} />
                   </ErrorBoundary>
                 )}
                 {activeTab === 'logs' && (
@@ -1144,6 +1155,10 @@ const App: React.FC = () => {
           <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'accounts' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
             <Users className="w-5 h-5 sm:w-6 sm:h-6" />
             <span className="text-[10px] font-mono font-bold uppercase">Account</span>
+          </button>
+          <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'risk' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
+            <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
+            <span className="text-[10px] font-mono font-bold uppercase">Risk</span>
           </button>
         </nav>
       </main>

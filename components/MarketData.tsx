@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import { Activity, Clock, RefreshCw, TrendingUp, TrendingDown, AlertCircle, Play, X, Zap, Shield, Layers, History, Settings, Square, Workflow, Lock } from 'lucide-react';
 import { TradingAccount } from '../types';
-import CandlestickChart from './CandlestickChart';
-import { connectionManager } from '../src/lib/ConnectionManager';
+const CandlestickChart = lazy(() => import('./CandlestickChart'));
+import { connectionManager, TradingPhase } from '../src/lib/ConnectionManager';
 import { safeFetch } from '../src/lib/utils';
 import { useStore } from '../src/store';
 
@@ -84,6 +84,7 @@ const MarketData: React.FC<MarketDataProps> = ({
   const setCandles = useStore(state => state.setCandles);
   const addCandle = useStore(state => state.addCandle);
   const chartData = candles || [];
+  const historyReady = chartData.length >= 100;
   
   const globalPositions = useStore(state => state.positions);
   const globalHistory = useStore(state => state.history);
@@ -164,98 +165,99 @@ const MarketData: React.FC<MarketDataProps> = ({
   useEffect(() => {
     if (!selectedAccountId || !symbol || !timeframe) return;
     
-    // 1. Assert desired state to central authority
-    connectionManager.setStreamIntent(selectedAccountId, symbol, timeframe);
-
-    let isMounted = true;
+    const phaseCheck = setInterval(() => {
+      // Allow initiation if we are at phase BROKER_CONNECTED or higher
+      // Since BROKER_CONNECTED is phase 3, and STREAMING is phase 6.
+      // Based on object keys:
+      // INIT: 0
+      // CONNECTING_META: 1
+      // META_CONNECTED: 2
+      // BROKER_CONNECTED: 3
+      // ...
+      
+      if (connectionManager.currentPhase === TradingPhase.META_CONNECTED ||
+          connectionManager.currentPhase === TradingPhase.BROKER_CONNECTED || 
+          connectionManager.currentPhase === TradingPhase.ACCOUNT_SYNCING ||
+          connectionManager.currentPhase === TradingPhase.ACCOUNT_READY ||
+          connectionManager.currentPhase === TradingPhase.STREAMING) {
+        
+        console.log(`[DEBUG] Phase check passed (${connectionManager.currentPhase}), setting intent.`);
+        connectionManager.setStreamIntent(selectedAccountId, symbol, timeframe);
+        
+        // Explicitly subscribe again just in case the intent alone isn't enough
+        // This is a safety measure
+        connectionManager.send(selectedAccountId, {
+            type: 'STREAM_SUBSCRIBE',
+            accountId: selectedAccountId,
+            symbol,
+            timeframe
+        }, true);
+        
+        clearInterval(phaseCheck);
+      }
+    }, 1000);
     
     // 2. Subscribe to the global data tunnel
     const unsub = connectionManager.subscribe((data: any) => {
-      if (!isMounted) return;
-      
+      console.log("[DEBUG_REC_DATA]", data.type, data.symbol); 
       if (data.type === 'HISTORY_SNAPSHOT' && data.symbol === symbol) {
-          const validHistory = data.candles.filter((c: any) => c.open !== undefined && c.close !== undefined);
+          const validHistory = data.candles.filter((c: any) => c && c.time && c.open !== undefined && c.close !== undefined);
           setCandles(validHistory);
-          addLog(`STREAM_ENGINE: Hydrated ${validHistory.length} historical candles from snapshot.`);
+          addLog(`[CHART_SEEDED] ${validHistory.length} historical candles from snapshot.`);
+          console.log("[CHART_SEEDED]", validHistory.length);
       } else if (data.type === 'CANDLE' && data.symbol === symbol) {
+        if (!data.candle || !data.candle.time) return;
+        console.log("[DEBUG_REC_CANDLE]", data);
         const inc = data.candle;
         const tfM = getTimeframeMinutes(timeframe);
         const alignedIncomingTime = alignToTimeframe(inc.time, tfM);
         
         const alignedCandle = { ...inc, time: new Date(alignedIncomingTime).toISOString() };
-        addCandle(alignedCandle);
+        
+        setCandles(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+
+          if (last && last.time && new Date(last.time).getTime() === new Date(alignedCandle.time).getTime()) {
+            next[next.length - 1] = alignedCandle;
+          } else {
+            next.push(alignedCandle);
+            if (next.length > 300) next.shift();
+          }
+          return next;
+        });
         
       } else if (data.type === 'price:update' && data.symbol === symbol) {
+        console.log("[DEBUG_REC_PRICE]", data);
         const bid = Number(data.bid);
-        setLatestTick({ bid, ask: Number(data.ask) });
+        const ask = Number(data.ask);
+        const price = bid || ask;
+        
+        setLatestTick({ bid, ask });
+        console.log("[LIVE_TICK]", price);
 
-        // Update the current candle dynamically
-        setCandles(useStore.getState().candles.map((c, i, arr) => {
-          if (i === arr.length - 1) {
-             return {
-               ...c,
-               close: bid,
-               high: Math.max(c.high, bid),
-               low: Math.min(c.low, bid),
-             };
-          }
-          return c;
-        }));
-      } else if (data.type === 'POSITIONS_SNAPSHOT' && data.accountId === selectedAccountId) {
-        setPositions(data.data || []);
-      } else if (data.type === 'POSITION_UPDATE' && data.accountId === selectedAccountId) {
-        const current = useStore.getState().positions;
-        const index = current.findIndex(p => p.id === data.data.id);
-        const next = [...current];
-        if (index >= 0) {
-          next[index] = data.data;
-        } else {
-          next.push(data.data);
-        }
-        setPositions(next);
-      } else if (data.type === 'POSITION_REMOVED' && data.accountId === selectedAccountId) {
-        const current = useStore.getState().positions;
-        setPositions(current.filter(p => p.id !== data.data.id));
-      } else if (data.type === 'HISTORY_ORDER_ADDED' && data.accountId === selectedAccountId) {
-        // Initial fetch handled by App.tsx syncing to globalHistory usually, 
-        // but here we can update a local history state if we want, or just let globalHistory handle it.
-        // The current MarketData UI uses globalHistory (line 91).
-        // Let's update globalHistory via store if we want, or just fetch again.
-        useStore.getState().setHistory([data.data, ...useStore.getState().history].slice(0, 50));
-      } else if (data.type === 'trade:update' && data.symbol === symbol) {
-        const tfM = getTimeframeMinutes(timeframe);
-        if (data.updateType === 'DEAL') {
-          setDeals(prev => {
-            const alignedTime = getCandleKey(data.time, tfM);
-            const dealObj = { ...data, type: data.tradeType, time: alignedTime };
-            const arr = [...prev, dealObj];
-            // Deduplicate deals 
-            return arr.filter((d, i, self) => 
-               i === self.findIndex(t => t.time === d.time && t.volume === d.volume && t.price === d.price)
-            ).slice(-100);
-          });
-        } else if (data.updateType === 'POSITION') {
-          const current = useStore.getState().positions;
-          const posObj = { 
-            ...data, 
-            type: data.tradeType, 
-            openPrice: data.price,
-            stopLoss: data.stopLoss,
-            takeProfit: data.takeProfit,
-            magicNumber: data.magicNumber || data.magic // Support both MetaApi variants
-          };
-          const map = new Map(current.map(p => [p.positionId, p]));
-          map.set(data.positionId, posObj);
-          setPositions(Array.from(map.values()));
-        }
+        setCandles(prev => {
+           if (prev.length === 0) return prev;
+           const next = [...prev];
+           const last = { ...next[next.length - 1] };
+           last.close = price;
+           last.high = Math.max(last.high, price);
+           last.low = Math.min(last.low, price);
+           next[next.length - 1] = last;
+           return next;
+        });
       }
     });
 
     return () => {
-      isMounted = false;
+      clearInterval(phaseCheck);
       unsub();
     };
   }, [selectedAccountId, symbol, timeframe, addLog]);
+
+  useEffect(() => {
+    console.log("[MARKET_STATE]", candles.length);
+  }, [candles]);
 
   const [localSymbol, setLocalSymbol] = useState(symbol);
 
@@ -280,8 +282,9 @@ const MarketData: React.FC<MarketDataProps> = ({
   const displayData = useMemo(() => {
     if (chartData.length === 0) return null;
     const last = chartData[chartData.length - 1];
+    if (!last) return null;
     return {
-      time: new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      time: last.time ? new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-',
       open: last.open,
       high: last.high,
       low: last.low,
@@ -410,39 +413,35 @@ const MarketData: React.FC<MarketDataProps> = ({
               </button>
             </div>
 
-          <div className="flex-1 w-full relative min-h-[350px] lg:min-h-[450px]">
+          <div className="flex-1 w-full relative min-h-[500px]">
             {/* Background Symbol Text */}
             <div className="absolute inset-0 flex flex-col pt-4 pl-4 md:pt-10 md:pl-10 pointer-events-none opacity-[0.02] z-0 select-none overflow-hidden">
               <span className="text-6xl md:text-[10rem] font-black text-white leading-none tracking-tighter uppercase">{symbol}</span>
               <span className="text-3xl md:text-6xl font-black text-indigo-400 mt-[-10px] uppercase tracking-widest">{timeframe}</span>
             </div>
-            {(!chartData) ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-indigo-400/50 z-10">
-                <RefreshCw className="w-8 h-8 animate-spin mb-3" />
-                <p className="text-[10px] font-mono uppercase tracking-widest">Initializing Feed</p>
-              </div>
-            ) : chartData.length > 0 ? (
-              <div className="absolute inset-0 z-10 p-1">
-                <CandlestickChart 
-                  data={chartData} 
-                  latestTick={latestTick} 
-                  height={450} 
-                  deals={deals} 
-                  positions={globalPositions}
-                  marketAnalysis={marketAnalysis}
-                  showAnalysis={showAnalysis}
-                  upColor={chartSettings.upColor}
-                  downColor={chartSettings.downColor}
-                  bgImageUrl={chartSettings.bgImageUrl}
-                />
-              </div>
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
-                <Activity className="w-10 h-10 mb-3 opacity-20" />
-                <p className="text-[10px] font-mono uppercase tracking-widest">Waiting for tick stream...</p>
-                <p className="text-[9px] mt-1 opacity-50 font-mono">Ensure terminal is SYNCED</p>
-              </div>
-            )}
+            
+            <div className="w-full h-full min-h-[500px] relative">
+              {(!candles || candles.length === 0) ? (
+                <div className="flex items-center justify-center min-h-[500px] text-slate-500 font-mono text-xs">
+                  Waiting for market data...
+                </div>
+              ) : (
+                <Suspense fallback={<div className="h-[500px] flex items-center justify-center text-slate-500 font-mono text-xs">TRADING CHART LOADING...</div>}>
+                  <CandlestickChart 
+                    data={candles}
+                    latestTick={latestTick} 
+                    height={500} 
+                    deals={deals} 
+                    positions={globalPositions}
+                    marketAnalysis={marketAnalysis}
+                    showAnalysis={showAnalysis}
+                    upColor={chartSettings.upColor}
+                    downColor={chartSettings.downColor}
+                    bgImageUrl={chartSettings.bgImageUrl}
+                  />
+                </Suspense>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -604,6 +603,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                 <p className="text-[10px] font-mono text-slate-600 text-center py-4 bg-black/20 rounded-lg">Log empty</p>
               ) : (
                 globalHistory.slice(0, 10).map((order: any, i: number) => {
+                  if (!order) return null;
                   const isBuy = order.type?.toUpperCase().includes('BUY');
                   return (
                   <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5">
@@ -612,7 +612,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                         <span className="text-[10px] font-mono font-black text-white">{order.symbol}</span>
                         <span className={`text-[7px] font-mono font-black px-1 py-0.5 rounded uppercase tracking-widest ${isBuy ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>{isBuy ? 'BUY' : 'SELL'}</span>
                       </div>
-                      <p className="text-[8px] font-mono text-slate-500 uppercase">{new Date(order.time).toLocaleTimeString()}</p>
+                      <p className="text-[8px] font-mono text-slate-500 uppercase">{order.time ? new Date(order.time).toLocaleTimeString() : '-'}</p>
                     </div>
                     {order.profit !== undefined && (
                       <div className={`text-[10px] font-mono font-black ${order.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>

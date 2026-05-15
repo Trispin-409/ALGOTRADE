@@ -9,12 +9,13 @@
 @layer base {
   html {
     -webkit-tap-highlight-color: transparent;
-    user-select: none;
+    user-select: text;
     height: 100%;
     overflow: hidden;
   }
   
   body {
+    user-select: text;
     height: 100%;
     width: 100vw;
     overflow: hidden;
@@ -34,8 +35,8 @@
     @apply bg-[#02040a] text-slate-200 font-sans antialiased selection:bg-indigo-500/30 selection:text-white;
     overscroll-behavior-y: none;
     -webkit-tap-highlight-color: transparent;
-    user-select: none;
-    -webkit-user-select: none;
+    user-select: text;
+    -webkit-user-select: text;
   }
   
   input, textarea, [contenteditable] {

@@ -4,6 +4,19 @@ CREATE TABLE IF NOT EXISTS public.user_roles (
   role text not null default 'user' CHECK (role IN ('user', 'admin', 'developer'))
 );
 
+-- Access Keys Table (For Device Binding)
+CREATE TABLE IF NOT EXISTS public.access_keys (
+  id uuid primary key default gen_random_uuid(),
+  key text unique not null,
+  plan_type text not null,
+  status text not null default 'pending', -- 'pending', 'used', 'revoked'
+  user_id uuid references auth.users, -- bound user
+  device_fingerprint text, -- bound device
+  created_by uuid references auth.users,
+  created_at timestamptz not null default now(),
+  used_at timestamptz
+);
+
 -- Subscriptions Table
 CREATE TABLE IF NOT EXISTS public.subscriptions (
   id uuid primary key default gen_random_uuid(),
@@ -12,7 +25,8 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
   start_date timestamptz not null default now(),
   expiry_date timestamptz not null,
   status text not null default 'pending', -- 'pending', 'active', 'expired', 'cancelled'
-  metaapi_account_limit integer not null
+  metaapi_account_limit integer not null,
+  access_key_id uuid references public.access_keys
 );
 
 -- Payment Logs
@@ -38,9 +52,19 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
 
 -- Enable RLS
 ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.access_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payment_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Access Keys Policies
+CREATE POLICY "Users can view their own keys" ON public.access_keys
+  FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Admins can manage all keys" ON public.access_keys
+  FOR ALL USING (
+    (SELECT role FROM public.user_roles WHERE user_id = auth.uid()) IN ('admin', 'developer')
+  );
 
 -- User Roles Policies
 -- Users can read their own role

@@ -57,6 +57,9 @@ export default function CandlestickChart({
   downColor = '#f43f5e',
   bgImageUrl = ''
 }: Props) {
+  console.log("[CHART_MOUNTED]");
+  console.log("[CHART_RENDER_DATA]", data?.length);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
   const [mouse, setMouse] = useState<{ x: number, y: number } | null>(null);
@@ -72,6 +75,7 @@ export default function CandlestickChart({
 
   // Merge latest tick into final candle for live updating
   const chartData = useMemo(() => {
+    console.log("[CHART_RENDER_DATA]", data?.length);
     if (!data || !data.length) return [];
     const arr = [...data];
     if (latestTick?.bid) {
@@ -87,32 +91,17 @@ export default function CandlestickChart({
   const rightPadding = 65;
   const mainW = Math.max(0, width - rightPadding);
   
-  // Panning and zooming
-  const [panX, setPanX] = useState(0);
-  const [zoom, setZoom] = useState(1);
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, panX: 0 });
-
   // Calculate spatial layout
-  const baseCandleW = Math.max(mainW / chartData.length, 4) * zoom;
+  const baseCandleW = Math.max(mainW / chartData.length, 4);
   const candleW = baseCandleW;
   const totalW = chartData.length * candleW;
   
-  // Align right edge organically
-  // panX acts as an additional offset that the user controls
-  const defaultPan = mainW - totalW - 20;
-  const currentPan = defaultPan + panX;
+  // Align right edge organically (no panning allowed)
+  const currentPan = mainW - totalW - 20;
 
   // Calculate rendering constraints dynamically based on visible data bounds
-  // We only consider candles that are currently visible on screen to get min/max
-  const visibleCandles = chartData.filter((d, i) => {
-    const x = currentPan + i * candleW + candleW / 2;
-    return x >= -candleW && x <= mainW + candleW;
-  });
-  const renderData = visibleCandles.length > 0 ? visibleCandles : chartData;
-
-  const minP = renderData.length ? Math.min(...renderData.map(d => d.low)) * 0.9995 : 0;
-  const maxP = renderData.length ? Math.max(...renderData.map(d => d.high)) * 1.0005 : 1;
+  const minP = chartData.length ? Math.min(...chartData.map(d => d.low)) * 0.9995 : 0;
+  const maxP = chartData.length ? Math.max(...chartData.map(d => d.high)) * 1.0005 : 1;
   const range = (maxP - minP) || 1;
 
   // Axis Coordinate Helpers
@@ -120,50 +109,15 @@ export default function CandlestickChart({
   const getX = useCallback((i: number) => currentPan + i * candleW + candleW / 2, [currentPan, candleW]);
   const getPrice = useCallback((y: number) => maxP - (y / height) * range, [maxP, range, height]);
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMove = (e: React.MouseEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) {
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      setMouse({ x, y });
-      
-      if (isDragging) {
-        setPanX(Math.min(dragStart.panX + (x - dragStart.x), -defaultPan + mainW - 50)); // Allow panning, constrain to not go way past right edge
-      }
-    }
+    if (rect) setMouse({ x: e.clientX - rect.left, y: e.clientY - rect.top });
   };
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) {
-      setIsDragging(true);
-      setDragStart({ x: e.clientX - rect.left, panX });
-    }
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  const handleWheel = (e: WheelEvent) => {
-    e.preventDefault();
-    if (containerRef.current) {
-        setZoom(prev => Math.max(0.1, Math.min(prev - e.deltaY * 0.002, 10)));
-    }
-  };
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (el) {
-        el.addEventListener('wheel', handleWheel, { passive: false });
-        return () => el.removeEventListener('wheel', handleWheel);
-    }
-  }, []);
 
   // Convert generic trade timestamps directly into physical canvas X coordinates
   const matchTimeX = useCallback((timeStr: any) => {
     const t = new Date(timeStr).getTime();
-    const idx = chartData.findIndex(c => new Date(c.time).getTime() >= t);
+    const idx = chartData.findIndex(c => c && c.time && new Date(c.time).getTime() >= t);
     return idx !== -1 ? getX(idx) : getX(chartData.length - 1);
   }, [chartData, getX]);
 
@@ -190,7 +144,7 @@ export default function CandlestickChart({
           position: 'relative', 
           overflow: 'hidden', 
           backgroundColor: 'transparent',
-          cursor: isDragging ? 'grabbing' : 'crosshair', 
+          cursor: 'crosshair', 
           borderRadius: '12px', 
           border: '1px solid #1e293b',
           backgroundImage: bgImageUrl ? `url(${bgImageUrl})` : 'none',
@@ -198,10 +152,8 @@ export default function CandlestickChart({
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat'
       }}
-      onMouseLeave={() => { setMouse(null); handleMouseUp(); }} 
-      onMouseMove={handleMouseMove}
-      onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
+      onMouseLeave={() => setMouse(null)} 
+      onMouseMove={handleMove} 
     >
       {bgImageUrl && <div className="absolute inset-0 bg-slate-950/70" /> /* overlay to dim background */}
       <svg width={width} height={height} style={{ position: 'absolute', top: 0, left: 0, userSelect: 'none' }}>
@@ -388,7 +340,7 @@ export default function CandlestickChart({
           <div className="font-semibold text-slate-100 flex gap-2 items-center drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
             <span>ACTIVE PATTERNS ({marketAnalysis.detections.length})</span>
           </div>
-          <div className="flex gap-6">
+          <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
             <div className="flex flex-col gap-1">
               <span className="text-emerald-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
                 BULLISH ({marketAnalysis.detections.filter((d: any) => d.polarity > 0).length})
@@ -411,7 +363,7 @@ export default function CandlestickChart({
               })}
             </div>
             
-            <div className="flex flex-col gap-1 border-l border-white/20 pl-6">
+            <div className="flex flex-col gap-1 border-l-0 sm:border-l border-white/20 sm:pl-6">
               <span className="text-rose-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
                 BEARISH ({marketAnalysis.detections.filter((d: any) => d.polarity < 0).length})
               </span>

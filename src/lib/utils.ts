@@ -35,6 +35,10 @@ export const getVerifiedSession = async () => {
 
 let restQueue: Promise<any> = Promise.resolve();
 
+export const generateFingerprint = () => {
+  return navigator.userAgent + '||' + window.screen.width + 'x' + window.screen.height + '||' + navigator.language;
+};
+
 export const safeFetch = async (url: string, options?: RequestInit) => {
   // Automatically inject fresh token if Authorization header is missing or placeholder
   let finalOptions = { ...options };
@@ -42,13 +46,11 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
   
   const headers = finalOptions.headers as Record<string, string>;
   
+  // Attach device fingerprint for account security tracking
+  headers['X-Device-Fingerprint'] = generateFingerprint();
+  
   // Always inject fresh auth for internal API routes
-  if (url.startsWith('/api/')) {
-    const session = await getVerifiedSession();
-    if (session) {
-      headers['Authorization'] = `Bearer ${session.access_token}`;
-    }
-  } else if (!headers['Authorization'] || headers['Authorization'].includes('undefined')) {
+  if (url.startsWith('/api/') || !headers['Authorization'] || headers['Authorization'].includes('undefined')) {
     const session = await getVerifiedSession();
     if (session) {
       headers['Authorization'] = `Bearer ${session.access_token}`;
@@ -68,6 +70,13 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
       } catch {
         errorMsg += `: ${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`;
       }
+      
+      // Auto-logout on token invalidation
+      if (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token'))) {
+         try { await supabase.auth.signOut(); } catch(e) {}
+         window.location.href = '/';
+      }
+      
       throw new Error(errorMsg);
     }
 

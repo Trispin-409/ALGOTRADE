@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Activity } from 'lucide-react';
+import { X, Activity, Copy, Check } from 'lucide-react';
 import { connectionManager } from '../src/lib/ConnectionManager';
 
 interface ExpertLogPanelProps {
@@ -8,6 +8,7 @@ interface ExpertLogPanelProps {
 
 export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 'EA' }) => {
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<'SYSTEM' | 'STRATEGY'>('STRATEGY');
   const [logs, setLogs] = useState<any[]>(() => {
     const saved = localStorage.getItem('ea_journal');
@@ -31,6 +32,16 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
   const isDragging = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  const copyToClipboard = () => {
+    const textToCopy = filteredLogs
+      .map(log => `[${new Date(log.timestamp).toLocaleTimeString()}] [${log.level}] ${log.source}: ${log.message} ${log.metadata ? JSON.stringify(log.metadata) : ''}`)
+      .join('\n');
+    
+    navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   useEffect(() => {
     localStorage.setItem('ea_journal', JSON.stringify(logs));
@@ -173,12 +184,21 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-xs font-black uppercase text-emerald-400 tracking-widest">Strategy Log</span>
             </div>
-            <button 
-              onClick={() => setOpen(false)}
-              className="text-slate-400 hover:text-white transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={copyToClipboard}
+                className="text-slate-400 hover:text-emerald-400 transition-colors"
+                title="Copy all logs"
+              >
+                {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+              </button>
+              <button 
+                onClick={() => setOpen(false)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* TAB SWITCHER */}

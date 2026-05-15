@@ -364,7 +364,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         </button>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 w-full z-10">
         <MetricCard 
           label="GROSS BALANCE" 
           value={isStable ? formatCurrency(displayBalance, displayCurrency) : "SYNCING"} 
@@ -576,9 +576,9 @@ const MetricCard: React.FC<{ label: string, value: string, icon: any, color: str
       <div className={`p-2.5 sm:p-3 rounded-lg border w-fit sm:mb-4 shrink-0 ${colors[color]}`}>
         <Icon className="w-4 h-4 sm:w-5 h-5" />
       </div>
-      <div className="flex-1 text-right sm:text-left">
-        <p className="text-[9px] sm:text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest mb-1">{label}</p>
-        <h4 className="text-lg sm:text-xl font-mono font-black text-white tracking-tighter truncate">{value}</h4>
+      <div className="flex-1 text-right sm:text-left min-w-0">
+        <p className="text-[9px] sm:text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest mb-1 truncate">{label}</p>
+        <h4 className="text-base sm:text-lg md:text-xl font-mono font-black text-white tracking-tighter break-all">{value}</h4>
       </div>
     </div>
   );
