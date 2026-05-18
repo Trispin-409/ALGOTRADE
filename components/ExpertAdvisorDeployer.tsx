@@ -129,11 +129,11 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
   if (!isUnlocked) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-4 sm:p-8 animate-in fade-in duration-500 w-full">
-        <div className="w-full max-w-md bg-slate-900/60 border border-indigo-500/20 backdrop-blur-xl p-8 sm:p-12 rounded-[40px] shadow-2xl relative overflow-hidden text-center">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-3xl rounded-full translate-x-1/2 -translate-y-1/2"></div>
+        <div className="w-full max-w-md glowing-panel p-8 sm:p-12 rounded-[40px] shadow-2xl relative overflow-hidden text-center bg-black/60">
+          <div className="absolute top-0 right-0 w-32 h-32 blur-3xl rounded-full translate-x-1/2 -translate-y-1/2 opacity-20" style={{ backgroundColor: 'var(--accent-color)' }}></div>
           
-          <div className="w-20 h-20 bg-indigo-600/10 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-inner border border-indigo-500/20">
-            <ShieldAlert className="w-10 h-10 text-indigo-400" />
+          <div className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-inner border border-white/10 bg-black/40 accent-glow" style={{ color: 'var(--accent-color)' }}>
+            <ShieldAlert className="w-10 h-10" />
           </div>
           
           <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Restricted Access</h2>
@@ -141,13 +141,13 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
           
           <form onSubmit={handleUnlock} className="space-y-6">
             <div className="relative">
-              <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-indigo-400/50" />
+              <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 opacity-50" style={{ color: 'var(--accent-color)' }} />
               <input 
                 type="password" 
                 value={accessKeyInput}
                 onChange={(e) => setAccessKeyInput(e.target.value)}
                 placeholder="ACCESS KEY" 
-                className="w-full bg-black/50 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-center text-indigo-100 font-mono text-sm uppercase tracking-widest outline-none focus:border-indigo-500 focus:bg-indigo-950/20 transition-all placeholder:text-slate-700"
+                className="w-full bg-black/50 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-center text-white font-mono text-sm uppercase tracking-widest outline-none focus:border-white transition-all placeholder:text-slate-700"
               />
             </div>
             
@@ -157,7 +157,8 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
             
             <button 
               type="submit" 
-              className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-lg shadow-indigo-600/20 active:scale-95"
+              className="w-full py-4 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-lg active:scale-95"
+              style={{ backgroundColor: 'var(--accent-color)', boxShadow: '0 4px 12px -2px var(--accent-color-rgb)' }}
             >
               Authenticate
             </button>
@@ -169,7 +170,7 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 w-full">
-      <div className="bg-slate-900/40 border border-white/5 rounded-[30px] p-6 sm:p-10 shadow-2xl backdrop-blur-md">
+      <div className="glowing-panel rounded-[30px] p-6 sm:p-10 shadow-2xl bg-black/40">
         <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mb-8">System Terminal Deployer</h2>
         
         <div className="space-y-6">
@@ -178,7 +179,7 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
             <select 
               value={accountId} 
               onChange={(e) => setAccountId(e.target.value)} 
-              className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-4 text-white outline-none focus:border-indigo-500 text-sm font-bold"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-white outline-none focus:border-white text-sm font-bold appearance-none transition-colors"
             >
               <option value="">Select Account</option>
               {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name} ({acc.login})</option>)}
@@ -192,7 +193,7 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
               value={eaName} 
               onChange={(e) => setEaName(e.target.value)} 
               placeholder="e.g. MyStrategyV1"
-              className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-4 text-white outline-none focus:border-indigo-500 text-sm font-bold"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-white outline-none focus:border-white text-sm font-bold transition-colors"
             />
           </div>
 
@@ -210,7 +211,7 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
                   setEaName(baseName);
                 }
               }}
-              className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-4 text-white outline-none focus:border-indigo-500 text-sm font-bold"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-white outline-none focus:border-white text-sm font-bold transition-colors file:bg-white/5 file:border-0 file:rounded-full file:text-[10px] file:text-white file:font-black file:uppercase file:px-4 file:py-2 file:mr-4"
             />
             <p className="text-[9px] text-slate-600 mt-2 font-mono italic">Note: Cloud strictly executes compiled binaries. EA internal parameters will be used.</p>
           </div>
@@ -220,7 +221,8 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
             <button 
               onClick={handleDeploy}
               disabled={status === 'deploying'}
-              className="py-5 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-widest flex items-center justify-center gap-2 sm:gap-4 bg-indigo-600 hover:bg-indigo-500 text-white transition-all disabled:opacity-50"
+              className="py-5 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-widest flex items-center justify-center gap-2 sm:gap-4 text-white transition-all disabled:opacity-50 active:scale-95"
+              style={{ backgroundColor: 'var(--accent-color)', boxShadow: '0 4px 12px -2px var(--accent-color-rgb)' }}
             >
               {status === 'deploying' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
               {status === 'deploying' ? 'Deploying...' : 'Deploy EA'}
@@ -246,7 +248,7 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
                   }
                 }
               }}
-              className="py-5 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-widest flex items-center justify-center gap-2 sm:gap-4 bg-slate-800 hover:bg-slate-700 text-slate-400 border border-white/5 transition-all"
+              className="py-5 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-widest flex items-center justify-center gap-2 sm:gap-4 bg-white/5 hover:bg-white/10 text-white border border-white/10 transition-all active:scale-95"
             >
               <RefreshCw className="w-5 h-5" />
               Wipe Terminal
@@ -255,10 +257,10 @@ const ExpertAdvisorDeployer: React.FC<ExpertAdvisorDeployerProps> = ({ accounts,
         </div>
       </div>
 
-      <div className="bg-slate-900/40 border border-white/5 rounded-[30px] p-6 sm:p-8 h-48 sm:h-64 overflow-y-auto font-mono text-[9px] sm:text-[10px] text-slate-400 custom-scrollbar">
+      <div className="glowing-panel rounded-[30px] p-6 sm:p-8 h-48 sm:h-64 overflow-y-auto font-mono text-[9px] sm:text-[10px] text-slate-400 custom-scrollbar bg-black/60">
         <div className="flex items-center gap-2 mb-4">
-          <Terminal className="w-4 h-4 text-indigo-500" />
-          <div className="text-indigo-500/50 font-black tracking-widest uppercase">Deployment Trace</div>
+          <Terminal className="w-4 h-4" style={{ color: 'var(--accent-color)' }} />
+          <div className="font-black tracking-widest uppercase opacity-50" style={{ color: 'var(--accent-color)' }}>Deployment Trace</div>
         </div>
         {log.map((line, i) => <div key={i} className="mb-1">{line}</div>)}
       </div>

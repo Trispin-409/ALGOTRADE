@@ -14,9 +14,18 @@ export function LoginForm() {
     e.preventDefault();
     setSuccessMessage('');
     setLoading(true);
+    
+    // SECURITY ISOLATION: Purge all local cached session state
+    localStorage.clear();
+
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) alert(error.message);
-    setLoading(false);
+    if (error) {
+       alert(error.message);
+       setLoading(false);
+    } else {
+       // Force a full reload to clear all react states and memory namespaces
+       window.location.reload();
+    }
   }
 
   async function handleSignup(e: React.FormEvent) {

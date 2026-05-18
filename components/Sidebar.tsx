@@ -64,10 +64,10 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
   };
 
   return (
-    <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col h-full shadow-2xl">
+    <aside className="w-64 bg-black border-r border-white/5 flex flex-col h-full shadow-2xl relative z-10">
       <div className="p-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center shadow-lg shadow-white/5 shrink-0 overflow-hidden">
+          <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center shadow-lg shrink-0 overflow-hidden glowing-frame">
             <img 
               src={chartSettings.bgImageUrl && chartSettings.bgImageUrl !== "https://storage.googleapis.com/aida-uploads/default/14cb5da6-8f37-4d9e-bdb3-fc14b74bbde8/image.webp" ? chartSettings.bgImageUrl : "/bot-logo.png?v=2"} 
               alt="ALGOTRADE Logo" 
@@ -77,7 +77,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
           </div>
           <div className="truncate">
             <h2 className="font-black text-white tracking-tighter truncate text-lg">ALGOTRADE</h2>
-            <p className="text-[10px] text-indigo-500 font-black uppercase tracking-widest truncate">Production</p>
+            <p className="text-[10px] terminal-glow font-black uppercase tracking-widest truncate" style={{ color: 'var(--accent-color)' }}>Production</p>
           </div>
         </div>
       </div>
@@ -89,9 +89,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
             onClick={() => handleMenuClick(item.id)}
             className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group active:scale-95 ${
               activeTab === item.id 
-                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' 
-                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                ? 'text-white shadow-lg' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
             }`}
+            style={activeTab === item.id ? { 
+              backgroundColor: 'var(--accent-color)', 
+              boxShadow: '0 10px 20px -10px var(--accent-color)' 
+            } : {}}
           >
             <item.icon className={`w-5 h-5 shrink-0 ${activeTab === item.id ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'}`} />
             <span className="font-medium text-sm truncate">{item.label}</span>
@@ -103,7 +107,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
         {isInstallable && (
           <button 
             onClick={handleInstallClick}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 rounded-xl transition-all duration-200 group active:scale-95 font-bold text-sm"
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-xl transition-all duration-200 group active:scale-95 font-bold text-sm"
           >
             <Download className="w-4 h-4" />
             Install App
@@ -121,6 +125,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
         <button 
           onClick={async () => {
             const { supabase } = await import('../src/lib/supabase');
+            localStorage.clear();
             await supabase.auth.signOut();
             window.location.reload();
           }}
@@ -165,11 +170,11 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
 
         <div className="bg-slate-800/50 rounded-2xl p-4 border border-slate-700/50">
           <div className="flex items-center gap-2 mb-2">
-            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+            <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--accent-color)' }}></div>
             <span className="text-[10px] font-bold text-slate-400 uppercase">System Load</span>
           </div>
           <div className="w-full bg-slate-700 h-1 rounded-full overflow-hidden">
-            <div className="bg-blue-500 w-[24%] h-full"></div>
+            <div className="w-[24%] h-full" style={{ backgroundColor: 'var(--accent-color)' }}></div>
           </div>
         </div>
       </div>

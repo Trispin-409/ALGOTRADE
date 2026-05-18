@@ -166,28 +166,29 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
       >
         <button
           onClick={() => setOpen(prev => !prev)}
-          className="w-12 h-12 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.3)] bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center backdrop-blur-md"
+          className="w-12 h-12 rounded-full shadow-[0_0_20px_rgba(var(--accent-color-rgb),0.3)] bg-black/40 border border-white/20 flex items-center justify-center backdrop-blur-md accent-glow"
+          style={{ borderColor: 'rgba(var(--accent-color-rgb), 0.5)', color: 'var(--accent-color)' }}
         >
-          <Activity className="w-6 h-6 text-emerald-400" />
+          <Activity className="w-6 h-6" />
         </button>
       </div>
 
       {/* The Panel if Open */}
       {open && (
         <div 
-          className="fixed bottom-24 right-4 sm:bottom-24 sm:right-10 w-[90vw] sm:w-[400px] h-[300px] sm:h-[400px] 
-            bg-slate-950/95 border border-emerald-500/30 rounded-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] flex flex-col backdrop-blur-lg"
-          style={{ zIndex: 9998 }}
+          className="fixed bottom-24 right-4 sm:bottom-24 sm:right-10 w-[90vw] sm:w-[500px] h-[300px] sm:h-[500px] 
+            bg-slate-950/95 border rounded-xl shadow-[0_0_40px_rgba(0,0,0,0.8)] flex flex-col backdrop-blur-lg glowing-panel"
+          style={{ zIndex: 9998, borderColor: 'rgba(var(--accent-color-rgb), 0.3)' }}
         >
-          <div className="flex justify-between items-center p-3 border-b border-emerald-500/20 bg-emerald-500/5 rounded-t-xl shrink-0">
+          <div className="flex justify-between items-center p-3 border-b border-white/10 bg-white/5 rounded-t-xl shrink-0">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-xs font-black uppercase text-emerald-400 tracking-widest">Strategy Log</span>
+              <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--accent-color)' }} />
+              <span className="text-xs font-black uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>Strategy Log</span>
             </div>
             <div className="flex items-center gap-2">
               <button 
                 onClick={copyToClipboard}
-                className="text-slate-400 hover:text-emerald-400 transition-colors"
+                className="text-slate-400 hover:text-white transition-colors"
                 title="Copy all logs"
               >
                 {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
@@ -202,12 +203,13 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
           </div>
 
           {/* TAB SWITCHER */}
-          <div className="flex p-1 bg-black/40 border-b border-emerald-500/10 shrink-0">
+          <div className="flex p-1 bg-black/40 border-b border-white/5 shrink-0">
             {(['SYSTEM', 'STRATEGY'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`flex-1 py-1.5 px-2 text-[9px] font-black uppercase tracking-tighter transition-all ${activeTab === tab ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 ring-1 ring-emerald-500/20 rounded' : 'text-slate-500 hover:text-slate-400'}`}
+                className={`flex-1 py-1.5 px-2 text-[9px] font-black uppercase tracking-tighter transition-all border ${activeTab === tab ? 'text-white border-white/20' : 'text-slate-500 border-transparent hover:text-slate-400'}`}
+                style={activeTab === tab ? { backgroundColor: 'var(--accent-color)' } : {}}
               >
                 {tab}
               </button>

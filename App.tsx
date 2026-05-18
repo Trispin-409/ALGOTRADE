@@ -59,6 +59,24 @@ const App: React.FC = () => {
   const updateAccount = useStore(state => state.updateAccount);
   const connectionStatus = useStore(state => state.connectionStatus);
   const globalHistory = useStore(state => state.history);
+  const chartSettings = useStore(state => state.chartSettings);
+
+  // Sync accent color CSS variables
+  useEffect(() => {
+    if (chartSettings.accentColor) {
+      document.documentElement.style.setProperty('--accent-color', chartSettings.accentColor);
+      
+      // Convert hex to RGB for opacity usage
+      const hex = chartSettings.accentColor.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      
+      if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+        document.documentElement.style.setProperty('--accent-color-rgb', `${r}, ${g}, ${b}`);
+      }
+    }
+  }, [chartSettings.accentColor]);
 
   // Compute theme based on streak
   const streakThemeClasses = React.useMemo(() => {
@@ -101,16 +119,21 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!session || bootData) return;
+    if (!session || (bootData && !window.location.search.includes('activated=true'))) return;
     setLoadingBootstrap(true);
 
-    safeFetch("/api/user/bootstrap", {
+    const url = "/api/user/bootstrap" + (window.location.search.includes('activated=true') ? `?t=${Date.now()}` : '');
+
+    safeFetch(url, {
       headers: { Authorization: `Bearer ${session.access_token}` }
     })
     .then(data => {
       setBootData(data);
       if (data.execution_modes) {
         setExecutionModes(data.execution_modes);
+      }
+      if (window.location.search.includes('activated=true')) {
+        window.history.replaceState({}, '', '/');
       }
     })
     .catch(err => {
@@ -881,7 +904,8 @@ const App: React.FC = () => {
   if (loadingBootstrap || !bootData) return <FullScreenLoader message="Loading trading workspace..." />;
 
   // Redirect to pricing if user has no active subscription and is not on the pricing page
-  if (!bootData.has_active_subscription && path !== '/pricing') {
+  const isBootingWithKey = window.location.search.includes('activated=true');
+  if (!loadingBootstrap && bootData && !bootData.has_active_subscription && path !== '/pricing' && !isBootingWithKey) {
     window.location.href = '/pricing';
     return <FullScreenLoader message="Redirecting to pricing..." />;
   }
@@ -921,11 +945,12 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2 sm:gap-4">
               <button 
                 onClick={() => setIsSidebarOpen(true)} 
-                className="lg:hidden p-2 hover:bg-white/5 rounded-lg text-slate-400"
+                className="lg:hidden p-2 hover:bg-white/5 rounded-lg text-slate-400 transition-colors"
+                style={{ color: 'var(--accent-color)' }}
               >
-                <Menu className="w-5 h-5" />
+                <Menu className="w-5 h-5 shadow-sm" />
               </button>
-              <h1 className="text-base sm:text-xl font-black text-white tracking-widest uppercase truncate ml-2 font-mono">
+              <h1 className="text-base sm:text-xl font-black text-white tracking-widest uppercase truncate ml-2 font-mono drop-shadow-[0_2px_10px_rgba(var(--accent-color-rgb),0.5)]">
                 ALGOTRADE
               </h1>
             </div>
@@ -933,9 +958,9 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
               <div className="flex items-center">
                 {tradingStatus === 'BOOTING' || tradingStatus === 'INIT' ? (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-md animate-pulse">
-                    <Cloud className="w-3 h-3 text-indigo-500 animate-bounce" />
-                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-indigo-500 uppercase tracking-widest whitespace-nowrap">BOOTING</span>
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-white/5 border border-white/10 rounded-md animate-pulse">
+                    <Cloud className="w-3 h-3 animate-bounce" style={{ color: 'var(--accent-color)' }} />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold uppercase tracking-widest whitespace-nowrap" style={{ color: 'var(--accent-color)' }}>BOOTING</span>
                   </div>
                 ) : tradingStatus === 'SYNCING' ? (
                   <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/20 rounded-md">
@@ -961,7 +986,7 @@ const App: React.FC = () => {
               </div>
 
                <button
-                 onClick={async () => { await supabase.auth.signOut(); window.location.reload(); }}
+                 onClick={async () => { localStorage.clear(); await supabase.auth.signOut(); window.location.reload(); }}
                  className="hidden sm:inline-block text-[9px] sm:text-[10px] font-mono font-bold text-rose-500 hover:text-white uppercase tracking-widest px-2 py-1 transition-colors"
                >
                  Logout
@@ -1011,10 +1036,10 @@ const App: React.FC = () => {
                     lotSize={lotSize}
                     setLotSize={setLotSize}
                     tradeStatus={tradeStatus}
-                    hasActiveSubscription={bootData.has_active_subscription}
+                    hasActiveSubscription={bootData?.has_active_subscription}
                   />
                 )}
-                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
+                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} subscriptionPlan={bootData?.subscription_plan} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
                 {activeTab === 'risk' && <RiskManagement />}
                 <div style={{ display: activeTab === 'data' ? 'block' : 'none' }}>
                   <ErrorBoundary>
@@ -1089,32 +1114,32 @@ const App: React.FC = () => {
         {/* Desktop Footer - Hidden on mobile */}
         <footer className="hidden lg:flex h-10 bg-black border-t border-white/5 items-center px-4 sm:px-10 gap-4 text-[7px] sm:text-[8px] uppercase tracking-[0.2em] sm:tracking-[0.4em] font-black text-slate-600 shrink-0 z-20 overflow-hidden">
           <div className="flex items-center gap-2 truncate">
-            <LockIcon className="w-2.5 h-2.5 sm:w-3 h-3 text-indigo-500 shrink-0" />
+            <LockIcon className="w-2.5 h-2.5 sm:w-3 h-3 shrink-0" style={{ color: 'var(--accent-color)' }} />
             <span className="truncate">ENGINE: ALGOTRADE</span>
           </div>
           <div className="ml-auto flex items-center gap-2 sm:gap-4 shrink-0">
              <span className="hidden xs:inline">REGION: london.cluster</span>
-             <span className="text-indigo-500/50 truncate">v3-secured</span>
+             <span className="truncate" style={{ color: 'var(--accent-color)' }}>v3-secured</span>
           </div>
         </footer>
 
         {/* Bottom Navigation */}
         <nav className="h-14 sm:h-16 bg-black/60 backdrop-blur-md border-t border-white/5 flex items-center justify-center gap-6 sm:gap-16 px-4 shrink-0 z-20 pb-safe w-full">
-          <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'dashboard' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
+          <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'dashboard' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'dashboard' ? { color: 'var(--accent-color)' } : {}}>
             <Activity className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase">Metrics</span>
+            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Metrics</span>
           </button>
-          <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'data' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
+          <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'data' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'data' ? { color: 'var(--accent-color)' } : {}}>
             <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase">Market</span>
+            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Market</span>
           </button>
-          <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'accounts' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
+          <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'accounts' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'accounts' ? { color: 'var(--accent-color)' } : {}}>
             <Users className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase">Account</span>
+            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Account</span>
           </button>
-          <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'risk' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>
+          <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'risk' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'risk' ? { color: 'var(--accent-color)' } : {}}>
             <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase">Risk</span>
+            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Risk</span>
           </button>
         </nav>
       </main>

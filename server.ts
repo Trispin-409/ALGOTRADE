@@ -26,7 +26,7 @@ const TradingController = {
       .select("*")
       .eq("account_id", accountId)
       .eq("user_id", userId)
-      .single();
+      .maybeSingle();
     if (error) return null;
     return data;
   },
@@ -38,7 +38,7 @@ const TradingController = {
       .select("id")
       .eq("account_id", accountId)
       .eq("user_id", userId)
-      .single();
+      .maybeSingle();
       
     if (data) {
       await adminSupabase.from("ea_leases").update({ ea_name: eaName, region, status: 'DEPLOYED' }).eq("id", data.id);
@@ -80,7 +80,7 @@ const TradingController = {
     if (!adminSupabase) return;
     const { error } = await adminSupabase
       .from("ea_deployments")
-      .upsert({ user_id: userId, account_id: accountId, deployed, status, deployed_at: deployed ? new Date().toISOString() : null });
+      .upsert({ user_id: userId, account_id: accountId, deployed, status, deployed_at: deployed ? new Date().toISOString() : null }, { onConflict: 'account_id' });
     if (error) console.error("Error updating EA state:", error);
   },
 
@@ -88,7 +88,7 @@ const TradingController = {
     if (!adminSupabase) return;
     await adminSupabase
       .from("algo_sessions")
-      .upsert({ user_id: userId, account_id: accountId, running });
+      .upsert({ user_id: userId, account_id: accountId, running }, { onConflict: 'account_id' });
   }
 };
 
@@ -270,15 +270,15 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
+
 // AUTHENTICATION GUARD: Validate JWT and resolve user_id
 async function getUserIdFromRequest(req: express.Request): Promise<string> {
   const authHeader = req.headers.authorization;
-  console.log('[AUTH] Checking authHeader:', authHeader?.slice(0, 15) + '...');
   if (!authHeader) throw new Error("Unauthorized: No token provided");
   const token = authHeader.replace("Bearer ", "");
   
   if (!adminSupabase) {
-    console.error("[AUTH] Supabase admin client not initialized. Check SUPABASE_SERVICE_ROLE_KEY.");
+    console.error("[AUTH] Supabase admin client not initialized.");
     throw new Error("Internal Server Error: Auth service unavailable");
   }
 
@@ -290,7 +290,44 @@ async function getUserIdFromRequest(req: express.Request): Promise<string> {
   return data.user.id;
 }
 
+// STRICT OWNERSHIP MIDDLEWARE
+async function enforceOwnership(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const accountId = req.params.accountId || (req.body && req.body.accountId);
+  if (!accountId) {
+      return next();
+  }
+  
+  try {
+     const userId = await getUserIdFromRequest(req);
+     console.log(`[AUTH CHECK] User ${userId} requested access to ${accountId}`);
+     
+     if (adminSupabase) {
+         // Strict security checks
+         const { data: deployment } = await adminSupabase.from("ea_deployments").select("user_id").eq("account_id", accountId).maybeSingle();
+         if (deployment && deployment.user_id !== userId) {
+             console.log(`[SECURITY ALERT] REJECTION: User ${userId} attempted to access foreign deployment ${accountId} (Actual Owner: ${deployment.user_id})`);
+             return res.status(403).json({ error: "Access Denied: Foreign Account Request blocked." });
+         }
+         
+         const { data: lease } = await adminSupabase.from("ea_leases").select("user_id").eq("account_id", accountId).maybeSingle();
+         if (lease && lease.user_id !== userId) {
+             console.log(`[SECURITY ALERT] REJECTION: User ${userId} attempted to access foreign lease ${accountId} (Actual Owner: ${lease.user_id})`);
+             return res.status(403).json({ error: "Access Denied: Foreign Lease Execution blocked." });
+         }
+         
+         console.log(`[AUTH SUCCESS] User ${userId} verified as owner of ${accountId}`);
+     }
+     next();
+  } catch(e: any) {
+     console.log(`[AUTH FAILURE] Access denied: ${e.message}`);
+     res.status(401).json({ error: e.message || "Authentication Failed" });
+  }
+}
+
 app.use(express.json());
+
+// ENFORCE OWNERSHIP ON ALL ACCOUNT ROUTES
+app.use("/api/account/:accountId", enforceOwnership);
 
 const token = process.env.METAAPI_ADMIN_TOKEN || "";
 
@@ -403,10 +440,10 @@ function getMetaApiInstance() {
     globalScope.METAAPI = new MetaApiClass(token, {
       clientId,
       domain: 'agiliumtrade.agiliumtrade.ai',
-      requestTimeout: 180000,
+      requestTimeout: 300000, // Increased to 5 minutes for dedicated servers
       retryOpts: {
-        maxRetries: 15,
-        minDelayInMs: 2000,
+        maxRetries: 25, // More retries for dedicated servers
+        minDelayInMs: 3000,
         maxDelayInMs: 60000
       }
     });
@@ -492,7 +529,22 @@ async function ensureAccountReady(accountId: string) {
     }
 
     // 3. WAIT for broker connection (CRITICAL)
-    await account.waitConnected();
+    // Wrap in a more resilient wait to handle slow dedicated servers
+    const waitForBroker = async (retries = 3) => {
+       for (let i = 0; i < retries; i++) {
+          try {
+             await account.waitConnected();
+             return;
+          } catch (e: any) {
+             console.warn(`[ACCOUNT] waitConnected attempt ${i+1} for ${accountId} failed: ${e.message}`);
+             if (i === retries - 1) throw e;
+             // If dedicated server is starting, it can take time.
+             await new Promise(r => setTimeout(r, 10000));
+          }
+       }
+    };
+
+    await waitForBroker(6); // Wait up to 1-2 mins total via explicit loop, on top of SDK timeout
 
     console.log(`[ACCOUNT] ${accountId} Connected to broker ✅`);
 
@@ -529,11 +581,19 @@ async function getRPCConnection(accountId: string) {
     try {
       console.log(`[SDK_RPC] Creating RPC connection for ${accountId}...`);
       const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+      
+      // Safety check: Don't block RPC creation if account is not even deployed
+      if (account.state !== 'DEPLOYED') {
+         console.warn(`[SDK_RPC] Account ${accountId} is ${account.state}. Aborting RPC connection.`);
+         throw new Error("ACCOUNT_NOT_DEPLOYED");
+      }
+
       const rpc = account.getRPCConnection();
 
       await rpc.connect();
       try {
-        await rpc.waitSynchronized({ timeoutInSeconds: 300 });
+        // Shorter sync timeout for initial RPC to avoid blocking API threads too long
+        await rpc.waitSynchronized({ timeoutInSeconds: 60 });
       } catch(e: any) {
         console.warn(`[SDK_RPC] Wait synchronized warning: ${e.message}`);
       }
@@ -859,44 +919,7 @@ async function setupStreaming(accountId: string) {
 
   const promise = (async () => {
     try {
-      let account = await metaapi.metatraderAccountApi.getAccount(accountId);
-      
-      // Wait for account to be DEPLOYED if it's currently DEPLOYING/REDEPLOYING
-      let waitCount = 0;
-      while ((account.state === 'DEPLOYING' || account.state === 'REDEPLOYING') && waitCount < 36) { // Wait up to 3 mins
-        console.log(`[SDK] Account ${accountId} is currently ${account.state}. Waiting for it to settle... (Attempt ${waitCount+1})`);
-        await new Promise(r => setTimeout(r, 5000));
-        account = await metaapi.metatraderAccountApi.getAccount(accountId);
-        waitCount++;
-      }
-
-      if (account.state !== 'DEPLOYED') {
-          if (account.state === 'UNDEPLOYED') {
-            console.warn(`[SDK] Account ${accountId} is explicitly UNDEPLOYED. Skipping auto-deploy.`);
-            throw new Error("ACCOUNT_EXPLICITLY_UNDEPLOYED");
-          }
-          console.warn(`[SDK] Account ${accountId} is in state ${account.state}. Attempting forced deployment...`);
-          try {
-            await account.deploy();
-            // Wait for DEPLOYED state
-            let dWait = 0;
-            while (account.state !== 'DEPLOYED' && dWait < 10) {
-              await new Promise(r => setTimeout(r, 3000));
-              account = await metaapi.metatraderAccountApi.getAccount(accountId);
-              dWait++;
-            }
-          } catch (deployErr: any) {
-            console.error(`[SDK] Deployment trigger failed for ${accountId}:`, deployErr.message);
-          }
-      }
-
-      if (account.state !== 'DEPLOYED') {
-          console.error(`[SDK] Connection blocked: ${accountId} is still in state ${account.state}`);
-          throw new Error("ACCOUNT_NOT_DEPLOYED");
-      }
-      
-      await account.waitConnected();
-
+      const account = await ensureAccountReady(accountId);
       const connection = account.getStreamingConnection();
       
       // 1. Add Listener
@@ -919,7 +942,7 @@ async function setupStreaming(accountId: string) {
       // 3. Wait Synchronized
       console.log(`[SDK] Waiting for synchronization: ${accountId}...`);
       try {
-        await connection.waitSynchronized({ timeoutInSeconds: 300 });
+        await connection.waitSynchronized({ timeoutInSeconds: 60 });
       } catch(e: any) {
         console.warn(`[SDK] waitSynchronized warning: ${e.message}`);
       }
@@ -1408,47 +1431,10 @@ async function activateUserAutomations(userId: string, limit: number) {
   try {
     if (!adminSupabase) return;
     
-    // Find unassigned accounts if user doesn't have enough leases
-    const currentLeases = await TradingController.getActiveLeases(userId);
-    let assignedCount = currentLeases.length;
-    
-    // If we need to assign more accounts from an unassigned pool
-    if (assignedCount < limit && metaapi) {
-        // Fetch all accounts from MetaApi
-        const rawResponse = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
-        const allAccounts = Array.isArray(rawResponse) ? rawResponse : rawResponse?.items ? rawResponse.items : rawResponse?.data ? rawResponse.data : [];
-        
-        // Find which accounts are already leased by ANYONE
-        const { data: allLeases } = await adminSupabase.from("ea_leases").select("account_id");
-        const leasedIds = new Set((allLeases || []).map(l => l.account_id));
-        
-        const unassignedAccounts = allAccounts.filter((a: any) => {
-            const accId = a.id || a._data?.id || a._id;
-            return !leasedIds.has(accId);
-        });
-        
-        for (const account of unassignedAccounts) {
-            if (assignedCount >= limit) break;
-            const accountId = account.id || account._data?.id || account._id;
-            
-            // Attach account to user
-            await TradingController.createLease(userId, accountId, 'DEFAULT', 'london');
-            assignedCount++;
-        }
-    }
-    
-    // Now trigger EA deployments and algo sessions for all their leases
-    const finalLeases = await TradingController.getActiveLeases(userId);
-    
-    for (const lease of finalLeases) {
-       const accountId = lease.account_id;
-       await TradingController.updateEAStatus(accountId, userId, true, 'DEPLOYED');
-       await TradingController.setAlgoRunning(accountId, userId, true);
-       
-       broadcast({ type: 'status:update', accountId, status: 'READY' });
-       broadcast({ type: 'ACCOUNT_READY', accountId, status: 'READY' });
-       broadcast({ type: 'trading:started', accountId, userId });
-    }
+    // Instead of auto-deploying per 'Never auto-redeploy' requirement,
+    // we just signal that the subscription status changed. 
+    // The user must manually deploy their accounts.
+    broadcast({ type: 'subscription:renewed', userId });
     
   } catch(e: any) {
     console.error("[AUTOMATION] Failed to run automations:", e.message);
@@ -1487,8 +1473,10 @@ app.post("/api/subscription/activate-device", async (req, res) => {
     }
 
     // Protection: Key is permanently linked to the assigned email
-    if (keyData.email && keyData.email !== userEmail) {
-      return res.status(400).json({ error: "Activation denied: This access key is assigned to a different email account." });
+    const assignedEmail = (keyData.email || "").toLowerCase().trim();
+    const isUnassigned = !assignedEmail || assignedEmail === "unassigned@local";
+    if (!isUnassigned && assignedEmail !== userEmail.toLowerCase().trim()) {
+      return res.status(400).json({ error: `Activation denied: Key is assigned to ${assignedEmail}, but you are logged in as ${userEmail.toLowerCase().trim()}.` });
     }
 
     // If key is already used
@@ -1508,10 +1496,24 @@ app.post("/api/subscription/activate-device", async (req, res) => {
 
     const { data: userRecord } = await adminSupabase.from("users").select("*").eq("id", userId).maybeSingle();
 
+    // Determine plan implicitly from the access_key structure (e.g. ALGO-PRO-XXXXX) if field is missing
+    let inferredPlan = "Starter";
+    if (keyData.access_key && typeof keyData.access_key === "string") {
+        const parts = keyData.access_key.split('-');
+        if (parts.length >= 3 && ["STARTER", "PRO", "ELITE"].includes(parts[1])) {
+            inferredPlan = parts[1].charAt(0).toUpperCase() + parts[1].slice(1).toLowerCase();
+        }
+    }
+
+    // Retain legacy behaviors for automation logic compat
+    const planType = keyData.plan || inferredPlan || userRecord?.plan || 'Starter';
+    const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
+
     if (userRecord) {
         await adminSupabase.from("users").update({
              has_access: true,
              payment_status: 'active',
+             plan: planType,
              expires_at: expiryDate.toISOString()
         }).eq("id", userId);
     } else {
@@ -1520,14 +1522,11 @@ app.post("/api/subscription/activate-device", async (req, res) => {
              email: userEmail,
              has_access: true,
              access_key: key,
+             plan: planType,
              payment_status: 'active',
              expires_at: expiryDate.toISOString()
         });
     }
-
-    // Retain legacy behaviors for automation logic compat
-    const planType = userRecord?.plan || 'Starter';
-    const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
 
     await activateUserAutomations(userId, metaapiAccountLimit);
     broadcast({ type: 'subscription:activated', userId, plan: planType, limit: metaapiAccountLimit });
@@ -1553,12 +1552,16 @@ app.post("/api/admin/generate-key", async (req, res) => {
          return res.status(403).json({ error: "Forbidden: Admin access required" });
      }
 
-     const newKey = `ALGO-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+     const safePlan = (planType || "Starter").toUpperCase();
+     const newKey = `ALGO-${safePlan}-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+     const expiresAt = new Date();
+     expiresAt.setDate(expiresAt.getDate() + 30);
 
      const { error } = await adminSupabase.from("access_licenses").insert({
        access_key: newKey,
-       email: "unassigned@local",
-       used: false
+       email: null,
+       used: false,
+       expires_at: expiresAt.toISOString()
      });
 
      if (error) {
@@ -1569,7 +1572,7 @@ app.post("/api/admin/generate-key", async (req, res) => {
      await adminSupabase.from("audit_logs").insert({
        admin_id: adminId,
        action: "generate_key",
-       details: { plan_type: planType, key: newKey }
+       details: { plan: planType, key: newKey }
      });
 
      res.status(200).json({ success: true, key: newKey });
@@ -1596,14 +1599,25 @@ app.get("/api/admin/keys", async (req, res) => {
        }
 
        if (!isMasterAdmin) {
-           const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
+           const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).maybeSingle();
            if (!roleData || (roleData.role !== 'developer' && roleData.role !== 'admin')) {
                return res.status(403).json({ error: "Forbidden" });
            }
        }
        const { data: keysData } = await adminSupabase.from("access_licenses").select("*").order("created_at", { ascending: false });
        
-       res.json(keysData || []);
+       const augmentedKeys = (keysData || []).map(k => {
+           let extractedPlan = "Starter";
+           if (k.access_key && typeof k.access_key === "string") {
+               const parts = k.access_key.split('-');
+               if (parts.length >= 3 && ["STARTER", "PRO", "ELITE"].includes(parts[1])) {
+                   extractedPlan = parts[1].charAt(0).toUpperCase() + parts[1].slice(1).toLowerCase();
+               }
+           }
+           return { ...k, plan: extractedPlan };
+       });
+       
+       res.json(augmentedKeys);
    } catch(e: any) {
        res.status(500).json({ error: e.message || String(e) });
    }
@@ -1669,7 +1683,7 @@ async function isUserAdmin(token: string, userId: string): Promise<boolean> {
     }
 
     // Database Role Check
-    const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).single();
+    const { data: roleData } = await adminSupabase.from("user_roles").select("role").eq("user_id", userId).maybeSingle();
     return roleData && (roleData.role === 'admin' || roleData.role === 'developer');
 }
 
@@ -1693,16 +1707,16 @@ app.get("/api/admin/users", async (req, res) => {
         if (licensesError) throw licensesError;
         
         const enhancedUsers = authUsers.map((u: any) => {
-            const license = (licenses || []).find((l: any) => l.email === u.email && l.used);
+            const license = (licenses || []).find((l: any) => l.email === u.email);
             return {
                 id: u.id,
                 email: u.email,
                 created_at: u.created_at,
                 last_sign_in_at: u.last_sign_in_at,
-                has_access: !!license,
+                has_access: !!(license && license.used),
                 access_key: license?.access_key || null,
                 expires_at: license?.expires_at || null,
-                plan: license ? 'Premium' : 'Starter' // Simplified
+                plan: license?.plan || 'Starter'
             };
         });
 
@@ -1731,17 +1745,18 @@ app.post("/api/admin/approve-user", async (req, res) => {
         if (userError || !userResponse?.user) throw new Error("User not found in Supabase Auth");
         const targetUser = userResponse.user;
 
-        const newKey = `ALG-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+        const safePlan = (planType || "Starter").toUpperCase();
+        const newKey = `ALG-${safePlan}-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
         
-        // We use upsert to replace any existing key for this email if it exists
-        // Or we better delete first to avoid conflicts if email is not the primary key
-        await adminSupabase.from("access_licenses").delete().eq("email", targetUser.email);
+        // Remove old unused keys for this email if any exist
+        await adminSupabase.from("access_licenses").delete().eq("email", targetUser.email).eq("used", false);
 
         const { error: keyErr } = await adminSupabase.from("access_licenses").insert({
             email: targetUser.email,
             access_key: newKey,
-            used: true, // It's directly assigned, so we mark it as used
-            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+            plan: planType || "Starter",
+            used: false, // Requires user to activate it in the UI
+            // No expires_at, it starts from when they activate it
         });
 
         if (keyErr) {
@@ -1749,14 +1764,7 @@ app.post("/api/admin/approve-user", async (req, res) => {
             throw keyErr;
         }
 
-        // Also update the users table for immediate UI reflection
-        await adminSupabase.from("users").upsert({
-            id: targetUserId,
-            email: targetUser.email,
-            has_access: true,
-            plan: planType || 'Premium',
-            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-        });
+        // Do NOT update users table has_access: true yet. User must do it in the billing page.
 
         await adminSupabase.from("audit_logs").insert({
           admin_id: adminId,
@@ -1785,7 +1793,7 @@ app.post("/api/admin/suspend-key", async (req, res) => {
             return res.status(403).json({ error: "Forbidden: Admin access required" });
         }
 
-        const { data: keyRecord } = await adminSupabase.from("access_licenses").delete().eq("id", keyId).select().single();
+        const { data: keyRecord } = await adminSupabase.from("access_licenses").delete().eq("id", keyId).select().maybeSingle();
         
         if (keyRecord && keyRecord.email) {
             await adminSupabase.from("users").update({ has_access: false, payment_status: 'revoked' }).eq("email", keyRecord.email);
@@ -1811,9 +1819,9 @@ app.get("/api/subscription/status", async (req, res) => {
      const { data } = await adminSupabase.from("users")
        .select("*")
        .eq("id", userId)
-       .single();
+       .maybeSingle();
      if (data && data.has_access) {
-         return res.json({ status: 'active', plan_type: data.plan, expiry_date: data.expires_at });
+         return res.json({ status: 'active', plan: data.plan, expiry_date: data.expires_at });
      }
      res.json({ status: 'inactive' });
    } catch(e: any) {
@@ -1844,6 +1852,7 @@ app.get("/api/admin/audit-logs", async (req, res) => {
 
 // ACCOUNT FETCH (Direct SDK Call - No hybrid overrides)
 app.get("/api/user/bootstrap", async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   try {
     const userId = await getUserIdFromRequest(req);
     const leases = await TradingController.getActiveLeases(userId);
@@ -1870,24 +1879,40 @@ app.get("/api/user/bootstrap", async (req, res) => {
     }
 
     if (!has_active_subscription && adminSupabase) {
-        // Fetch user email first to look up in access_licenses
-        const authHeader = req.headers.authorization?.replace("Bearer ", "");
-        const { data: userData } = await adminSupabase.auth.getUser(authHeader!);
-        const userEmail = userData.user?.email;
+        // Fetch user from users table first
+        const { data: userRecord } = await adminSupabase.from("users")
+            .select("plan, has_access, expires_at")
+            .eq("id", userId)
+            .maybeSingle();
 
-        if (userEmail) {
-            const { data: license } = await adminSupabase.from("access_licenses")
-                .select("used, expires_at, access_key")
-                .eq("email", userEmail)
-                .eq("used", true)
-                .maybeSingle();
-                
-            if (license && license.used) {
-                const isExpired = license.expires_at && new Date(license.expires_at).getTime() < Date.now();
-                if (!isExpired) {
-                    has_active_subscription = true;
-                    subscription_plan = "Premium"; // Default plan name
-                    (res as any).license_key = license.access_key;
+        if (userRecord && userRecord.has_access) {
+            const isExpired = userRecord.expires_at && new Date(userRecord.expires_at).getTime() < Date.now();
+            if (!isExpired) {
+                has_active_subscription = true;
+                subscription_plan = userRecord.plan || "Starter";
+            }
+        }
+
+        // If not found in users, check access_licenses by email
+        if (!has_active_subscription) {
+            const authHeaderToken = req.headers.authorization?.replace("Bearer ", "");
+            const { data: userData } = await adminSupabase.auth.getUser(authHeaderToken!);
+            const userEmailMatch = userData.user?.email;
+
+            if (userEmailMatch) {
+                const { data: license } = await adminSupabase.from("access_licenses")
+                    .select("used, expires_at, access_key")
+                    .eq("email", userEmailMatch)
+                    .eq("used", true)
+                    .maybeSingle();
+                    
+                if (license && license.used) {
+                    const isExpired = license.expires_at && new Date(license.expires_at).getTime() < Date.now();
+                    if (!isExpired) {
+                        has_active_subscription = true;
+                        subscription_plan = license.plan || "Starter";
+                        (res as any).license_key = license.access_key;
+                    }
                 }
             }
         }
@@ -1918,7 +1943,24 @@ app.get("/api/accounts", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
     const leases = await TradingController.getActiveLeases(userId);
-    const activeAccountIds = new Set(leases.map(l => l.account_id));
+    
+    // OWNERSHIP CLEANUP: Remove foreign leases caused by previous auto-assign bugs
+    const validLeases = [];
+    if (adminSupabase && leases.length > 0) {
+      for (const lease of leases) {
+         const { data: deployment } = await adminSupabase.from("ea_deployments").select("user_id").eq("account_id", lease.account_id).maybeSingle();
+         if (deployment && deployment.user_id !== userId) {
+            console.log(`[SECURITY] Purging foreign lease ${lease.account_id} for user ${userId} (owned by ${deployment.user_id})`);
+            await TradingController.removeLease(lease.account_id, userId);
+         } else {
+            validLeases.push(lease);
+         }
+      }
+    } else {
+      validLeases.push(...leases);
+    }
+    
+    const activeAccountIds = new Set(validLeases.map(l => l.account_id));
 
     // PERFORMANCE: Return fresh cache (30s) immediately to prevent SDK bottleneck
     const now = Date.now();
@@ -1985,6 +2027,7 @@ app.get("/api/accounts", async (req, res) => {
           equity: info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : 0),
           margin: info.margin !== undefined ? Number(info.margin) : 0,
           freeMargin: info.freeMargin !== undefined ? Number(info.freeMargin) : 0,
+          marginLevel: info.marginLevel !== undefined ? Number(info.marginLevel) : (info.margin !== undefined && info.margin > 0 && info.equity !== undefined ? (Number(info.equity) / Number(info.margin)) * 100 : 0),
           currency: info.currency || 'USD'
         };
       });
@@ -2033,18 +2076,22 @@ app.post("/api/accounts", async (req, res) => {
     
     // VALIDATE SAAS LIMITS
     if (adminSupabase) {
-       const leases = await TradingController.getActiveLeases(userId);
-       const { data: subData } = await adminSupabase.from("subscriptions")
-          .select("metaapi_account_limit")
-          .eq("user_id", userId)
-          .eq("status", "active")
-          .single();
-          
-       const userLimit = subData ? subData.metaapi_account_limit : 0;
-       
-       if (leases.length >= userLimit) {
-           return res.status(403).json({ error: `Subscription limit reached. Please upgrade your plan. Limit: ${userLimit}, Current: ${leases.length}` });
-       }
+        const { data: userData } = await adminSupabase.from("users")
+           .select("plan")
+           .eq("id", userId)
+           .maybeSingle();
+           
+        const plan = userData?.plan || "Starter";
+        const leases = await TradingController.getActiveLeases(userId);
+        
+        let limit = 1;
+        if (plan === 'Pro') limit = 2;
+        else if (plan === 'Elite') limit = 3;
+        else if (plan === 'Developer') limit = 100;
+
+        if (leases.length >= limit) {
+           return res.status(403).json({ error: `Subscription limit reached for ${plan} plan. Please upgrade to add more accounts. Limit: ${limit}, Current: ${leases.length}` });
+        }
     }
     
     const { login, server, platform, magic } = req.body || {};
@@ -2066,11 +2113,28 @@ app.post("/api/accounts", async (req, res) => {
     });
     
     let isNew = false;
+    let accountId = null;
+
     if (account) {
-      console.log(`[ACCOUNT] Found existing account ${account.id || account._id} for login ${login}. Reusing for user.`);
+      accountId = account.id || account._data?.id || account._id;
+      console.log(`[ACCOUNT] Found existing account ${accountId} for login ${login}. Validating ownership...`);
+      
+      // Ownership check: If this account is already exclusively owned by someone else in ea_leases, reject it.
+      if (adminSupabase) {
+         const { data: existingLease } = await adminSupabase.from("ea_leases")
+           .select("user_id")
+           .eq("account_id", accountId)
+           .maybeSingle();
+           
+         if (existingLease && existingLease.user_id !== userId) {
+            return res.status(403).json({ error: "Access Denied: This broker account is already registered by another user. If you own this account, please ensure the credentials are not shared. Contact support if this is a mistake." });
+         }
+      }
+      console.log(`[ACCOUNT] Ownership verified or unclaimed. Reusing for user.`);
     } else {
       console.log(`[ACCOUNT] Creating new account for login ${login}.`);
       account = await metaapi.metatraderAccountApi.createAccount(req.body || {});
+      accountId = account.id || account._data?.id || account._id;
       isNew = true;
     }
     
@@ -2083,10 +2147,9 @@ app.post("/api/accounts", async (req, res) => {
         console.log(`[ACCOUNT] Deploy hint skipped: ${deployErr.message}`);
       }
     } else {
-      console.log(`[ACCOUNT] Bound to ${account.id}. Account already DEPLOYED.`);
+      console.log(`[ACCOUNT] Bound to ${accountId}. Account already DEPLOYED.`);
     }
     
-    const accountId = account.id || account._data?.id || account._id;
     await TradingController.createLease(userId, accountId, 'DEFAULT', 'london');
 
     const info = account.accountInformation || account._data?.accountInformation || {};
@@ -2104,7 +2167,8 @@ app.post("/api/accounts", async (req, res) => {
       balance: info.balance || 0,
       equity: info.equity || 0,
       margin: info.margin || 0,
-      freeMargin: info.freeMargin || 0
+      freeMargin: info.freeMargin || 0,
+      marginLevel: info.marginLevel || (info.margin ? (info.equity / info.margin) * 100 : 0)
     };
     
     const userCache = globalScope.ACCOUNT_LIST_CACHE_BY_USER.get(userId) || [];
@@ -2187,6 +2251,11 @@ app.post("/api/account/:accountId/deploy", async (req, res) => {
     const userIdAuth = await getUserIdFromRequest(req);
     const effectiveUserId = userId || userIdAuth;
     const existingEA = await TradingController.getEAStatus(accountId, effectiveUserId);
+    
+    // Check if locked
+    if (existingEA?.status === 'MANUALLY_LOCKED') {
+       return res.status(403).json({ error: "Account is manually locked by admin and cannot be deployed automatically." });
+    }
     
     logMessage(accountId, 'INFO', 'Cloud Terminal Deployment sequence initiated in Cloud Hub.', { region: region || 'london' }, 'NODE_STRATEGY');
 
@@ -2730,6 +2799,17 @@ app.get("/api/account/:accountId/history", async (req, res) => {
   const limit = req.query.limit || 10;
   try {
     const userId = await getUserIdFromRequest(req);
+    
+    // Check if account is even deployed/connected before trying RPC
+    const account = await getAccount(accountId);
+    if (account.state !== 'DEPLOYED' || account.connectionStatus !== 'CONNECTED') {
+       return res.status(202).json({ 
+         status: 'starting', 
+         message: 'Account is still connecting to broker. Please wait up to 3 minutes.',
+         historyOrders: [] 
+       });
+    }
+
     const connection = await getRPCConnection(accountId);
     // Extend time range to ensure we pick up recent trades even with small clock skews
     const startTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); 
@@ -2737,6 +2817,7 @@ app.get("/api/account/:accountId/history", async (req, res) => {
     const history = await connection.getHistoryOrdersByTimeRange(startTime, endTime, 0, Number(limit));
     res.json(history);
   } catch (err: any) {
+    console.error(`[API] History fetch error for ${accountId}:`, err.message);
     res.status(500).json({ error: sanitizeError(err) });
   }
 });
@@ -2746,6 +2827,17 @@ app.get("/api/account/:accountId/metastats", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
     
+    // Check account connection status first to avoid hanging browser requests
+    const accountCheck = await getAccount(accountId);
+    if (accountCheck.state !== 'DEPLOYED' || accountCheck.connectionStatus !== 'CONNECTED') {
+        return res.status(202).json({ 
+          status: 'synchronizing', 
+          message: 'Account is booting or connecting. MetaStats will be available shortly.',
+          trades: [],
+          metrics: {}
+        });
+    }
+
     if (!token) return res.status(500).json({ error: "Internal Server Error: No MetaApi token configured" });
     
     const headers = { 
@@ -2852,21 +2944,23 @@ async function recoverLeases() {
       console.log(`[LEASE] Checking deployment for ${lease.account_id}...`);
       const account = await getAccount(lease.account_id);
       
-      if (account.state === 'UNDEPLOYED') {
-        console.log(`[LEASE] Account ${lease.account_id} is manually undeployed in MetaApi. Removing automatic lease.`);
-        await TradingController.removeLease(lease.account_id);
-        continue;
-      }
-      
       if (account.state !== 'DEPLOYED') {
-        console.log(`[LEASE] Triggering deployment for ${lease.account_id} (current state: ${account.state})...`);
-        await account.deploy();
-        await new Promise(r => setTimeout(r, 2000));
+        const existingEA = await TradingController.getEAStatus(lease.account_id, lease.user_id);
+        if (existingEA && existingEA.status !== 'UNDEPLOYED' && existingEA.status !== 'EXPIRED_UNDEPLOYED' && existingEA.status !== 'MANUALLY_LOCKED') {
+           console.log(`[LEASE] Account ${lease.account_id} detected as externally undeployed. Locking.`);
+           await TradingController.updateEAStatus(lease.account_id, lease.user_id, false, 'MANUALLY_LOCKED');
+        } else if (!existingEA) {
+           await TradingController.updateEAStatus(lease.account_id, lease.user_id, false, 'UNDEPLOYED');
+        }
+        continue;
+      } else {
+        // If it's deployed in MetaApi but our database still thinks it's locked/undeployed, sync it.
+        const existingEA = await TradingController.getEAStatus(lease.account_id, lease.user_id);
+        if (!existingEA || !existingEA.deployed) {
+            console.log(`[LEASE] Account ${lease.account_id} detected as deployed in MetaApi. Syncing local state.`);
+            await TradingController.updateEAStatus(lease.account_id, lease.user_id, true, 'DEPLOYED');
+        }
       }
-      
-      // Fix: Persist EA status on reboot for recovered leases
-      if (!globalScope.ALGO_RUNNING) globalScope.ALGO_RUNNING = new Map();
-      globalScope.ALGO_RUNNING.set(lease.account_id, true);
 
       // Ensure connection is pinned and established via singleton registry
       await setupStreaming(lease.account_id).catch(err => 
@@ -2879,6 +2973,41 @@ async function recoverLeases() {
     }
   }
 }
+
+// EXPIRY MONITOR - Enforces subscription expiry globally
+setInterval(async () => {
+    if (!adminSupabase || !metaapi) return;
+    try {
+       // Fetch all users with expired subscriptions that still have access = false? No, where has_access = true but expired
+       const { data: expiredUsers } = await adminSupabase
+          .from("users")
+          .select("id, email, expires_at, has_access")
+          .lte("expires_at", new Date().toISOString())
+          .eq("has_access", true);
+          
+       if (expiredUsers && expiredUsers.length > 0) {
+           for (const user of expiredUsers) {
+               console.log(`[SUBSCRIPTION] User ${user.email} subscription expired. Revoking access and undeploying accounts.`);
+               
+               await adminSupabase.from("users").update({ has_access: false, payment_status: 'expired' }).eq("id", user.id);
+               
+               const leases = await TradingController.getActiveLeases(user.id);
+               for (const lease of leases) {
+                   const accountId = lease.account_id;
+                   try {
+                       const account = await getAccount(accountId);
+                       if (account.state === 'DEPLOYED') {
+                           await account.undeploy();
+                       }
+                   } catch(e) {}
+                   await TradingController.updateEAStatus(accountId, user.id, false, 'EXPIRED_UNDEPLOYED');
+               }
+           }
+       }
+    } catch(e) {
+       console.error("[MONITOR] Expiry enforcement failed:", e);
+    }
+}, 60000); // Check every minute
 
 // LEASE HEARTBEAT & MONITOR
 setInterval(async () => {

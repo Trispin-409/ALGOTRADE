@@ -335,7 +335,7 @@ const MarketData: React.FC<MarketDataProps> = ({
             <select 
               value={selectedAccountId}
               onChange={(e) => setSelectedAccountId(e.target.value)}
-              className="bg-black/40 border border-slate-700/50 text-white text-xs font-mono rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-indigo-500 outline-none min-w-[150px] w-full sm:w-auto"
+              className="bg-black/40 border border-white/10 text-white text-xs font-mono rounded-lg px-3 py-1.5 focus:border-white outline-none min-w-[150px] w-full sm:w-auto transition-colors appearance-none"
             >
               {accounts.map(acc => (
                 <option key={acc.id} value={acc.id}>{acc.login} ({acc.platform})</option>
@@ -346,7 +346,7 @@ const MarketData: React.FC<MarketDataProps> = ({
           <div className="flex flex-col gap-0.5 w-full sm:w-auto">
             <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Asset</span>
             <div className="relative w-full sm:w-auto">
-              <div className={`flex bg-black/40 border border-slate-700/50 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-indigo-500 group ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
+              <div className={`flex bg-black/40 border border-white/10 rounded-lg overflow-hidden focus-within:border-white group transition-colors ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
                 <input 
                   type="text"
                   list="broker-symbols"
@@ -359,7 +359,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                 <datalist id="broker-symbols" className="bg-slate-900">
                   {availableBrokerSymbols.map(s => <option key={s} value={s} />)}
                 </datalist>
-                <div className="bg-slate-800 px-2 flex items-center border-l border-slate-700/50">
+                <div className="bg-white/5 px-2 flex items-center border-l border-white/10">
                   <Activity className={`w-3 h-3 ${availableBrokerSymbols.includes(symbol) ? 'text-emerald-500' : 'text-slate-600'}`} />
                 </div>
               </div>
@@ -368,17 +368,18 @@ const MarketData: React.FC<MarketDataProps> = ({
 
           <div className="flex flex-col gap-0.5 w-full sm:w-auto">
             <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Interval</span>
-            <div className={`flex bg-black/40 rounded-lg p-0.5 border border-slate-700/50 w-full sm:w-auto overflow-x-auto ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''} custom-scrollbar`}>
+            <div className={`flex bg-black/40 rounded-lg p-0.5 border border-white/10 w-full sm:w-auto overflow-x-auto ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''} custom-scrollbar`}>
               {timeframes.map(tf => (
                 <button
                   key={tf}
                   disabled={isAlgoRunning}
                   onClick={() => setTimeframe(tf)}
-                  className={`px-3 py-1 text-[10px] font-mono font-bold rounded-md transition-all shrink-0 ${
+                  className={`px-3 py-1 text-[10px] font-mono font-bold rounded-md transition-all shrink-0 active:scale-95 ${
                     timeframe === tf 
-                      ? 'bg-indigo-600 text-white shadow-sm' 
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      ? 'text-white shadow-sm' 
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
                   } ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
+                  style={timeframe === tf ? { backgroundColor: 'var(--accent-color)' } : {}}
                 >
                   {tf}
                 </button>
@@ -391,24 +392,25 @@ const MarketData: React.FC<MarketDataProps> = ({
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
         <div className="lg:col-span-2 space-y-6">
-          <div className="p-2 min-h-[400px] sm:min-h-[500px] flex flex-col relative w-full bg-black/20 border border-white/5 rounded-xl">
+          <div className="p-2 min-h-[400px] sm:min-h-[500px] flex flex-col relative w-full bg-black/20 border border-white/10 rounded-xl glowing-frame">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2 z-20">
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-mono font-black text-white px-2 py-1 bg-slate-900 rounded-md border border-white/10 uppercase">{symbol}</h3>
-                <span className="px-2 py-1 bg-indigo-500/10 rounded-md text-[10px] font-mono font-bold text-indigo-400 border border-indigo-500/20">
+                <h3 className="text-sm font-mono font-black text-white px-2 py-1 bg-black/40 rounded-md border border-white/10 uppercase">{symbol}</h3>
+                <span className="px-2 py-1 bg-white/10 rounded-md text-[10px] font-mono font-bold border border-white/10" style={{ color: 'var(--accent-color)' }}>
                   {timeframe}
                 </span>
-                {isSubscribing && <RefreshCw className="w-3 h-3 text-indigo-400 animate-spin" />}
+                {isSubscribing && <RefreshCw className="w-3 h-3 animate-spin" style={{ color: 'var(--accent-color)' }} />}
               </div>
               <button
                 onClick={() => setShowAnalysis(!showAnalysis)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-mono font-black uppercase tracking-widest transition-all ${
                   showAnalysis 
-                    ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' 
+                    ? 'bg-white/10 text-white border border-white/20' 
                     : 'bg-black/40 text-slate-500 border border-white/5 hover:text-white'
                 }`}
+                style={showAnalysis ? { borderColor: 'var(--accent-color)' } : {}}
               >
-                <Zap className={`w-3 h-3 ${showAnalysis ? 'fill-indigo-300' : ''}`} />
+                <Zap className={`w-3 h-3 ${showAnalysis ? 'accent-glow' : ''}`} style={showAnalysis ? { color: 'var(--accent-color)' } : {}} />
                 {showAnalysis ? 'Analysis ON' : 'Analysis OFF'}
               </button>
             </div>
@@ -417,7 +419,7 @@ const MarketData: React.FC<MarketDataProps> = ({
             {/* Background Symbol Text */}
             <div className="absolute inset-0 flex flex-col pt-4 pl-4 md:pt-10 md:pl-10 pointer-events-none opacity-[0.02] z-0 select-none overflow-hidden">
               <span className="text-6xl md:text-[10rem] font-black text-white leading-none tracking-tighter uppercase">{symbol}</span>
-              <span className="text-3xl md:text-6xl font-black text-indigo-400 mt-[-10px] uppercase tracking-widest">{timeframe}</span>
+              <span className="text-3xl md:text-6xl font-black mt-[-10px] uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>{timeframe}</span>
             </div>
             
             <div className="w-full h-full min-h-[500px] relative">
@@ -451,7 +453,7 @@ const MarketData: React.FC<MarketDataProps> = ({
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xs font-mono font-black text-white/90 flex items-center gap-2 uppercase tracking-[0.2em]">
-                <Workflow className="w-3.5 h-3.5 text-indigo-400" />
+                <Workflow className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
                 Engine
               </h3>
               <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 rounded border border-white/5">
@@ -462,9 +464,9 @@ const MarketData: React.FC<MarketDataProps> = ({
 
             <div className="space-y-4">
               {/* Strategy Settings */}
-              <div className="p-3 bg-black/40 rounded-xl border border-white/5 space-y-3 animate-in slide-in-from-top-4 duration-500">
+              <div className="p-3 bg-black/40 rounded-xl border border-white/10 space-y-3 animate-in slide-in-from-top-4 duration-500 glowing-panel">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-mono font-black uppercase tracking-widest text-indigo-400">Parameters</span>
+                  <span className="text-[9px] font-mono font-black uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>Parameters</span>
                   <button onClick={() => setActiveTab('settings')} className="text-[8px] font-mono font-black text-slate-500 hover:text-white uppercase transition-colors shrink-0">Engine Setup</button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -475,7 +477,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                       step="0.01" 
                       value={lotSize} 
                       onChange={(e) => setLotSize(parseFloat(e.target.value))}
-                      className="w-full bg-slate-900/80 border border-white/10 rounded-lg px-2 py-1.5 text-[10px] font-mono text-white outline-none focus:border-indigo-500/50" 
+                      className="w-full bg-black/60 border border-white/10 rounded-lg px-2 py-1.5 text-[10px] font-mono text-white outline-none focus:border-white transition-colors" 
                     />
                   </div>
                   <div className="space-y-1">
@@ -514,11 +516,12 @@ const MarketData: React.FC<MarketDataProps> = ({
               <button
                 onClick={onToggleAlgo}
                 disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                className={`w-full flex items-center justify-center gap-2 py-4 rounded-xl border transition-all ${
+                className={`w-full flex items-center justify-center gap-2 py-4 rounded-xl border transition-all active:scale-95 ${
                   isAlgoRunning 
-                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-400 hover:bg-rose-500/30 shadow-[0_0_15px_rgba(244,63,94,0.15)]' 
-                    : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.15)]'
-                } ${((connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : 'active:scale-95'}`}
+                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-400 hover:bg-rose-500/30' 
+                    : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30'
+                } ${((connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}
+                style={isAlgoRunning ? { boxShadow: '0 0 15px rgba(244,63,94,0.15)' } : { boxShadow: '0 0 15px rgba(16,185,129,0.15)' }}
               >
                 {isAlgoRunning ? (
                   <>
@@ -553,7 +556,7 @@ const MarketData: React.FC<MarketDataProps> = ({
 
           <div className="mb-6">
             <div className="flex items-center gap-2 mb-3">
-              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              <Layers className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
               <h4 className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Open Ops</h4>
             </div>
             <div className="space-y-2">
@@ -563,11 +566,11 @@ const MarketData: React.FC<MarketDataProps> = ({
                 globalPositions.map((pos: any, i: number) => {
                   const isBuy = pos.type === 'POSITION_TYPE_BUY' || pos.type?.toLowerCase() === 'buy';
                   return (
-                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5">
+                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5 glowing-panel">
                     <div>
                       <div className="flex items-center gap-1.5 mb-1">
                         <span className="text-[10px] font-mono font-black text-white">{pos.symbol}</span>
-                        <span className="text-[7px] font-mono font-black px-1 py-0.5 bg-slate-800 text-slate-400 rounded uppercase">{pos.comment || 'SYS'}</span>
+                        <span className="text-[7px] font-mono font-black px-1 py-0.5 bg-white/5 text-slate-400 rounded uppercase border border-white/5">{pos.comment || 'SYS'}</span>
                       </div>
                       <p className={`text-[8px] font-mono font-black uppercase tracking-widest ${isBuy ? 'text-emerald-500' : 'text-rose-500'}`}>
                         {isBuy ? 'BUY' : 'SELL'} {pos.volume}
@@ -586,7 +589,7 @@ const MarketData: React.FC<MarketDataProps> = ({
           <div>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <History className="w-3.5 h-3.5 text-indigo-400" />
+                <History className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
                 <h4 className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Feed</h4>
               </div>
               {globalHistory.length > 0 && (
@@ -606,7 +609,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                   if (!order) return null;
                   const isBuy = order.type?.toUpperCase().includes('BUY');
                   return (
-                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5">
+                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5 glowing-panel">
                     <div className="flex flex-col gap-0.5">
                       <div className="flex items-center gap-1.5">
                         <span className="text-[10px] font-mono font-black text-white">{order.symbol}</span>

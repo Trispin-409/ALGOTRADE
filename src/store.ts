@@ -13,6 +13,7 @@ interface AccountStore {
     upColor: string;
     downColor: string;
     bgImageUrl: string;
+    accentColor: string;
   };
   strategySettings: {
     symbol: string;
@@ -44,7 +45,7 @@ interface AccountStore {
   setPositions: (positions: any[]) => void;
   setHistory: (history: any[]) => void;
   setStats: (stats: any | null) => void;
-  setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string }) => void;
+  setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string; accentColor?: string }) => void;
   setStrategySettings: (settings: { 
     symbol?: string; 
     lotSize?: number; 
@@ -79,12 +80,14 @@ export const useStore = create<AccountStore>((set) => ({
         upColor: '#10b981',
         downColor: '#f43f5e',
         bgImageUrl: '/bot-logo.png?v=2',
+        accentColor: '#6366f1',
       };
     } catch {
       return { 
         upColor: '#10b981', 
         downColor: '#f43f5e', 
-        bgImageUrl: '/icon-512.png' 
+        bgImageUrl: '/icon-512.png',
+        accentColor: '#6366f1' 
       };
     }
   })(),

@@ -14,6 +14,7 @@ interface AccountConfigProps {
   setAccounts: React.Dispatch<React.SetStateAction<TradingAccount[]>>;
   token?: string;
   onSelectAccount?: (id: string) => void;
+  subscriptionPlan?: string;
 }
 
 interface ProvisioningProfile {
@@ -234,9 +235,22 @@ const safeBtoa = (str: string): string => {
   }
 };
 
-const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, token, onSelectAccount }) => {
+const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, token, onSelectAccount, subscriptionPlan }) => {
   const [view, setView] = useState<'accounts' | 'profiles'>('accounts');
   const [isAdding, setIsAdding] = useState(false);
+  
+  // Calculate limit based on plan
+  const planLimits: Record<string, number> = {
+    'Starter': 1,
+    'Pro': 2,
+    'Elite': 3,
+    'Developer': 100 // No limit for developer
+  };
+  
+  const currentLimit = planLimits[subscriptionPlan || 'Starter'] || 1;
+  const isLimitReached = accounts.length >= currentLimit;
+  const isInputLocked = isLimitReached && !isAdding; 
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [profiles, setProfiles] = useState<ProvisioningProfile[]>([]);
   const [activeStep, setActiveStep] = useState<'idle' | 'deploying' | 'polling'>('idle');
@@ -473,6 +487,10 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
   };
 
   const handleCreateAccount = async () => {
+    if (isLimitReached) {
+      alert(`You have reached the ${currentLimit} account limit for your ${subscriptionPlan || 'Starter'} plan. Please upgrade to add more accounts.`);
+      return;
+    }
     if (!formData.name || !formData.server || !formData.login || !formData.password) {
       alert("Please complete all fields for deployment.");
       return;
@@ -529,23 +547,58 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
 
   return (
     <div className="space-y-4 sm:space-y-6 w-full max-w-full">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white/5 p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] border border-white/5 backdrop-blur-md gap-4">
+      <div className="glowing-panel p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="flex items-center gap-4 sm:gap-6">
-          <div className="w-12 h-12 sm:w-14 h-14 bg-indigo-500/10 rounded-2xl flex items-center justify-center border border-indigo-500/20 shadow-inner shrink-0">
-            <Database className="text-indigo-400 w-6 h-6 sm:w-7 h-7" />
+          <div className="w-12 h-12 sm:w-14 h-14 rounded-2xl flex items-center justify-center shadow-inner shrink-0 accent-glow bg-black/40 border border-white/10" style={{ color: 'var(--accent-color)' }}>
+            <Database className="w-6 h-6 sm:w-7 h-7" />
           </div>
           <div>
             <h2 className="text-lg sm:text-2xl font-black text-white tracking-tight uppercase truncate">Metatrader account</h2>
             <div className="flex items-center gap-3 sm:gap-4 mt-1">
-              <button onClick={() => setView('accounts')} className={`text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${view === 'accounts' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>Terminals</button>
+              <button 
+                onClick={() => setView('accounts')} 
+                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${view === 'accounts' ? '' : 'text-slate-500 hover:text-slate-300'}`}
+                style={view === 'accounts' ? { color: 'var(--accent-color)' } : {}}
+              >
+                Terminals
+              </button>
               <span className="w-1 h-1 rounded-full bg-slate-800 shrink-0"></span>
-              <button onClick={() => setView('profiles')} className={`text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${view === 'profiles' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}>Profiles</button>
+              <button 
+                onClick={() => setView('profiles')} 
+                className={`text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${view === 'profiles' ? '' : 'text-slate-500 hover:text-slate-300'}`}
+                style={view === 'profiles' ? { color: 'var(--accent-color)' } : {}}
+              >
+                Profiles
+              </button>
+              <span className="w-1 h-1 rounded-full bg-slate-800 shrink-0"></span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded-full border border-white/5">
+                {subscriptionPlan || 'Starter'}: {accounts.length}/{currentLimit}
+              </span>
             </div>
           </div>
         </div>
         {!isAdding && view === 'accounts' && (
-          <button onClick={() => { setIsAdding(true); setSystemLogs([]); setActiveStep('idle'); }} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-4 rounded-xl font-black transition-all shadow-lg shadow-indigo-600/20 active:scale-95 text-[10px] sm:text-xs uppercase tracking-widest">
-            Add
+          <button 
+            onClick={() => { 
+              if (isLimitReached) {
+                alert(`You have reached the ${currentLimit} account limit for your ${subscriptionPlan || 'Starter'} plan. Please upgrade to add more accounts.`);
+                return;
+              }
+              setIsAdding(true); 
+              setSystemLogs([]); 
+              setActiveStep('idle'); 
+            }} 
+            className={`w-full sm:w-auto px-8 py-4 rounded-xl font-black transition-all shadow-lg active:scale-95 text-[10px] sm:text-xs uppercase tracking-widest ${
+              isLimitReached 
+                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5' 
+                : 'text-white'
+            }`}
+            style={!isLimitReached ? { 
+              backgroundColor: 'var(--accent-color)',
+              boxShadow: '0 10px 20px -10px var(--accent-color)'
+            } : {}}
+          >
+            {isLimitReached ? 'Limit Reached' : 'Add'}
           </button>
         )}
       </div>
@@ -553,10 +606,10 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
       {view === 'accounts' ? (
         <>
           {isAdding && (
-            <div className="bg-slate-950 border border-white/10 rounded-[30px] sm:rounded-[40px] p-6 sm:p-10 max-w-4xl mx-auto shadow-2xl animate-in zoom-in-95 duration-300 space-y-6 flex flex-col lg:flex-row gap-8">
+            <div className="glowing-panel rounded-[30px] sm:rounded-[40px] p-6 sm:p-10 max-w-4xl mx-auto shadow-2xl animate-in zoom-in-95 duration-300 space-y-6 flex flex-col lg:flex-row gap-8">
               <div className="flex-1 space-y-6">
                 <div className="flex justify-between items-center border-b border-white/5 pb-4">
-                  <span className="text-[9px] sm:text-[10px] font-black text-indigo-400 uppercase tracking-widest truncate">
+                  <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest truncate" style={{ color: 'var(--accent-color)' }}>
                     {actionLoading?.includes('delete') ? 'Decommission Protocol' : 'Account Configuration'}
                   </span>
                   <button onClick={() => setIsAdding(false)} className="lg:hidden text-slate-500 hover:text-white"><X className="w-5 h-5" /></button>
@@ -564,7 +617,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
 
                 {activeStep === 'polling' ? (
                   <div className="py-12 text-center space-y-6">
-                    <div className="w-16 h-16 sm:w-24 h-24 bg-indigo-500/10 rounded-full flex items-center justify-center mx-auto border-4 border-indigo-500/20 border-t-indigo-500 animate-spin"></div>
+                    <div className="w-16 h-16 sm:w-24 h-24 bg-black/40 rounded-full flex items-center justify-center mx-auto border-4 border-white/5 border-t-white animate-spin" style={{ borderTopColor: 'var(--accent-color)' }}></div>
                     <h3 className="text-lg sm:text-xl font-black text-white uppercase tracking-tighter truncate px-4">{pollingMessage}</h3>
                     <button onClick={() => setIsAdding(false)} className="text-[9px] sm:text-[10px] text-slate-500 font-black uppercase tracking-widest hover:text-white mt-4 block mx-auto">Close and Monitor</button>
                   </div>
@@ -573,24 +626,38 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Terminal Type</label>
-                        <select className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white outline-none focus:border-indigo-500 text-sm font-medium h-[52px]" value={formData.platform} onChange={e => setFormData({...formData, platform: e.target.value})}>
+                        <select 
+                          className={`w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white outline-none focus:border-white transition-colors text-sm font-medium h-[52px] ${isLimitReached ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          style={{ borderColor: 'rgba(255,255,255,0.1)' }}
+                          disabled={isLimitReached}
+                          value={formData.platform} 
+                          onChange={e => setFormData({...formData, platform: e.target.value})}
+                        >
                           <option value="4">MT4 Core</option>
                           <option value="5">MT5 Core</option>
                         </select>
                       </div>
                       <div className="space-y-2">
                         <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Display Name</label>
-                        <input type="text" placeholder="Account_Name" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-indigo-500 outline-none text-base sm:text-sm font-bold h-[52px]" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                        <input 
+                          type="text" 
+                          disabled={isLimitReached}
+                          placeholder={isLimitReached ? "LIMIT REACHED" : "Account_Name"}
+                          className={`w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm font-bold h-[52px] ${isLimitReached ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          value={formData.name} 
+                          onChange={e => setFormData({...formData, name: e.target.value})} 
+                        />
                       </div>
                     </div>
 
                     <div className="space-y-2 relative">
-                      <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2 text-indigo-400">Broker Discovery</label>
+                      <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2" style={{ color: 'var(--accent-color)' }}>Broker Discovery</label>
                       <div className="relative">
                         <input 
                           type="text" 
-                          placeholder="Search broker server..." 
-                          className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 pl-10 text-white focus:border-indigo-500 outline-none text-base sm:text-sm font-mono h-[52px]" 
+                          disabled={isLimitReached}
+                          placeholder={isLimitReached ? "SYSTEM LOCKED" : "Search broker server..."} 
+                          className={`w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 pl-10 text-white focus:border-white outline-none text-base sm:text-sm font-mono h-[52px] ${isLimitReached ? 'opacity-50 cursor-not-allowed' : ''}`} 
                           value={serverSearchQuery} 
                           onChange={e => {
                             setServerSearchQuery(e.target.value);
@@ -598,14 +665,14 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                           }} 
                         />
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
-                        {isSearchingServers && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-indigo-500 animate-spin" />}
+                        {isSearchingServers && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin" style={{ color: 'var(--accent-color)' }} />}
                       </div>
 
                       {Object.keys(discoveredServers).length > 0 && (
                         <div className="absolute z-50 left-0 right-0 mt-2 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl max-h-60 overflow-y-auto custom-scrollbar p-2">
                           {Object.entries(discoveredServers as Record<string, string[]>).map(([broker, servers]) => (
                             <div key={broker} className="mb-2 last:mb-0">
-                              <div className="text-[7px] sm:text-[8px] font-black text-indigo-500 uppercase tracking-widest px-3 py-1 bg-white/5 rounded-t-lg truncate">{broker}</div>
+                              <div className="text-[7px] sm:text-[8px] font-black uppercase tracking-widest px-3 py-1 bg-white/5 rounded-t-lg truncate" style={{ color: 'var(--accent-color)' }}>{broker}</div>
                               {servers.map(srv => (
                                 <button 
                                   key={srv} 
@@ -614,7 +681,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                                     setServerSearchQuery(srv);
                                     setDiscoveredServers({});
                                   }}
-                                  className="w-full text-left px-3 py-3 sm:py-2 text-xs text-slate-300 hover:bg-indigo-600 hover:text-white transition-colors flex items-center justify-between border-t border-white/5 first:border-t-0"
+                                  className="w-full text-left px-3 py-3 sm:py-2 text-xs text-slate-300 hover:bg-white/5 transition-colors flex items-center justify-between border-t border-white/5 first:border-t-0"
                                 >
                                   <span className="truncate mr-2">{srv}</span>
                                   <CheckCircle2 className="w-3 h-3 opacity-0 shrink-0" />
@@ -629,17 +696,22 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Login ID</label>
-                        <input type="text" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-indigo-500 outline-none text-base sm:text-sm font-mono h-[52px]" value={formData.login} onChange={e => setFormData({...formData, login: e.target.value})} />
+                        <input type="text" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm font-mono h-[52px]" value={formData.login} onChange={e => setFormData({...formData, login: e.target.value})} />
                       </div>
                       <div className="space-y-2">
                         <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Password</label>
-                        <input type="password" placeholder="••••••••" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-indigo-500 outline-none text-base sm:text-sm h-[52px]" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
+                        <input type="password" placeholder="••••••••" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm h-[52px]" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
                       </div>
                     </div>
 
                     <div className="flex flex-col-reverse sm:flex-row gap-4 pt-4">
                       <button onClick={() => setIsAdding(false)} className="w-full sm:flex-1 py-4 text-slate-500 font-black uppercase text-[10px] h-[52px]">Cancel</button>
-                      <button onClick={handleCreateAccount} disabled={isSubmitting} className="w-full sm:flex-[2] bg-indigo-600 text-white py-4 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-500 shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-3 h-[52px]">
+                      <button 
+                        onClick={handleCreateAccount} 
+                        disabled={isSubmitting} 
+                        className="w-full sm:flex-[2] text-white py-4 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg flex items-center justify-center gap-3 h-[52px]"
+                        style={{ backgroundColor: 'var(--accent-color)', boxShadow: '0 10px 20px -10px var(--accent-color)' }}
+                      >
                         {isSubmitting ? <Loader2 className="animate-spin w-4 h-4" /> : <Zap className="w-4 h-4" />} Add account
                       </button>
                     </div>
@@ -648,7 +720,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
               </div>
 
               <div className="lg:w-80 bg-black border border-white/5 rounded-3xl overflow-hidden flex flex-col h-[280px] sm:h-[400px] lg:h-auto">
-                <div className="bg-slate-900 px-4 py-3 border-b border-white/5 flex items-center justify-between shrink-0">
+                <div className="bg-white/5 px-4 py-3 border-b border-white/5 flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-2">
                     <Terminal className="w-3 h-3 text-emerald-500" />
                     <span className="text-[8px] font-black text-emerald-500/80 uppercase tracking-widest">SYSTEM_TERMINAL_V1.0</span>
@@ -667,7 +739,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                     ))
                   )}
                 </div>
-                <div className="bg-slate-900 px-4 py-2 border-t border-white/5 shrink-0">
+                <div className="bg-white/5 px-4 py-2 border-t border-white/5 shrink-0">
                   <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Automatic Engine (London)</span>
                 </div>
               </div>
@@ -679,10 +751,15 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
               <div 
                 key={acc.id} 
                 onClick={() => onSelectAccount && onSelectAccount(acc.id)}
-                className="bg-slate-900/40 border border-white/5 p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] backdrop-blur-md hover:border-indigo-500/30 transition-all group overflow-hidden cursor-pointer flex flex-col md:flex-row md:items-center justify-between"
+                className="glowing-panel p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] hover:border-white/20 transition-all group overflow-hidden cursor-pointer flex flex-col md:flex-row md:items-center justify-between"
               >
                 <div className="flex items-start md:items-center gap-3 sm:gap-4 overflow-hidden mb-4 md:mb-0">
-                  <div className="w-10 h-10 sm:w-12 h-12 bg-indigo-600/10 rounded-xl flex items-center justify-center font-black text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-inner uppercase font-mono shrink-0">{acc.platform}</div>
+                  <div 
+                    className="w-10 h-10 sm:w-12 h-12 bg-black/40 rounded-xl flex items-center justify-center font-black transition-all shadow-inner uppercase font-mono shrink-0 accent-glow border border-white/5"
+                    style={{ color: 'var(--accent-color)' }}
+                  >
+                    {acc.platform}
+                  </div>
                   <div className="truncate">
                     <div className="flex items-center gap-2">
                       <h4 className="font-black text-white text-sm sm:text-base truncate">{acc.name}</h4>
@@ -691,15 +768,17 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                   </div>
                 </div>
 
-                <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-3 shrink-0">
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    <div className={`px-2 sm:px-3 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase border ${acc.connectionStatus?.toUpperCase() === 'CONNECTED' || acc.connectionStatus?.toUpperCase() === 'READY' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
-                    {acc.connectionStatus?.toUpperCase() !== 'CONNECTED' && acc.connectionStatus?.toUpperCase() !== 'READY' && acc.state === 'DEPLOYED' && (
-                      <span className="text-[6px] text-rose-500 font-bold uppercase tracking-tighter">Check Credentials</span>
-                    )}
+                <div className="flex flex-col items-end justify-between gap-3 shrink-0">
+                  <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+                    <div className={`px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest border ${acc.connectionStatus?.toUpperCase() === 'CONNECTED' || acc.connectionStatus?.toUpperCase() === 'READY' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
+                    <div className={`px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest border ${acc.state === 'DEPLOYED' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-slate-500/10 text-slate-400 border-slate-500/20'}`}>{acc.state || 'UNDEPLOYED'}</div>
+                    <div className="px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest bg-violet-500/10 text-violet-400 border border-violet-500/20 flex items-center gap-1">
+                      <CheckCircle2 className="w-2.5 h-2.5" />
+                      OWNER VERIFIED
+                    </div>
                   </div>
                   
-                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
                     <button 
                       onClick={() => handleDeleteAccount(acc.id, acc.name || 'Unknown', acc.login || 'Unknown')}
                       disabled={actionLoading === `${acc.id}-delete`}
@@ -732,19 +811,19 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
           </div>
           <div className="space-y-3">
             {profiles.map(p => (
-              <div key={p.id || p._id} className="bg-slate-900/40 border border-white/5 p-4 sm:p-6 rounded-2xl sm:rounded-[32px] flex items-center justify-between group hover:border-indigo-500/20 transition-all overflow-hidden gap-3">
+              <div key={p.id || p._id} className="glowing-panel p-4 sm:p-6 rounded-2xl sm:rounded-[32px] flex items-center justify-between group hover:border-white/20 transition-all overflow-hidden gap-3">
                 <div className="flex items-center gap-3 sm:gap-6 overflow-hidden">
-                  <div className="w-10 h-10 sm:w-12 h-12 bg-slate-950 rounded-xl sm:rounded-2xl flex items-center justify-center border border-white/5 text-slate-500 font-black group-hover:text-indigo-400 transition-colors uppercase font-mono shrink-0 text-xs">MT{p.version}</div>
+                  <div className="w-10 h-10 sm:w-12 h-12 bg-black/40 rounded-xl sm:rounded-2xl flex items-center justify-center border border-white/5 text-slate-500 font-black group-hover:text-white transition-colors uppercase font-mono shrink-0 text-xs shadow-inner">MT{p.version}</div>
                   <div className="truncate">
                     <h4 className="text-xs sm:text-sm font-black text-white tracking-tight truncate">{p.name}</h4>
                     <div className="flex items-center gap-2 sm:gap-3 mt-0.5 text-[8px] sm:text-[9px] font-black text-slate-500 uppercase tracking-widest truncate">
                       <span className="truncate">{p.brokerTimezone}</span>
                       <span className="w-1 h-1 rounded-full bg-slate-800 shrink-0"></span>
-                      <span className="text-indigo-400 truncate">{p.status}</span>
+                      <span className="truncate" style={{ color: 'var(--accent-color)' }}>{p.status}</span>
                     </div>
                   </div>
                 </div>
-                <button className="p-3 hover:bg-indigo-500/10 text-slate-500 hover:text-indigo-400 rounded-xl transition-all shrink-0 active:scale-95"><Settings2 className="w-4 h-4 sm:w-5 h-5" /></button>
+                <button className="p-3 hover:bg-white/5 text-slate-500 hover:text-white rounded-xl transition-all shrink-0 active:scale-95"><Settings2 className="w-4 h-4 sm:w-5 h-5" /></button>
               </div>
             ))}
           </div>

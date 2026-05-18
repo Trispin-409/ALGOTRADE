@@ -53,7 +53,8 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
       });
 
       if (res.success) {
-         window.location.href = '/';
+         // Use a hard replace with cache buster to ensure the app reloads with fresh status
+         window.location.replace('/?activated=true&t=' + Date.now());
       } else {
          setActivationError(res.error || 'Activation failed.');
       }
@@ -120,11 +121,11 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
         {plans.map((plan) => (
           <div key={plan.name} className={`bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-3xl p-6 md:p-8 flex flex-col transition-all duration-300 hover:bg-slate-800/40 hover:border-white/10 relative overflow-hidden group shadow-2xl`}>
             {/* Ambient Background Gradient */}
-            <div className={`absolute inset-0 bg-gradient-to-br ${plan.gradient} opacity-0 group-hover:opacity-100 transition-opacity duration-500`}></div>
+            <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500`} style={{ background: 'var(--accent-color)' }}></div>
             
             <div className="relative z-10">
-              <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`}>
-                {plan.icon}
+              <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`} style={{ color: 'var(--accent-color)' }}>
+                {React.cloneElement(plan.icon as React.ReactElement, { className: 'w-8 h-8', style: { color: 'var(--accent-color)' } })}
               </div>
               
               <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{plan.name}</h3>
@@ -137,7 +138,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
               <ul className="space-y-4 mb-8 flex-1">
                 {plan.features.map((feature, i) => (
                   <li key={i} className="flex items-start text-sm text-slate-300 leading-relaxed">
-                    <Check className={`w-5 h-5 text-white/40 mr-3 mt-0.5 shrink-0`} />
+                    <Check className={`w-5 h-5 mr-3 mt-0.5 shrink-0`} style={{ color: 'var(--accent-color)' }} />
                     <span>{feature}</span>
                   </li>
                 ))}
@@ -145,7 +146,8 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
               
               <button
                 onClick={() => handleSubscribe(plan)}
-                className="w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 bg-white text-black hover:bg-slate-200 active:scale-[0.98] shadow-[0_0_20px_rgba(255,255,255,0.1)]"
+                className="w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 text-black hover:opacity-90 active:scale-[0.98] shadow-lg"
+                style={{ backgroundColor: 'var(--accent-color)', boxShadow: '0 10px 20px -5px rgba(var(--accent-color-rgb), 0.3)' }}
               >
                 Subscribe <ArrowRight className="w-5 h-5" />
               </button>
@@ -236,6 +238,9 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
                              </button>
                           )}
                         </div>
+                        {step === 'checkout' && activationError && (
+                            <p className="text-rose-500 text-[10px] font-bold mt-1 text-center">{activationError}</p>
+                        )}
                       </div>
 
                      <div className="grid grid-cols-2 gap-3">
@@ -347,6 +352,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
             <button 
                 onClick={async () => {
                     const { supabase } = await import('../lib/supabase');
+                    localStorage.clear();
                     await supabase.auth.signOut();
                     window.location.reload();
                 }}

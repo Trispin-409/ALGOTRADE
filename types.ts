@@ -26,6 +26,9 @@ export interface TradingAccount {
   state: string;
   balance?: number;
   equity?: number;
+  margin?: number;
+  freeMargin?: number;
+  marginLevel?: number;
   currency?: string;
   ready?: boolean;
 }
