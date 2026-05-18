@@ -1559,7 +1559,7 @@ app.post("/api/admin/generate-key", async (req, res) => {
 
      const { error } = await adminSupabase.from("access_licenses").insert({
        access_key: newKey,
-       email: null,
+       email: 'unassigned@local',
        used: false,
        expires_at: expiresAt.toISOString()
      });
@@ -1749,14 +1749,18 @@ app.post("/api/admin/approve-user", async (req, res) => {
         const newKey = `ALG-${safePlan}-${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
         
         // Remove old unused keys for this email if any exist
-        await adminSupabase.from("access_licenses").delete().eq("email", targetUser.email).eq("used", false);
+        if (targetUser.email) {
+            await adminSupabase.from("access_licenses").delete().eq("email", targetUser.email).eq("used", false);
+        }
+
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 30); // Default 30 days
 
         const { error: keyErr } = await adminSupabase.from("access_licenses").insert({
-            email: targetUser.email,
+            email: targetUser.email || 'unassigned@local',
             access_key: newKey,
-            plan: planType || "Starter",
             used: false, // Requires user to activate it in the UI
-            // No expires_at, it starts from when they activate it
+            expires_at: expiresAt.toISOString()
         });
 
         if (keyErr) {
