@@ -47,9 +47,6 @@ export function ResetPasswordForm({ session }: { session: any }) {
       <div className="relative z-20 pointer-events-auto w-full px-4">
         <div className="w-full max-w-sm mx-auto flex flex-col items-center">
           <div className="flex flex-col items-center mb-8 w-full">
-            <div className="w-64 h-64 mb-2 flex items-center justify-center">
-              <img src="/login-logo.png?v=5" alt="AlgoTrade Logo" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
-            </div>
             <h2 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-b from-[#face6f] to-[#b38421] tracking-widest uppercase mb-1">
               ALGOTRADE
             </h2>
