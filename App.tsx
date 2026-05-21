@@ -749,7 +749,7 @@ const App: React.FC = () => {
       
       // 1. BLOCK: Ignore SYNCING status to prevent state wiping
       if (data && data.status === 'SYNCING') {
-        addLog(`SDK: Synchronization in progress on London Cluster...`);
+        addLog(`SDK: Synchronization in progress on TrisTech secure system...`);
         return;
       }
 
@@ -796,8 +796,8 @@ const App: React.FC = () => {
         console.warn(`[RETRY] Retrying verifyAndFetch in 15s. ${retries} attempts left.`);
         setTimeout(() => verifyAndFetch(retries - 1), 15000);
       } else {
-        setLastError(`Cluster Exception: ${err.message}`);
-        addLog(`FATAL: Connection lost to London Cluster. Re-attempting handshake in 60s.`);
+        setLastError(`System API Exception: ${err.message}`);
+        addLog(`FATAL: Connection lost to secure system. Re-attempting handshake in 60s.`);
         setIsAuthValid(false);
         setIsLoading(false);
         setTimeout(() => verifyAndFetch(5), 60000);
@@ -894,7 +894,7 @@ const App: React.FC = () => {
   }
   
   if (!session) return (
-    <div className="relative flex items-center justify-center min-h-screen bg-[#02040a] overflow-hidden">
+    <div className="relative flex items-center justify-center min-h-screen bg-black overflow-hidden">
       {/* Deep background */}
       <div className="absolute inset-0 z-0 pointer-events-none">
         {/* User's uploaded brand background image */}
@@ -902,7 +902,7 @@ const App: React.FC = () => {
           className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-100 z-0"
           style={{ 
             backgroundImage: "url('/login-background.png')",
-            backgroundColor: "#02040a"
+            backgroundColor: "#000000"
           }}
         ></div>
       </div>
@@ -923,25 +923,25 @@ const App: React.FC = () => {
 
 
   return (
-    <div className={`flex h-screen bg-[#02040a] overflow-hidden text-slate-200 transition-colors duration-1000 ${streakThemeClasses}`}>
-      <div className="absolute inset-0 z-0 pointer-events-none opacity-40">
+    <div className={`flex h-screen bg-[#050608] overflow-hidden text-slate-200 transition-colors duration-1000 ${streakThemeClasses}`}>
+      <div className="absolute inset-0 z-0 pointer-events-none opacity-45">
         {/* Subtle Brand Logo Watermark Overlay */}
         <div 
           className="absolute inset-0 bg-contain bg-center bg-no-repeat opacity-[0.03] scale-50 z-0 pointer-events-none"
           style={{ backgroundImage: "url('/bot-logo.png?v=12')" }}
         ></div>
-        <div className="absolute inset-0 bg-[#02040a]/90 z-10 cyber-grid"></div>
-        {/* Soft aesthetic background lighting */}
-        <div className="absolute -top-[20%] left-1/3 w-[600px] h-[600px] bg-cyan-500/5 rounded-full blur-[150px] z-0"></div>
-        <div className="absolute -bottom-[20%] right-1/3 w-[600px] h-[600px] bg-purple-500/5 rounded-full blur-[150px] z-0"></div>
+        <div className="absolute inset-0 bg-black/95 z-10 cyber-grid"></div>
+        {/* Soft elegant warm ambient gold lighting spheres */}
+        <div className="absolute -top-[20%] left-1/3 w-[600px] h-[600px] bg-[#face6f]/4 rounded-full blur-[150px] z-0"></div>
+        <div className="absolute -bottom-[20%] right-1/3 w-[600px] h-[600px] bg-[#face6f]/3 rounded-full blur-[150px] z-0"></div>
       </div>
 
       <div className="relative z-10 flex w-full h-full">
         <ExpertLogPanel executionMode="STRATEGY" />
         
         {/* Sidebar - Desktop & Mobile overlay */}
-        <div className={`fixed inset-0 bg-black/80 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
-        <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full border-r border-white/5 bg-[#02040a]/90 backdrop-blur-xl`}>
+        <div className={`fixed inset-0 bg-black/85 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
+        <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full border-r border-white/5 bg-black/95 backdrop-blur-xl`}>
           <Sidebar 
             activeTab={activeTab} 
             setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} 
@@ -955,8 +955,8 @@ const App: React.FC = () => {
           />
         </div>
         
-        <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/20">
-          <header className="h-14 sm:h-16 border-b border-white/5 flex items-center justify-between px-3 sm:px-6 bg-[#02040a]/60 backdrop-blur-3xl shrink-0 z-20">
+        <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/30">
+          <header className="h-14 sm:h-16 border-b border-white/5 flex items-center justify-between px-3 sm:px-6 bg-black/80 backdrop-blur-3xl shrink-0 z-20">
             <div className="flex items-center gap-2 sm:gap-4">
               <button 
                 onClick={() => setIsSidebarOpen(true)} 
@@ -1138,7 +1138,7 @@ const App: React.FC = () => {
             <span className="truncate">ENGINE: ALGOTRADE</span>
           </div>
           <div className="ml-auto flex items-center gap-2 sm:gap-4 shrink-0">
-             <span className="hidden xs:inline">REGION: london.cluster</span>
+             <span className="hidden xs:inline">REGION: global.secured</span>
              <span className="truncate" style={{ color: 'var(--accent-color)' }}>v3-secured</span>
           </div>
         </footer>

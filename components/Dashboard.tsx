@@ -298,24 +298,27 @@ const Dashboard: React.FC<DashboardProps> = ({
       
       {/* TOP ROW METRICS - 3 columns even on mobile */}
       <div className="grid grid-cols-3 gap-2 sm:gap-3">
-        <div className="bg-[#0B0E14] border border-white/5 rounded-xl p-2 sm:p-4 flex flex-col justify-between shadow-lg h-24 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 blur-3xl rounded-full opacity-10" style={{ backgroundColor: 'var(--accent-color)' }} />
+        <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-2 sm:p-4 flex flex-col justify-between shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_20px_rgba(250,206,111,0.06)] transition-all duration-300 h-24 relative overflow-hidden group">
+          <div className="absolute -right-8 -bottom-8 w-24 h-24 bg-[#face6f]/10 rounded-full blur-[35px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+          <div className="absolute -left-8 -top-8 w-24 h-24 bg-cyan-500/[0.03] rounded-full blur-[35px] pointer-events-none z-0" />
           <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Balance</span>
           <div className="flex flex-col relative z-10">
             <h4 className="text-[14px] sm:text-[22px] font-black text-white font-mono tracking-tighter leading-none truncate">{formatCurrency(displayBalance, displayCurrency)}</h4>
             <span className={`text-[10px] font-mono mt-1 ${balanceChange >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{getPercentStr(balanceChange)}</span>
           </div>
         </div>
-        <div className="bg-[#0B0E14] border border-white/5 rounded-xl p-2 sm:p-4 flex flex-col justify-between shadow-lg h-24 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 blur-3xl rounded-full opacity-10" style={{ backgroundColor: 'var(--accent-color)' }} />
+        <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-2 sm:p-4 flex flex-col justify-between shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_20px_rgba(250,206,111,0.06)] transition-all duration-300 h-24 relative overflow-hidden group">
+          <div className="absolute -right-8 -bottom-8 w-24 h-24 bg-[#face6f]/10 rounded-full blur-[35px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+          <div className="absolute -left-8 -top-8 w-24 h-24 bg-[#face6f]/[0.02] rounded-full blur-[35px] pointer-events-none z-0" />
           <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Equity</span>
           <div className="flex flex-col relative z-10">
             <h4 className="text-[14px] sm:text-[22px] font-black text-white font-mono tracking-tighter leading-none truncate">{formatCurrency(displayEquity, displayCurrency)}</h4>
             <span className={`text-[10px] font-mono mt-1 ${balanceChange >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{getPercentStr(balanceChange * 0.9)}</span>
           </div>
         </div>
-        <div className="bg-[#0B0E14] border border-white/5 rounded-xl p-2 sm:p-4 flex flex-col justify-between shadow-lg h-24 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 blur-3xl rounded-full opacity-10" style={{ backgroundColor: 'var(--accent-color)' }} />
+        <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-2 sm:p-4 flex flex-col justify-between shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_20px_rgba(250,206,111,0.06)] transition-all duration-300 h-24 relative overflow-hidden group">
+          <div className="absolute -right-8 -bottom-8 w-24 h-24 bg-[#face6f]/10 rounded-full blur-[35px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+          <div className="absolute -left-8 -top-8 w-24 h-24 bg-purple-500/[0.03] rounded-full blur-[35px] pointer-events-none z-0" />
           <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Margin</span>
           <div className="flex flex-col relative z-10">
             <h4 className="text-[14px] sm:text-[22px] font-black text-white font-mono tracking-tighter leading-none truncate">{formatCurrency(displayMargin, displayCurrency)}</h4>
@@ -329,8 +332,12 @@ const Dashboard: React.FC<DashboardProps> = ({
         {/* LEFT COLUMN */}
         <div className="space-y-4">
           {/* ACCOUNT OVERVIEW */}
-          <div className="bg-[#0B0E14] border border-white/5 rounded-[24px] p-5 shadow-lg relative flex flex-col h-full">
-            <div className="flex justify-between items-center mb-6">
+          <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 relative flex flex-col h-full overflow-hidden group">
+            {/* Elegant luxury gold background radial glow behind metrics and charts */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-56 h-56 bg-[#face6f]/8 rounded-full blur-[50px] pointer-events-none z-0" />
+            <div className="absolute top-0 right-0 w-36 h-36 bg-[#face6f]/5 rounded-full blur-[40px] pointer-events-none z-0" />
+            
+            <div className="flex justify-between items-center mb-6 relative z-10">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded shrink-0 bg-black/40 border border-white/10 flex items-center justify-center accent-glow" style={{ color: 'var(--accent-color)' }}>
                    <Activity className="w-4 h-4" style={{ color: 'var(--accent-color)' }} />
@@ -340,7 +347,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               <Settings2 className="w-4 h-4 text-slate-500 hover:text-white cursor-pointer" />
             </div>
             
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-8 flex-1">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-8 flex-1 relative z-10">
               <div className="relative w-48 h-48 sm:w-56 sm:h-56 shrink-0 aspect-square">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
@@ -416,25 +423,28 @@ const Dashboard: React.FC<DashboardProps> = ({
           
           {/* THREE CARDS ROW - 3 columns even on mobile for compactness */}
           <div className="grid grid-cols-3 gap-2">
-            <div className="bg-[#0B0E14] border border-white/5 rounded-xl p-3 sm:p-5 shadow-lg flex flex-col justify-between h-24 sm:h-[110px]">
-              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>Total PNL</span>
-              <div className="flex flex-col mt-2">
+            <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-3 sm:p-5 shadow-[0_4px_30px_rgba(250,206,111,0.02)] hover:shadow-[0_0_20px_rgba(250,206,111,0.05)] transition-all duration-300 flex flex-col justify-between h-24 sm:h-[110px] relative overflow-hidden group">
+              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/8 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Total PNL</span>
+              <div className="flex flex-col mt-2 relative z-10">
                 <span className={`text-[14px] sm:text-[22px] tracking-tighter font-black font-mono truncate ${filteredMetrics.profit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
                   {filteredMetrics.profit >= 0 ? '+' : ''}{formatCurrency(filteredMetrics.profit, displayCurrency)}
                 </span>
                 <span className={`text-[9px] sm:text-xs font-mono mt-1 ${filteredMetrics.profit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{getPercentStr(balanceChange)}</span>
               </div>
             </div>
-            <div className="bg-[#0B0E14] border border-white/5 rounded-xl p-3 sm:p-5 shadow-lg flex flex-col justify-between h-24 sm:h-[110px]">
-              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>Win Rate</span>
-              <div className="flex flex-col mt-2">
+            <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-3 sm:p-5 shadow-[0_4px_30px_rgba(250,206,111,0.02)] hover:shadow-[0_0_20px_rgba(250,206,111,0.05)] transition-all duration-300 flex flex-col justify-between h-24 sm:h-[110px] relative overflow-hidden group">
+              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/8 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Win Rate</span>
+              <div className="flex flex-col mt-2 relative z-10">
                 <span className={`text-[14px] sm:text-[22px] tracking-tighter font-black font-mono ${filteredMetrics.winRate >= 50 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{filteredMetrics.winRate.toFixed(1)}%</span>
                 <span className="text-[9px] sm:text-xs text-slate-500 font-mono mt-1 truncate">{filteredMetrics.wonTrades}/{filteredMetrics.trades}</span>
               </div>
             </div>
-            <div className="bg-[#0B0E14] border border-white/5 rounded-xl p-3 sm:p-5 shadow-lg flex flex-col justify-between h-24 sm:h-[110px]">
-              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>P. Factor</span>
-              <div className="flex flex-col mt-2">
+            <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-3 sm:p-5 shadow-[0_4px_30px_rgba(250,206,111,0.02)] hover:shadow-[0_0_20px_rgba(250,206,111,0.05)] transition-all duration-300 flex flex-col justify-between h-24 sm:h-[110px] relative overflow-hidden group">
+              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/8 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>P. Factor</span>
+              <div className="flex flex-col mt-2 relative z-10">
                 <span className={`text-[14px] sm:text-[22px] tracking-tighter font-black font-mono ${filteredMetrics.profitFactor > 1.0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{filteredMetrics.profitFactor.toFixed(2)}</span>
                 <span className={`text-[9px] sm:text-xs font-mono mt-1 truncate ${filteredMetrics.profitFactor > 1.5 ? 'text-[#00E676]' : (filteredMetrics.profitFactor > 1.0 ? 'text-amber-500' : 'text-[#FF1744]')}`}>{filteredMetrics.profitFactor > 1.5 ? 'GOOD' : (filteredMetrics.profitFactor > 1.0 ? 'AVG' : 'POOR')}</span>
               </div>
@@ -445,8 +455,12 @@ const Dashboard: React.FC<DashboardProps> = ({
         {/* RIGHT COLUMN */}
         <div className="space-y-4">
           {/* TRADING JOURNEY */}
-          <div className="bg-[#0B0E14] border border-white/5 rounded-[24px] p-5 shadow-lg">
-            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
+          <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 relative overflow-hidden group">
+            {/* Elegant luxury gold background radial glow behind metrics and charts */}
+            <div className="absolute -right-12 -bottom-12 w-48 h-48 bg-[#face6f]/8 rounded-full blur-[55px] pointer-events-none z-0" />
+            <div className="absolute -left-12 -top-12 w-48 h-48 bg-cyan-500/[0.02] rounded-full blur-[55px] pointer-events-none z-0" />
+            
+            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 relative z-10">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded shrink-0 bg-black/40 border border-white/10 flex items-center justify-center accent-glow" style={{ color: 'var(--accent-color)' }}>
                    <Activity className="w-4 h-4" style={{ color: 'var(--accent-color)' }} />
@@ -467,7 +481,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               </div>
             </div>
             
-            <div className="h-[200px] w-full">
+            <div className="h-[200px] w-full relative z-10">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
                   <defs>
@@ -486,8 +500,10 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           {/* STRATEGY PERFORMANCE */}
-          <div className="bg-[#0B0E14] border border-white/5 rounded-[24px] p-5 shadow-lg flex-1">
-            <div className="flex justify-between items-center mb-6">
+          <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 flex-1 relative overflow-hidden group">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-[#face6f]/5 rounded-full blur-[55px] pointer-events-none z-0" />
+            
+            <div className="flex justify-between items-center mb-6 relative z-10">
               <div className="flex items-center gap-3">
                  <div className="w-8 h-8 rounded shrink-0 bg-black/40 border border-white/10 flex items-center justify-center accent-glow" style={{ color: 'var(--accent-color)' }}>
                      <Activity className="w-4 h-4" style={{ color: 'var(--accent-color)' }} />
@@ -497,7 +513,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               <button className="text-[10px] font-bold uppercase tracking-widest hover:text-white transition-colors" style={{ color: 'var(--accent-color)' }}>View All</button>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto relative z-10">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-white/5">

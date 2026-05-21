@@ -326,7 +326,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
     setActionLoading(`${accountId}-delete`);
     setIsAdding(true); 
     setSystemLogs([]);
-    addSystemLog(`SYSTEM_TERMINAL_V1.0 | CLUSTER_PURGE_REQUEST`);
+    addSystemLog(`SYSTEM_TERMINAL_V1.0 | DEPLOYMENT_DECOMMISSION_REQUEST`);
 
     try {
       addSystemLog(`COMMAND: Decommissioning resources via SDK Provisioner...`);
@@ -740,7 +740,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                   )}
                 </div>
                 <div className="bg-white/5 px-4 py-2 border-t border-white/5 shrink-0">
-                  <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Automatic Engine (London)</span>
+                  <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Automatic Engine (Secure API)</span>
                 </div>
               </div>
             </div>
@@ -806,7 +806,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
           <div className="bg-amber-500/10 border border-amber-500/20 p-5 sm:p-6 rounded-[24px] sm:rounded-[32px]">
              <div className="flex items-start gap-4">
                 <Info className="text-amber-500 w-5 h-5 shrink-0 mt-0.5" />
-                <p className="text-[10px] sm:text-xs text-amber-200/60 font-medium leading-relaxed">Profiles are managed automatically by the London Cluster. Manual creation is only required for legacy on-premise setups.</p>
+                <p className="text-[10px] sm:text-xs text-amber-200/60 font-medium leading-relaxed">Profiles are managed automatically by the secure system engine. Manual creation is only required for legacy on-premise setups.</p>
              </div>
           </div>
           <div className="space-y-3">

@@ -80,14 +80,14 @@ export const useStore = create<AccountStore>((set) => ({
         upColor: '#10b981',
         downColor: '#f43f5e',
         bgImageUrl: '/bot-logo.png?v=5',
-        accentColor: '#6366f1',
+        accentColor: '#face6f',
       };
     } catch {
       return { 
         upColor: '#10b981', 
         downColor: '#f43f5e', 
         bgImageUrl: '/icon-512.png?v=5',
-        accentColor: '#6366f1' 
+        accentColor: '#face6f' 
       };
     }
   })(),

@@ -35,8 +35,8 @@ const SystemMonitor: React.FC<SystemMonitorProps> = ({ logs, isAuthValid, lastEr
             <Globe className="w-5 h-5 sm:w-6 h-6" />
           </div>
           <div className="truncate">
-            <p className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 truncate">Cluster</p>
-            <h4 className="text-base sm:text-xl font-black text-white tracking-tighter uppercase truncate">London v1</h4>
+            <p className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 truncate">Engine</p>
+            <h4 className="text-base sm:text-xl font-black text-white tracking-tighter uppercase truncate">Active v1</h4>
           </div>
         </div>
         <div className="glowing-panel p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] shadow-2xl flex items-center gap-4 sm:gap-6 overflow-hidden bg-black/40">
