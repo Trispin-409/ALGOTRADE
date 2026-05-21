@@ -123,22 +123,21 @@ const Dashboard: React.FC<DashboardProps> = ({
   
   const subscriberAccount = activeAccount || accounts[0];
 
-  const fetchStats = useCallback(async () => {
-    if (!subscriberAccount) return;
-    const status = subscriberAccount.connectionStatus?.toUpperCase();
-    if (!['CONNECTED', 'READY', 'SYNCING'].includes(status)) return;
+  const fetchStats = useCallback(async (accountId, status, isCurrentlySynced) => {
+    if (!accountId) return;
+    if (!['CONNECTED', 'READY', 'SYNCING'].includes(status?.toUpperCase())) return;
     
     setIsStatsLoading(true);
     try {
-      const historyData = await safeFetch(`/api/account/${subscriberAccount.id}/history?limit=100`, {
+      const historyData = await safeFetch(`/api/account/${accountId}/history?limit=100`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       const historyOrders = Array.isArray(historyData) ? historyData : (historyData.historyOrders || []);
       setHistory(historyOrders);
       
-      if (isSynced) {
+      if (isCurrentlySynced) {
         try {
-          const metaStatsData = await safeFetch(`/api/account/${subscriberAccount.id}/metastats`, {
+          const metaStatsData = await safeFetch(`/api/account/${accountId}/metastats`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {}
           });
           if (metaStatsData && metaStatsData.trades) {
@@ -151,7 +150,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     } finally {
       setIsStatsLoading(false);
     }
-  }, [subscriberAccount, isSynced, token, setHistory]);
+  }, [token, setHistory]);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const manualRefresh = async () => {
@@ -160,14 +159,16 @@ const Dashboard: React.FC<DashboardProps> = ({
       await safeFetch('/api/accounts?force=true', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      await fetchStats();
+      await fetchStats(subscriberAccount?.id, subscriberAccount?.connectionStatus, isSynced);
     } catch (err) {} 
     finally { setTimeout(() => setIsRefreshing(false), 2000); }
   };
 
   useEffect(() => {
-    if (subscriberAccount) fetchStats();
-  }, [fetchStats, subscriberAccount]);
+    if (subscriberAccount?.id) {
+      fetchStats(subscriberAccount.id, subscriberAccount.connectionStatus, isSynced);
+    }
+  }, [fetchStats, subscriberAccount?.id, subscriberAccount?.connectionStatus, isSynced]);
 
   const [timeRange, setTimeRange] = useState<'7D' | '30D' | '90D' | 'ALL'>('7D');
 
@@ -198,10 +199,28 @@ const Dashboard: React.FC<DashboardProps> = ({
     return { trades: totalTrades, wonTrades, lostTrades, winRate, profit, profitFactor };
   }, [filteredHistory]);
 
-  // Chart Data preparation
   const chartData = useMemo(() => {
-    if (!filteredHistory.length) return [];
+    // If no balance and no history, show empty
+    if (displayBalance <= 0 && filteredHistory.length === 0) return [];
+    
     let cumulative = displayBalance - filteredMetrics.profit;
+    
+    // If no history, show a straight line representing the current balance
+    if (filteredHistory.length === 0) {
+        return [
+          {
+            date: 'Initiated',
+            value: cumulative,
+            currency: displayCurrency
+          },
+          {
+            date: 'Now',
+            value: displayBalance,
+            currency: displayCurrency
+          }
+        ];
+    }
+    
     const data = filteredHistory.map(t => {
       cumulative += (t.profit || 0);
       const d = new Date(t.time);

@@ -31,6 +31,15 @@ interface MarketDataProps {
   isLoading: boolean;
 }
 
+const isSymbolMatch = (s1?: any, s2?: any): boolean => {
+  if (!s1 || !s2) return false;
+  const str1 = typeof s1 === 'string' ? s1 : String(s1);
+  const str2 = typeof s2 === 'string' ? s2 : String(s2);
+  const n1 = str1.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const n2 = str2.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return n1 === n2 || n1.startsWith(n2) || n2.startsWith(n1);
+};
+
 const getTimeframeMinutes = (tf: string): number => {
   const match = tf.match(/(\d+)([mhd])/);
   if (!match) return 1;
@@ -200,12 +209,12 @@ const MarketData: React.FC<MarketDataProps> = ({
     // 2. Subscribe to the global data tunnel
     const unsub = connectionManager.subscribe((data: any) => {
       console.log("[DEBUG_REC_DATA]", data.type, data.symbol); 
-      if (data.type === 'HISTORY_SNAPSHOT' && data.symbol === symbol) {
+      if (data.type === 'HISTORY_SNAPSHOT' && isSymbolMatch(data.symbol, symbol)) {
           const validHistory = data.candles.filter((c: any) => c && c.time && c.open !== undefined && c.close !== undefined);
           setCandles(validHistory);
           addLog(`[CHART_SEEDED] ${validHistory.length} historical candles from snapshot.`);
           console.log("[CHART_SEEDED]", validHistory.length);
-      } else if (data.type === 'CANDLE' && data.symbol === symbol) {
+      } else if (data.type === 'CANDLE' && isSymbolMatch(data.symbol, symbol)) {
         if (!data.candle || !data.candle.time) return;
         console.log("[DEBUG_REC_CANDLE]", data);
         const inc = data.candle;
@@ -227,7 +236,7 @@ const MarketData: React.FC<MarketDataProps> = ({
           return next;
         });
         
-      } else if (data.type === 'price:update' && data.symbol === symbol) {
+      } else if (data.type === 'price:update' && isSymbolMatch(data.symbol, symbol)) {
         console.log("[DEBUG_REC_PRICE]", data);
         const bid = Number(data.bid);
         const ask = Number(data.ask);
@@ -495,8 +504,8 @@ const MarketData: React.FC<MarketDataProps> = ({
               <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
                 <button
                   onClick={onBuy}
-                  disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'SYNCING') ? 'hover:bg-emerald-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
+                  disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
+                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'CONNECTED' || connectionStatus === 'SYNCING') ? 'hover:bg-emerald-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
                 >
                   <TrendingUp className="w-4 h-4 text-emerald-400 mb-1" />
                   <span className="text-xs font-mono font-black text-emerald-400 uppercase tracking-widest">BUY</span>
@@ -504,8 +513,8 @@ const MarketData: React.FC<MarketDataProps> = ({
 
                 <button
                   onClick={onSell}
-                  disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-rose-500/10 border border-rose-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'SYNCING') ? 'hover:bg-rose-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
+                  disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
+                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-rose-500/10 border border-rose-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'CONNECTED' || connectionStatus === 'SYNCING') ? 'hover:bg-rose-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
                 >
                   <TrendingDown className="w-4 h-4 text-rose-400 mb-1" />
                   <span className="text-xs font-mono font-black text-rose-400 uppercase tracking-widest">SELL</span>
@@ -515,12 +524,12 @@ const MarketData: React.FC<MarketDataProps> = ({
               {/* Main Execution Toggle */}
               <button
                 onClick={onToggleAlgo}
-                disabled={(connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
+                disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
                 className={`w-full flex items-center justify-center gap-2 py-4 rounded-xl border transition-all active:scale-95 ${
                   isAlgoRunning 
                     ? 'bg-rose-500/20 border-rose-500/40 text-rose-400 hover:bg-rose-500/30' 
                     : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30'
-                } ${((connectionStatus !== 'READY' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}
+                } ${((connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}
                 style={isAlgoRunning ? { boxShadow: '0 0 15px rgba(244,63,94,0.15)' } : { boxShadow: '0 0 15px rgba(16,185,129,0.15)' }}
               >
                 {isAlgoRunning ? (

@@ -48,26 +48,6 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
   }, [logs]);
 
   useEffect(() => {
-    fetch('/api/ea/logs')
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setLogs(prev => {
-            const allLogs = [...data, ...prev];
-            const uniqueLogs = Array.from(new Map(allLogs.map(item => [item.timestamp + item.message, item])).values());
-            return uniqueLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()).slice(-500);
-          });
-        }
-      })
-      .catch(err => {
-         // Silently ignore fetch errors during dev server reloads
-         if (!err.message.includes('Failed to fetch')) {
-            console.error("EA logs fetch issue:", err);
-         }
-      });
-  }, []);
-
-  useEffect(() => {
     // Listen for TRADING_JOURNAL
     const unsub = connectionManager.subscribe((data) => {
       if (data.type === 'TRADING_JOURNAL') {
@@ -85,19 +65,6 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
     });
     return unsub;
   }, []);
-
-  useEffect(() => {
-    if (open) {
-      fetch('/api/ea/logs')
-        .then(res => res.json())
-        .then(data => {
-          if (Array.isArray(data)) {
-            setLogs(data); // Overwrite with fresh snapshot from server
-          }
-        })
-        .catch(err => console.error("EA logs fetch issue:", err));
-    }
-  }, [open]);
 
   useEffect(() => {
     if (open && logsEndRef.current) {

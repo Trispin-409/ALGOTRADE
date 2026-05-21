@@ -1,33 +1,23 @@
 {
   "name": "ALGOTRADE",
   "short_name": "ALGOTRADE",
-  "description": "Enterprise-grade MetaTrader automation hub with real-time SDK telemetry",
-
-  "start_url": "/?source=pwa",
+  "description": "Enterprise-grade MetaTrader automation hub",
+  "start_url": "/",
   "scope": "/",
-
   "display": "standalone",
-  "display_override": ["standalone", "fullscreen"],
-
-  "orientation": "portrait-primary",
-
+  "orientation": "portrait",
   "background_color": "#000000",
   "theme_color": "#000000",
-
-  "categories": ["finance", "business", "productivity"],
-
   "icons": [
     {
       "src": "/icons/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any"
+      "type": "image/png"
     },
     {
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any"
+      "type": "image/png"
     },
     {
       "src": "/icons/icon-512-maskable.png",
@@ -35,7 +25,5 @@
       "type": "image/png",
       "purpose": "maskable"
     }
-  ],
-
-  "prefer_related_applications": false
+  ]
 }

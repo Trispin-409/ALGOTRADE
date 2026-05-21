@@ -33,8 +33,6 @@ export const getVerifiedSession = async () => {
   return session;
 };
 
-let restQueue: Promise<any> = Promise.resolve();
-
 export const generateFingerprint = () => {
   return navigator.userAgent + '||' + window.screen.width + 'x' + window.screen.height + '||' + navigator.language;
 };
@@ -57,46 +55,38 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
     }
   }
 
-  // Global Request Circuit Breaker: Total Serialization of all REST traffic
-  const result = restQueue.then(async () => {
-    const res = await fetch(url, finalOptions);
-    const text = await res.text();
-    
-    if (!res.ok) {
-      let errorMsg = `HTTP ${res.status}`;
-      try {
-        const errorJson = JSON.parse(text);
-        if (errorJson.error) errorMsg += `: ${errorJson.error}`;
-      } catch {
-        errorMsg += `: ${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`;
-      }
-      
-      // Auto-logout on token invalidation
-      if (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token'))) {
-         try { await supabase.auth.signOut(); } catch(e) {}
-         window.location.href = '/';
-      }
-      
-      throw new Error(errorMsg);
-    }
-
-    // Handle 204 No Content
-    if (res.status === 204) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      if (text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
-        throw new Error(`Unexpected HTML response (likely a server crash or routing error).`);
-      }
-      throw new Error(`Invalid JSON response: ${text.slice(0, 50)}`);
-    }
-  });
-
-  // Chain the next request to the tail of the queue
-  restQueue = result.catch(() => {});
+  const res = await fetch(url, finalOptions);
+  const text = await res.text();
   
-  return result;
+  if (!res.ok) {
+    let errorMsg = `HTTP ${res.status}`;
+    try {
+      const errorJson = JSON.parse(text);
+      if (errorJson.error) errorMsg += `: ${errorJson.error}`;
+    } catch {
+      errorMsg += `: ${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`;
+    }
+    
+    // Auto-logout on token invalidation
+    if (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token'))) {
+       try { await supabase.auth.signOut(); } catch(e) {}
+       window.location.href = '/';
+    }
+    
+    throw new Error(errorMsg);
+  }
+
+  // Handle 204 No Content
+  if (res.status === 204) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    if (text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
+      throw new Error(`Unexpected HTML response (likely a server crash or routing error).`);
+    }
+    throw new Error(`Invalid JSON response: ${text.slice(0, 50)}`);
+  }
 };

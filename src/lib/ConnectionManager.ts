@@ -33,7 +33,7 @@ class ConnectionManager {
   private phase: TradingPhase = TradingPhase.INIT;
   private pendingCommands: any[] = [];
   private syncRetryCounter = 0;
-  private maxSyncRetries = 6;
+  private maxSyncRetries = 15;
   
   // State Locks
   public initialized: boolean = false;
@@ -179,9 +179,15 @@ class ConnectionManager {
       return this.phase === TradingPhase.ACCOUNT_READY || this.phase === TradingPhase.STREAMING;
   }
 
-  public bootOnce(accountId: string, baseUrl: string) {
+  private tokens: Map<string, string> = new Map();
+
+  public bootOnce(accountId: string, baseUrl: string, token: string = '') {
       if (!baseUrl || baseUrl === 'undefined') {
           throw new Error(`[CRITICAL] MetaApi base URL missing for ${accountId}. Boot aborted.`);
+      }
+
+      if (token) {
+        this.tokens.set(accountId, token);
       }
 
       if (ConnectionManager.ACTIVE_LIFECYCLES.has(accountId)) return;
@@ -220,8 +226,11 @@ class ConnectionManager {
           if (this.phase === TradingPhase.META_CONNECTED || this.phase === TradingPhase.BROKER_CONNECTED) {
               nextPhase = TradingPhase.BROKER_CONNECTED;
           } else {
+              if (this.phase !== TradingPhase.ACCOUNT_SYNCING) {
+                  this.syncRetryCounter = 0;
+                  this.handleSyncRetry();
+              }
               nextPhase = TradingPhase.ACCOUNT_SYNCING;
-              this.handleSyncRetry();
           }
       } else if (brokerConnected && terminalSyncOk) {
           nextPhase = TradingPhase.ACCOUNT_READY;
@@ -240,7 +249,13 @@ class ConnectionManager {
         if (this.phase === TradingPhase.ACCOUNT_SYNCING) {
             this.syncRetryCounter++;
             console.log(`[ACCOUNT_SYNCING] Retrying sync... Attempt ${this.syncRetryCounter}`);
-            this.send(this.selectedAccountId!, { type: 'SYNC_STATE', accountId: this.selectedAccountId }, true);
+            this.send(this.selectedAccountId!, { 
+                type: 'SYNC_STATE', 
+                accountId: this.selectedAccountId,
+                symbol: this.desiredStream?.symbol,
+                timeframe: this.desiredStream?.timeframe
+            }, true);
+            this.handleSyncRetry();
         }
     }, 10000);
   }
@@ -278,7 +293,26 @@ class ConnectionManager {
     this.initiateWSWithBackoff(accountId, baseUrl);
   }
 
-  private initiateWSWithBackoff(accountId: string, baseUrl: string) {
+  private async initiateWSWithBackoff(accountId: string, baseUrl: string) {
+    try {
+      const token = this.tokens.get(accountId);
+      const headers: Record<string, string> = {
+          'Content-Type': 'application/json'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const res = await fetch(`/api/account/${accountId}/status`, { headers });
+      if (res.ok) {
+          const data = await res.json();
+          if (data.state !== 'DEPLOYED' || data.connectionStatus !== 'CONNECTED') {
+              console.warn(`[RECONNECT_GUARD] Account ${accountId} is not active (${data.state}, ${data.connectionStatus}). Cancelling connection loop.`);
+              return;
+          }
+      }
+    } catch(e) {
+      // If network is down, we might want to still attempt, or wait. We'll proceed to try websocket.
+    }
+
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const socket = new WebSocket(protocol + (typeof window !== 'undefined' ? window.location.host : ''));
         
@@ -287,13 +321,16 @@ class ConnectionManager {
         this.connections.set(accountId, socket);
         this.notifyStatus(accountId, true);
         this.evaluatePhase();
+        
+        // Ensure synchronization starts immediately upon connection
+        this.send(accountId, { type: 'subscribe', accountId, token: this.tokens.get(accountId) }, true);
     };
 
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         
         if (data.type === 'status:update') {
-            const isReady = data.status === 'CONNECTED';
+            const isReady = data.status === 'CONNECTED' || data.status === 'READY' || data.status === 'SYNCHRONIZED';
             this.brokerConnectedState.set(accountId, isReady);
             this.notifyStatus(accountId, isReady);
             this.evaluatePhase();
@@ -310,7 +347,7 @@ class ConnectionManager {
         this.connections.delete(accountId);
         this.notifyStatus(accountId, false);
         this.evaluatePhase();
-        setTimeout(() => this.initiateWSWithBackoff(accountId, baseUrl), 2000);
+        setTimeout(() => this.initiateWSWithBackoff(accountId, baseUrl), 5000); // 5 sec backoff
     };
   }
 

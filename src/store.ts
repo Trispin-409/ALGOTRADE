@@ -79,14 +79,14 @@ export const useStore = create<AccountStore>((set) => ({
       return saved ? JSON.parse(saved) : {
         upColor: '#10b981',
         downColor: '#f43f5e',
-        bgImageUrl: '/bot-logo.png?v=2',
+        bgImageUrl: '/bot-logo.png?v=5',
         accentColor: '#6366f1',
       };
     } catch {
       return { 
         upColor: '#10b981', 
         downColor: '#f43f5e', 
-        bgImageUrl: '/icon-512.png',
+        bgImageUrl: '/icon-512.png?v=5',
         accentColor: '#6366f1' 
       };
     }

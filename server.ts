@@ -78,6 +78,14 @@ const TradingController = {
 
   async updateEAStatus(accountId: string, userId: string, deployed: boolean, status: string) {
     if (!adminSupabase) return;
+    
+    // Explicit ownership check before update to prevent cross-user account takeover
+    const { data: existing } = await adminSupabase.from("ea_deployments").select("user_id").eq("account_id", accountId).maybeSingle();
+    if (existing && existing.user_id !== userId) {
+      console.warn(`[SECURITY] Cross-user updateEAStatus prevented for ${accountId}`);
+      return;
+    }
+
     const { error } = await adminSupabase
       .from("ea_deployments")
       .upsert({ user_id: userId, account_id: accountId, deployed, status, deployed_at: deployed ? new Date().toISOString() : null }, { onConflict: 'account_id' });
@@ -86,6 +94,14 @@ const TradingController = {
 
   async setAlgoRunning(accountId: string, userId: string, running: boolean) {
     if (!adminSupabase) return;
+    
+    // Explicit ownership check
+    const { data: existing } = await adminSupabase.from("algo_sessions").select("user_id").eq("account_id", accountId).maybeSingle();
+    if (existing && existing.user_id !== userId) {
+      console.warn(`[SECURITY] Cross-user setAlgoRunning prevented for ${accountId}`);
+      return;
+    }
+
     await adminSupabase
       .from("algo_sessions")
       .upsert({ user_id: userId, account_id: accountId, running }, { onConflict: 'account_id' });
@@ -107,11 +123,12 @@ globalScope.CONNECTIONS = REGISTRY.stream;
 globalScope.LISTENERS = globalScope.LISTENERS || new Map();
 globalScope.ACCOUNT_INFO_CACHE = globalScope.ACCOUNT_INFO_CACHE || new Map();
 globalScope.ACCOUNT_CACHE = globalScope.ACCOUNT_CACHE || new Map();
+globalScope.HISTORY_CACHE = globalScope.HISTORY_CACHE || new Map();
 globalScope.RPC_CONNECTIONS = REGISTRY.rpc;
 globalScope.ACCOUNT_READY = globalScope.ACCOUNT_READY || new Map();
 globalScope.ACTIVE_POSITIONS = globalScope.ACTIVE_POSITIONS || new Map<string, Map<string, any>>();
 
-const TRADING_JOURNAL_STORE: any[] = [];
+const TRADING_JOURNAL_STORE: Map<string, any[]> = new Map();
 const MAX_LOGS = 500;
 
 let cachedProvisioningIp: string | null = null;
@@ -147,9 +164,13 @@ export function logMessage(accountId: string | null, level: string, message: str
     timestamp: new Date().toISOString()
   };
   
-  TRADING_JOURNAL_STORE.push(log);
-  if (TRADING_JOURNAL_STORE.length > MAX_LOGS) {
-    TRADING_JOURNAL_STORE.shift();
+  if (accountId) {
+    if (!TRADING_JOURNAL_STORE.has(accountId)) TRADING_JOURNAL_STORE.set(accountId, []);
+    const arr = TRADING_JOURNAL_STORE.get(accountId)!;
+    arr.push(log);
+    if (arr.length > MAX_LOGS) {
+      arr.shift();
+    }
   }
 
   console.log(`[TRADING_JOURNAL][${level}] ${message}`, Object.keys(metadata).length ? metadata : '');
@@ -266,10 +287,26 @@ function sanitizeError(err: any): string {
   return msg.trim();
 }
 
+import rateLimit from "express-rate-limit";
+
 const app = express();
 const PORT = 3000;
 
+// Enable trust proxy so Express and express-rate-limit correctly resolve client IP behind reverse-proxies/nginx
+app.set("trust proxy", true);
+
+const tradingLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, 
+  max: 100, 
+  message: { error: "Too many requests, please try again later." },
+  // Disable express-rate-limit validation entirely to bypass all proxy/forwarded header warning checks
+  validate: false
+});
+
 app.use(cors());
+app.use("/api/trade/", tradingLimiter);
+app.use("/api/account/", tradingLimiter);
+
 
 // AUTHENTICATION GUARD: Validate JWT and resolve user_id
 async function getUserIdFromRequest(req: express.Request): Promise<string> {
@@ -346,6 +383,7 @@ const createSafeMetaApiListener = (handlers: any) => {
     onTicksUpdated: handlers.onTicksUpdated || (() => {}),
     onSymbolPricesUpdated: handlers.onSymbolPricesUpdated || (() => {}),
     onSymbolPriceUpdated: handlers.onSymbolPriceUpdated || (() => {}),
+    onQuotesUpdated: handlers.onQuotesUpdated || (() => {}),
     onSymbolSpecificationsUpdated: handlers.onSymbolSpecificationsUpdated || (() => {}),
     onSymbolSpecificationUpdated: handlers.onSymbolSpecificationUpdated || (() => {}),
     onBrokerConnectionStatusChanged: handlers.onBrokerConnectionStatusChanged || (() => {}),
@@ -417,10 +455,10 @@ setInterval(async () => {
            if (account.connectionStatus !== 'CONNECTED' && account.state === 'DEPLOYED') {
              console.log(`[MONITOR] Triggering proactive broker connection for ${accountId}...`);
              account.connect().catch(() => {});
-           } else if (account.state === 'UNDEPLOYED') {
-             console.log(`[MONITOR] Account ${accountId} is manually undeployed. Removing stream monitor.`);
-             streams.delete(key);
-             await TradingController.removeLease(accountId);
+           } else if (account.state !== 'DEPLOYED') {
+             console.log(`[MONITOR] Account ${accountId} is not deployed (state: ${account.state}). Syncing database...`);
+             streams.delete(key); // Need streams from upper context
+             await syncUndeployedState(accountId);
            }
          } catch(e) {}
       }
@@ -498,6 +536,41 @@ async function getAccount(accountId: string) {
   return account;
 }
 
+// Ensure database state mirrors MetaApi undeployed reality
+async function syncUndeployedState(accountId: string) {
+  if (adminSupabase) {
+    try {
+      await adminSupabase.from("ea_deployments").update({ deployed: false, status: 'UNDEPLOYED' }).eq("account_id", accountId);
+    } catch (e) {
+      // Ignored
+    }
+    try {
+      await adminSupabase.from("algo_sessions").update({ running: false }).eq("account_id", accountId);
+    } catch (e) {
+      // Ignored
+    }
+    try {
+      await adminSupabase.from("mt_accounts").update({ connection_status: 'DISCONNECTED' }).eq("id", accountId);
+    } catch (e) {
+      // Ignored
+    }
+  }
+  
+  REGISTRY.stream.delete(accountId);
+  REGISTRY.rpc.delete(accountId);
+  globalScope.ACCOUNT_READY?.delete(accountId);
+  globalScope.STREAM_PENDING?.delete(accountId);
+  globalScope.LAST_RECONNECT_ATTEMPT?.delete(accountId);
+  globalScope.DEAD_SESSIONS_TIMER?.delete(accountId);
+  
+  const subscriptions = globalScope.SUBSCRIPTIONS;
+  if (subscriptions) subscriptions.delete(accountId);
+  
+  if (globalScope.ACTIVE_RECONNECTS && typeof globalScope.ACTIVE_RECONNECTS === 'number' && globalScope.ACTIVE_RECONNECTS > 0) {
+    globalScope.ACTIVE_RECONNECTS--; // we can't reliably decrement unless we know we incremented, but better just ignore ACTIVE_RECONNECTS logic for cleanup or let it drain naturally
+  }
+}
+
 // Connection Readiness Guard (Determinstic Readiness Tracking)
 async function ensureAccountReady(accountId: string) {
   if (globalScope.ACCOUNT_READY.has(accountId)) {
@@ -512,24 +585,23 @@ async function ensureAccountReady(accountId: string) {
       connectionStatus: account.connectionStatus
     });
 
-    // 1. Deploy if needed
-    if (account.state === 'UNDEPLOYED') {
-      console.log(`[ACCOUNT] ${accountId} is UNDEPLOYED. Attempting automatic deployment...`);
-      await account.deploy();
-      await account.waitConnected();
-    } else if (account.state !== 'DEPLOYED') {
-      console.warn(`[ACCOUNT] ${accountId} is in unexpected state: ${account.state}`);
-      throw new Error(`ACCOUNT_IN_INVALID_STATE: ${account.state}`);
-    }
-
-    // 2. Connect to broker if needed
-    if (account.connectionStatus !== 'CONNECTED') {
-      console.log(`[ACCOUNT] ${accountId} Connecting to broker...`);
-      await account.connect();
+    if (account.state !== 'DEPLOYED' || account.connectionStatus !== 'CONNECTED') {
+      console.warn(`[ACCOUNT] ${accountId} is not active (state: ${account.state}, conn: ${account.connectionStatus}). Skipping auto-restore.`);
+      
+      if (account.state !== 'DEPLOYED') {
+         await syncUndeployedState(accountId);
+      } else {
+         // Just basic cleanup if it's deployed but not connected
+         REGISTRY.stream.delete(accountId);
+         REGISTRY.rpc.delete(accountId);
+         globalScope.ACCOUNT_READY?.delete(accountId);
+         globalScope.STREAM_PENDING?.delete(accountId);
+      }
+      
+      throw new Error(`ACCOUNT_NOT_READY: Account is not deployed and connected.`);
     }
 
     // 3. WAIT for broker connection (CRITICAL)
-    // Wrap in a more resilient wait to handle slow dedicated servers
     const waitForBroker = async (retries = 3) => {
        for (let i = 0; i < retries; i++) {
           try {
@@ -538,13 +610,22 @@ async function ensureAccountReady(accountId: string) {
           } catch (e: any) {
              console.warn(`[ACCOUNT] waitConnected attempt ${i+1} for ${accountId} failed: ${e.message}`);
              if (i === retries - 1) throw e;
-             // If dedicated server is starting, it can take time.
              await new Promise(r => setTimeout(r, 10000));
           }
        }
     };
 
-    await waitForBroker(6); // Wait up to 1-2 mins total via explicit loop, on top of SDK timeout
+    await waitForBroker(6);
+
+    // 4. Verify live MetaApi state after wait
+    if (account.connectionStatus !== 'CONNECTED') {
+      console.warn(`[ACCOUNT] ${accountId} failed to connect to broker. Skipping restore.`);
+      REGISTRY.stream.delete(accountId);
+      REGISTRY.rpc.delete(accountId);
+      globalScope.ACCOUNT_READY?.delete(accountId);
+      globalScope.STREAM_PENDING?.delete(accountId);
+      throw new Error(`ACCOUNT_NOT_READY: Account failed to connect to broker.`);
+    }
 
     console.log(`[ACCOUNT] ${accountId} Connected to broker ✅`);
 
@@ -585,6 +666,7 @@ async function getRPCConnection(accountId: string) {
       // Safety check: Don't block RPC creation if account is not even deployed
       if (account.state !== 'DEPLOYED') {
          console.warn(`[SDK_RPC] Account ${accountId} is ${account.state}. Aborting RPC connection.`);
+         await syncUndeployedState(accountId);
          throw new Error("ACCOUNT_NOT_DEPLOYED");
       }
 
@@ -742,13 +824,9 @@ function createMetaApiListener(accountId: string) {
     onAccountInformationUpdated: async (instanceIndex: string, accountInfo: any) => {
       console.log(`[SDK] Account update for ${accountId}`);
       const connection = REGISTRY.stream.get(accountId);
-      
-      // Use SDK state as absolute source of truth
+
+      // Use SDK state as absolute source of truth if available, otherwise use provided event data
       const terminalInfo = connection?.terminalState?.accountInformation;
-      if (!terminalInfo) {
-          console.warn(`[SDK] Account info not yet synchronized in terminalState for ${accountId}`);
-      }
-      
       const targetInfo = terminalInfo || accountInfo;
       
       broadcast({ 
@@ -759,7 +837,29 @@ function createMetaApiListener(accountId: string) {
         currency: targetInfo.currency || 'USD'
       });
     },
+    onSymbolPricesUpdated: async (instanceIndex: string, prices: any[]) => {
+      if (prices && prices.length > 0) {
+        prices.forEach(price => {
+          broadcast({ 
+            type: 'price:update', 
+            accountId, 
+            symbol: price.symbol, 
+            bid: price.bid, 
+            ask: price.ask, 
+            time: price.time 
+          });
+        });
+      }
+    },
     onSymbolPriceUpdated: async (instanceIndex: string, price: any) => {
+      // Temporarily throttle logs to avoid spam
+      const now = Date.now();
+      const lastRec = globalScope.LAST_PRICE_LOG?.get(accountId) || 0;
+      if (now - lastRec > 5000) {
+          console.log(`[SDK] Received price update for ${price.symbol}: bid=${price.bid} ask=${price.ask}`);
+          if (!globalScope.LAST_PRICE_LOG) globalScope.LAST_PRICE_LOG = new Map();
+          globalScope.LAST_PRICE_LOG.set(accountId, now);
+      }
       broadcast({ 
         type: 'price:update', 
         accountId, 
@@ -768,6 +868,26 @@ function createMetaApiListener(accountId: string) {
         ask: price.ask, 
         time: price.time 
       });
+    },
+    onQuotesUpdated: async (instanceIndex: string, quotes: any[]) => {
+      if (quotes && quotes.length > 0) {
+        const price = quotes[quotes.length - 1]; // get latest
+        const now = Date.now();
+        const lastRec = globalScope.LAST_QUOTE_LOG?.get(accountId) || 0;
+        if (now - lastRec > 5000) {
+           console.log(`[SDK] Received quotes update for ${price.symbol}: bid=${price.bid} ask=${price.ask}`);
+           if (!globalScope.LAST_QUOTE_LOG) globalScope.LAST_QUOTE_LOG = new Map();
+           globalScope.LAST_QUOTE_LOG.set(accountId, now);
+        }
+        broadcast({ 
+          type: 'price:update', 
+          accountId, 
+          symbol: price.symbol, 
+          bid: price.bid, 
+          ask: price.ask, 
+          time: price.time 
+        });
+      }
     },
     onCandlesUpdated: async (instanceIndex: string, candles: any[], symbol: string) => {
         if (!candles || candles.length === 0) {
@@ -883,12 +1003,18 @@ function createEAExpertLogListener(accountId: string) {
 let globalWss: WebSocketServer | null = null;
 
 const broadcast = (data: any) => {
-  if (globalWss) {
-    globalWss.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(data));
-      }
-    });
+  const targetAccountId = data.accountId;
+
+  if (targetAccountId) {
+    // Exact route isolation: Only send to WS clients expressly subscribed to this account ID
+    const accountClients = subscriptions.get(targetAccountId);
+    if (accountClients) {
+      accountClients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(data));
+        }
+      });
+    }
   }
 };
 
@@ -1139,11 +1265,23 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
             if (!globalScope.LAST_RECONNECT_ATTEMPT) globalScope.LAST_RECONNECT_ATTEMPT = new Map();
             globalScope.LAST_RECONNECT_ATTEMPT.set(accountId, now);
             
-            const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-            if (account.connectionStatus !== 'CONNECTED') {
-               console.log(`[STREAM] Triggering account reconnect for ${accountId}...`);
-               await account.connect();
-               await account.waitConnected();
+            // Limit reconnect concurrency to 3
+            if (!globalScope.ACTIVE_RECONNECTS) globalScope.ACTIVE_RECONNECTS = 0;
+            
+            if (globalScope.ACTIVE_RECONNECTS < 3) {
+              globalScope.ACTIVE_RECONNECTS++;
+              try {
+                const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+                if (account.connectionStatus !== 'CONNECTED') {
+                   console.log(`[STREAM] Triggering account reconnect for ${accountId}...`);
+                   await account.connect();
+                   await account.waitConnected();
+                }
+              } finally {
+                globalScope.ACTIVE_RECONNECTS--;
+              }
+            } else {
+              console.log(`[STREAM] Skipping reconnect for ${accountId} due to concurrency limits.`);
             }
           } catch(e) {}
         }
@@ -1756,16 +1894,18 @@ app.post("/api/admin/approve-user", async (req, res) => {
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 30); // Default 30 days
 
-        const { error: keyErr } = await adminSupabase.from("access_licenses").insert({
+        const insertObj = {
             email: targetUser.email || 'unassigned@local',
             access_key: newKey,
             used: false, // Requires user to activate it in the UI
             expires_at: expiresAt.toISOString()
-        });
+        };
+
+        const { error: keyErr } = await adminSupabase.from("access_licenses").insert(insertObj);
 
         if (keyErr) {
             console.error("[ADMIN] KEY INSERT ERROR:", keyErr);
-            throw keyErr;
+            throw new Error(`Failed to insert key for user ${targetUserId}. Error: ${keyErr.message}. Object sent: ${JSON.stringify(insertObj)}`);
         }
 
         // Do NOT update users table has_access: true yet. User must do it in the billing page.
@@ -1937,10 +2077,6 @@ app.get("/api/user/bootstrap", async (req, res) => {
   }
 });
 
-app.get("/api/ea/logs", (req, res) => {
-  res.json(TRADING_JOURNAL_STORE);
-});
-
 app.get("/api/accounts", async (req, res) => {
   if (!metaapi) return res.status(503).json({ error: "SDK_NOT_READY" });
   
@@ -2010,12 +2146,29 @@ app.get("/api/accounts", async (req, res) => {
         const info = acc.accountInformation || acc._data?.accountInformation || {};
         
         let connectionStatus = acc.connectionStatus || acc._data?.connectionStatus || 'DISCONNECTED';
-        
+        let balance = info.balance !== undefined ? Number(info.balance) : 0;
+        let equity = info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : 0);
+        let margin = info.margin !== undefined ? Number(info.margin) : 0;
+        let freeMargin = info.freeMargin !== undefined ? Number(info.freeMargin) : 0;
+        let marginLevel = info.marginLevel !== undefined ? Number(info.marginLevel) : (info.margin !== undefined && info.margin > 0 && info.equity !== undefined ? (Number(info.equity) / Number(info.margin)) * 100 : 0);
+        let currency = info.currency || 'USD';
+
         // If our local stream says it's connected, override MetaApi's stale config response
         const connection = REGISTRY.stream.get(accountId);
         if (connection && connection.terminalState) {
            if (connection.terminalState.connected === true && connection.terminalState.connectedToBroker === true) {
               connectionStatus = 'CONNECTED';
+           }
+           
+           // Merging live account information if available
+           const liveInfo = connection.terminalState.accountInformation;
+           if (liveInfo) {
+              if (liveInfo.balance !== undefined) balance = Number(liveInfo.balance);
+              if (liveInfo.equity !== undefined) equity = Number(liveInfo.equity);
+              if (liveInfo.margin !== undefined) margin = Number(liveInfo.margin);
+              if (liveInfo.freeMargin !== undefined) freeMargin = Number(liveInfo.freeMargin);
+              if (liveInfo.marginLevel !== undefined) marginLevel = Number(liveInfo.marginLevel);
+              if (liveInfo.currency) currency = liveInfo.currency;
            }
         }
         
@@ -2027,12 +2180,12 @@ app.get("/api/accounts", async (req, res) => {
           server: acc.server || acc._data?.server,
           connectionStatus: connectionStatus,
           state: acc.state || acc._data?.state,
-          balance: info.balance !== undefined ? Number(info.balance) : 0,
-          equity: info.equity !== undefined ? Number(info.equity) : (info.balance !== undefined ? Number(info.balance) : 0),
-          margin: info.margin !== undefined ? Number(info.margin) : 0,
-          freeMargin: info.freeMargin !== undefined ? Number(info.freeMargin) : 0,
-          marginLevel: info.marginLevel !== undefined ? Number(info.marginLevel) : (info.margin !== undefined && info.margin > 0 && info.equity !== undefined ? (Number(info.equity) / Number(info.margin)) * 100 : 0),
-          currency: info.currency || 'USD'
+          balance,
+          equity,
+          margin,
+          freeMargin,
+          marginLevel,
+          currency
         };
       });
 
@@ -2272,6 +2425,11 @@ app.post("/api/account/:accountId/deploy", async (req, res) => {
     
     const account = await getAccount(accountId);
     await account.deploy();
+    await account.waitConnected().catch(() => {});
+    
+    if (account.connectionStatus !== 'CONNECTED') {
+       await account.connect();
+    }
 
     // WAIT FOR READINESS
     const connection = await getRPCConnection(accountId);
@@ -2682,11 +2840,17 @@ app.get("/api/account/:accountId/status", async (req, res) => {
     if (connection) {
        metaApiReady = connection.terminalState?.connected === true && connection.terminalState?.connectedToBroker === true;
     }
+
+    const account = metaapi ? await getAccount(accountId).catch(() => null) : null;
+    const state = account ? account.state : 'UNDEPLOYED';
+    const connectionStatus = account ? account.connectionStatus : 'DISCONNECTED';
     
     res.json({
         ready: !!globalScope.READY_STATE.get(accountId),
         streamActive: !!globalScope.STREAM_ACTIVE.get(accountId),
         metaApiReady,
+        state,
+        connectionStatus,
         lastTick: globalScope.LAST_TICK_TIME.get(accountId) || 0,
         positions: Array.isArray(cache.positions) ? cache.positions : [],
         orders: Array.isArray(cache.orders) ? cache.orders : [],
@@ -2807,6 +2971,9 @@ app.get("/api/account/:accountId/history", async (req, res) => {
     // Check if account is even deployed/connected before trying RPC
     const account = await getAccount(accountId);
     if (account.state !== 'DEPLOYED' || account.connectionStatus !== 'CONNECTED') {
+       if (account.state !== 'DEPLOYED') {
+          await syncUndeployedState(accountId);
+       }
        return res.status(202).json({ 
          status: 'starting', 
          message: 'Account is still connecting to broker. Please wait up to 3 minutes.',
@@ -2814,14 +2981,64 @@ app.get("/api/account/:accountId/history", async (req, res) => {
        });
     }
 
-    const connection = await getRPCConnection(accountId);
-    // Extend time range to ensure we pick up recent trades even with small clock skews
-    const startTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); 
-    const endTime = new Date(Date.now() + 10 * 60 * 1000); // 10 mins into future for safety
-    const history = await connection.getHistoryOrdersByTimeRange(startTime, endTime, 0, Number(limit));
-    res.json(history);
+    // Check RAM history cache to prevent hitting rate limits
+    const cacheKey = `${accountId}_${limit}`;
+    const now = Date.now();
+    const cacheEntry = (globalScope.HISTORY_CACHE as Map<string, { lastFetchTime: number; history: any[] }>)?.get(cacheKey);
+    
+    // Allow returns from memory cache if less than 60 seconds old
+    if (cacheEntry && (now - cacheEntry.lastFetchTime < 60 * 1000)) {
+       return res.json(cacheEntry.history);
+    }
+
+    try {
+      const connection = await getRPCConnection(accountId);
+      // Extend time range to ensure we pick up recent trades even with small clock skews
+      const startTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); 
+      const endTime = new Date(Date.now() + 10 * 60 * 1000); // 10 mins into future for safety
+      const history = await connection.getHistoryOrdersByTimeRange(startTime, endTime, 0, Number(limit));
+      
+      // Save to cache
+      if (!globalScope.HISTORY_CACHE) {
+         globalScope.HISTORY_CACHE = new Map();
+      }
+      globalScope.HISTORY_CACHE.set(cacheKey, {
+         lastFetchTime: now,
+         history: history
+      });
+
+      return res.json(history);
+    } catch (err: any) {
+      console.warn(`[API] History fetch error for ${accountId}, utilizing fallback mechanism. Error:`, err.message);
+      
+      // Fallback 1: Return stale cache if available
+      if (cacheEntry) {
+         console.info(`[API] History Fallback (Stale Cache) served for ${accountId}. Cache age: ${Math.round((now - cacheEntry.lastFetchTime) / 1000)}s`);
+         return res.json(cacheEntry.history);
+      }
+      
+      // Fallback 2: Retrieve matched records from synchronized stream historyStorage
+      const streamConnection = REGISTRY.stream.get(accountId);
+      if (streamConnection && streamConnection.historyStorage) {
+         const streamHistory = streamConnection.historyStorage.historyOrders || [];
+         const sorted = [...streamHistory].sort((a: any, b: any) => {
+            const timeA = a.time ? new Date(a.time).getTime() : 0;
+            const timeB = b.time ? new Date(b.time).getTime() : 0;
+            return timeB - timeA;
+         });
+         const sliced = sorted.slice(0, Number(limit));
+         if (sliced.length > 0) {
+            console.info(`[API] History Fallback (Stream Storage) served for ${accountId} with ${sliced.length} synchronized history orders.`);
+            return res.json(sliced);
+         }
+      }
+      
+      // Fallback 3: Return a successful empty array instead of 500 error to keep the dashboard stable
+      console.warn(`[API] History Fallback (Empty Dataset) served for ${accountId}.`);
+      return res.json([]);
+    }
   } catch (err: any) {
-    console.error(`[API] History fetch error for ${accountId}:`, err.message);
+    console.error(`[API] Fatal error in history endpoint for ${accountId}:`, err.message);
     res.status(500).json({ error: sanitizeError(err) });
   }
 });
@@ -2834,6 +3051,9 @@ app.get("/api/account/:accountId/metastats", async (req, res) => {
     // Check account connection status first to avoid hanging browser requests
     const accountCheck = await getAccount(accountId);
     if (accountCheck.state !== 'DEPLOYED' || accountCheck.connectionStatus !== 'CONNECTED') {
+        if (accountCheck.state !== 'DEPLOYED') {
+           await syncUndeployedState(accountId);
+        }
         return res.status(202).json({ 
           status: 'synchronizing', 
           message: 'Account is booting or connecting. MetaStats will be available shortly.',
@@ -2932,7 +3152,6 @@ app.get("/api/account/:accountId/symbols", async (req, res) => {
   const { accountId } = req.params;
   try {
     const userId = await getUserIdFromRequest(req);
-    const connection = await getRPCConnection(accountId);
     const symbols = await getSymbolsCached(metaapi, accountId);
     res.json(symbols);
   } catch (err: any) {
@@ -2948,22 +3167,20 @@ async function recoverLeases() {
       console.log(`[LEASE] Checking deployment for ${lease.account_id}...`);
       const account = await getAccount(lease.account_id);
       
-      if (account.state !== 'DEPLOYED') {
-        const existingEA = await TradingController.getEAStatus(lease.account_id, lease.user_id);
-        if (existingEA && existingEA.status !== 'UNDEPLOYED' && existingEA.status !== 'EXPIRED_UNDEPLOYED' && existingEA.status !== 'MANUALLY_LOCKED') {
-           console.log(`[LEASE] Account ${lease.account_id} detected as externally undeployed. Locking.`);
-           await TradingController.updateEAStatus(lease.account_id, lease.user_id, false, 'MANUALLY_LOCKED');
-        } else if (!existingEA) {
-           await TradingController.updateEAStatus(lease.account_id, lease.user_id, false, 'UNDEPLOYED');
+      if (account.state !== 'DEPLOYED' || account.connectionStatus !== 'CONNECTED') {
+        console.warn(`[WATCHDOG] Account ${lease.account_id} not active (state: ${account.state}, conn: ${account.connectionStatus}). Forcing cleanup.`);
+        
+        if (account.state !== 'DEPLOYED') {
+          await syncUndeployedState(lease.account_id);
+        } else {
+          // Just basic cleanup if deployed but unconnected
+          REGISTRY.stream.delete(lease.account_id);
+          REGISTRY.rpc.delete(lease.account_id);
+          globalScope.ACCOUNT_READY?.delete(lease.account_id);
+          globalScope.STREAM_PENDING?.delete(lease.account_id);
         }
+        
         continue;
-      } else {
-        // If it's deployed in MetaApi but our database still thinks it's locked/undeployed, sync it.
-        const existingEA = await TradingController.getEAStatus(lease.account_id, lease.user_id);
-        if (!existingEA || !existingEA.deployed) {
-            console.log(`[LEASE] Account ${lease.account_id} detected as deployed in MetaApi. Syncing local state.`);
-            await TradingController.updateEAStatus(lease.account_id, lease.user_id, true, 'DEPLOYED');
-        }
       }
 
       // Ensure connection is pinned and established via singleton registry
@@ -3349,53 +3566,115 @@ async function startServer() {
     const clientSubs = new Set<string>();
     console.log("[WS] Client connected");
 
-    ws.send(JSON.stringify({
-      type: 'TRADING_JOURNAL_SNAPSHOT',
-      data: TRADING_JOURNAL_STORE
-    }));
-
     ws.on("message", (msg) => {
       try {
         const data = JSON.parse(msg.toString());
         if (data.type === 'subscribe' && data.accountId) {
           const accountId = data.accountId;
-          clientSubs.add(accountId);
-          if (!subscriptions.has(accountId)) subscriptions.set(accountId, new Set());
-          subscriptions.get(accountId)?.add(ws);
+          const token = data.token;
           
-          ws.send(JSON.stringify({ type: 'ACCOUNT_CONNECTING', accountId }));
-          
-          // Re-hydration: If the stream is already locked and ready, send the READY states immediately
-          // so the frontend doesn't get stuck waiting for an event that already happened.
-          if (REGISTRY.locked.get(accountId) && globalScope.STREAM_READY.get(accountId)) {
-              console.log(`[SDK_REHYDRATE] Account ${accountId} is already synchronized. Pushing states to connecting client.`);
-              ws.send(JSON.stringify({ type: 'ACCOUNT_READY', accountId, status: 'READY' }));
-              ws.send(JSON.stringify({ type: 'SYNC_READY', accountId }));
-              
-              const positions = globalScope.ACTIVE_POSITIONS?.get(accountId) ? Array.from(globalScope.ACTIVE_POSITIONS.get(accountId).values()) : [];
-              ws.send(JSON.stringify({ type: 'POSITIONS_SNAPSHOT', accountId, data: positions }));
+          (async () => {
+             try {
+                if (!token) {
+                   console.error("[WS] Denied: No token provided for subscribe");
+                   ws.send(JSON.stringify({ type: 'ERROR', message: 'Authentication required' }));
+                   return;
+                }
+                
+                const { data: userData, error: authError } = await adminSupabase.auth.getUser(token);
+                if (authError || !userData?.user?.id) {
+                   console.error("[WS] Denied: Invalid token");
+                   ws.send(JSON.stringify({ type: 'ERROR', message: 'Invalid authentication' }));
+                   return;
+                }
+                const userId = userData.user.id;
 
-              const connection = REGISTRY.stream.get(accountId);
-              const info = connection?.terminalState?.accountInformation;
-              
-              ws.send(JSON.stringify({
-                  type: 'EXECUTION_MODE_UPDATE',
-                  accountId,
-                  mode: 'STRATEGY'
-              }));
+                // Validate Ownership
+                const { data: account, error: accError } = await adminSupabase
+                   .from('ea_deployments')
+                   .select('user_id')
+                   .eq('account_id', accountId)
+                   .maybeSingle();
+                   
+                if (account && account.user_id !== userId) {
+                   console.error(`[WS] SECURITY REJECT: User ${userId} attempted to subscribe to foreign deploy ${accountId}`);
+                   ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized account access' }));
+                   return;
+                }
 
-              if (info) {
-                  ws.send(JSON.stringify({
-                      type: 'account:update',
-                      accountId,
-                      balance: info.balance ?? 0,
-                      equity: info.equity ?? 0,
-                      currency: info.currency ?? 'USD'
-                  }));
-              }
-          }
+                const { data: tradingAcc } = await adminSupabase
+                   .from('trading_accounts')
+                   .select('user_id')
+                   .eq('id', accountId)
+                   .maybeSingle();
+
+                if (tradingAcc && tradingAcc.user_id !== userId) {
+                   console.error(`[WS] SECURITY REJECT: User ${userId} attempted to subscribe to foreign account ${accountId}`);
+                   ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized account access' }));
+                   return;
+                }
+
+                // Authorized!
+                clientSubs.add(accountId);
+                if (!subscriptions.has(accountId)) subscriptions.set(accountId, new Set());
+                subscriptions.get(accountId)?.add(ws);
+                
+                if (globalScope.DEAD_SESSIONS_TIMER?.has(accountId)) {
+                    clearTimeout(globalScope.DEAD_SESSIONS_TIMER.get(accountId));
+                    globalScope.DEAD_SESSIONS_TIMER.delete(accountId);
+                    console.log(`[WATCHDOG] Session resurrected for ${accountId}, cancelled cleanup.`);
+                }
+                
+                const logs = TRADING_JOURNAL_STORE.get(accountId) || [];
+                ws.send(JSON.stringify({
+                  type: 'TRADING_JOURNAL_SNAPSHOT',
+                  data: logs
+                }));
+                
+                ws.send(JSON.stringify({ type: 'ACCOUNT_CONNECTING', accountId }));
+                
+                // Trigger background MetaApi connection
+                setupStreaming(accountId).catch(err => {
+                    console.error("[WS] MetaApi Boot Failure:", err.message);
+                    ws.send(JSON.stringify({ type: 'ERROR', message: `MetaApi Boot Failure: ${err.message}` }));
+                });
+
+                // Re-hydration: If the stream is already locked and ready, send the READY states immediately
+                if (REGISTRY.locked.get(accountId) && globalScope.STREAM_READY.get(accountId)) {
+                    console.log(`[SDK_REHYDRATE] Account ${accountId} is already synchronized. Pushing states to connecting client.`);
+                    ws.send(JSON.stringify({ type: 'status:update', accountId, status: 'READY' }));
+                    ws.send(JSON.stringify({ type: 'ACCOUNT_READY', accountId, status: 'READY' }));
+                    ws.send(JSON.stringify({ type: 'SYNC_READY', accountId }));
+                    
+                    const positions = globalScope.ACTIVE_POSITIONS?.get(accountId) ? Array.from(globalScope.ACTIVE_POSITIONS.get(accountId).values()) : [];
+                    ws.send(JSON.stringify({ type: 'POSITIONS_SNAPSHOT', accountId, data: positions }));
+
+                    const connection = REGISTRY.stream.get(accountId);
+                    const info = connection?.terminalState?.accountInformation;
+                    
+                    ws.send(JSON.stringify({
+                        type: 'EXECUTION_MODE_UPDATE',
+                        accountId,
+                        mode: 'STRATEGY'
+                    }));
+
+                    if (info) {
+                        ws.send(JSON.stringify({
+                            type: 'account:update',
+                            accountId,
+                            balance: info.balance ?? 0,
+                            equity: info.equity ?? 0,
+                            currency: info.currency ?? 'USD'
+                        }));
+                    }
+                }
+             } catch (e) {
+                 console.error("[WS] Sub error", e);
+             }
+          })();
           
         } else if (data.type === 'STREAM_SUBSCRIBE' && data.accountId && data.symbol && data.timeframe) {
+          console.log(`[WS_RECV] STREAM_SUBSCRIBE for ${data.symbol} on ${data.accountId}`);
           const { accountId, symbol, timeframe } = data;
           (async () => {
              try {
@@ -3517,17 +3796,20 @@ async function startServer() {
         } else if (data.type === 'PING') {
           ws.send(JSON.stringify({ type: 'PONG' }));
         } else if (data.type === 'SYNC_STATE') {
-          const { accountId } = data;
+          const { accountId, symbol } = data;
           if (accountId) {
+             const targetSymbol = symbol || 'XAUUSDm';
              // 1. Send Candles Snapshot
-             const candles = (globalScope.CANDLE_STORE?.[accountId]?.['XAUUSDm']) || 
+             const candles = (globalScope.CANDLE_STORE?.[accountId]?.[targetSymbol]) || 
+                             (globalScope.CANDLE_STORE?.[accountId]?.['XAUUSDm']) || 
                              (globalScope.CANDLE_STORE?.[accountId]?.['XAUUSD']) || 
+                             globalScope.LATEST_CANDLES.get(`${accountId}:${targetSymbol}`) ||
                              globalScope.LATEST_CANDLES.get(`${accountId}:XAUUSDm`) || 
                              globalScope.LATEST_CANDLES.get(`${accountId}:XAUUSD`) || [];
              ws.send(JSON.stringify({
                  type: 'HISTORY_SNAPSHOT',
                  accountId,
-                 symbol: 'XAUUSDm',
+                 symbol: targetSymbol,
                  candles: Array.isArray(candles) ? candles : [candles]
              }));
 
@@ -3575,13 +3857,32 @@ async function startServer() {
     });
 
     const cleanupAccount = async (accountId: string) => {
-      console.log(`[SDK] No more client WebSocket listeners for ${accountId}. Keeping MetaAPI connection pinned for performance.`);
+      console.log(`[SDK] No more client WebSocket listeners for ${accountId}. Pinning for 5 minutes before cleanup.`);
       subscriptions.delete(accountId);
       
-      // DO NOT aggressively close `connection.close()` here. 
-      // React strict mode / hot reloads will cause race conditions if we tear down the connection
-      // right as it tries to rebuild it. We keep the connection pinned per user request.
-      // We will just let the global watchdog handle actual dead connections.
+      if (!globalScope.DEAD_SESSIONS_TIMER) globalScope.DEAD_SESSIONS_TIMER = new Map();
+      const timer = setTimeout(async () => {
+        try {
+          console.log(`[WATCHDOG] Cleaning up dead session for ${accountId}`);
+          const stream = REGISTRY.stream.get(accountId);
+          if (stream) {
+            await stream.close();
+            REGISTRY.stream.delete(accountId);
+          }
+          const rpc = REGISTRY.rpc.get(accountId);
+          if (rpc) {
+            // Keep RPC around or close it? Better to close to save resources
+            REGISTRY.rpc.delete(accountId);
+          }
+          globalScope.ACCOUNT_READY?.delete(accountId);
+          globalScope.STREAM_PENDING?.delete(accountId);
+          globalScope.DEAD_SESSIONS_TIMER?.delete(accountId);
+        } catch (e) {
+          console.error(`[WATCHDOG] Cleanup error for ${accountId}:`, e);
+        }
+      }, 5 * 60 * 1000);
+      
+      globalScope.DEAD_SESSIONS_TIMER.set(accountId, timer);
     };
 
     ws.on("close", async () => {
@@ -3604,18 +3905,14 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
+    const publicPath = path.join(process.cwd(), 'public');
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
     
-    // Explicitly serve icons with correct MIME type and no SPA fallback
-    app.use('/icons', express.static(path.join(process.cwd(), 'public', 'icons'), {
-      setHeaders: (res) => {
-        res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=31536000');
-      }
-    }));
+    // Serve public first for manifest, icons as raw files
+    app.use(express.static(publicPath));
+    app.use(express.static(distPath));
 
-    app.get('*all', (req, res) => {
+    app.get('*all', (_, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

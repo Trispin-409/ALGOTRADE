@@ -41,6 +41,7 @@ import { connectionManager, TradingPhase } from './src/lib/ConnectionManager';
 import { safeFetch } from './src/lib/utils';
 import { supabase } from './src/lib/supabase';
 import { LoginForm } from './src/components/Auth/LoginForm';
+import { ResetPasswordForm } from './src/components/Auth/ResetPasswordForm';
 import { FullScreenLoader } from './src/components/Auth/FullScreenLoader';
 import { useStore } from './src/store';
 import { PricingPage } from './src/components/PricingPage';
@@ -257,6 +258,9 @@ const App: React.FC = () => {
     // 2. RESOLVE: The WebSocket connection must go to our own server, not MetaApi domain
     const serverUrl = window.location.origin;
     
+    useStore.getState().setHistory([]); // Purge history on account switch
+    useStore.getState().setPositions([]); // Purge positions early to avoid flash
+
     setSelectedAccountId(id);
     localStorage.setItem('selectedAccountId', id);
     
@@ -265,22 +269,28 @@ const App: React.FC = () => {
          const data = await safeFetch(`/api/account/${id}/status`, {
            headers: { Authorization: `Bearer ${session.access_token}` }
          });
+         
          if (data.algoRunning !== undefined) {
            setIsAlgoTradeRunning(data.algoRunning);
+         }
+
+         if (data.state !== 'DEPLOYED' || data.connectionStatus !== 'CONNECTED') {
+           console.warn(`[LIFECYCLE] Account ${id} is not fully active (${data.state}, ${data.connectionStatus}). Skipping websocket boot.`);
+           return;
+         }
+         
+         try {
+           // 3. EXECUTE: Single entry point to connection manager
+           connectionManager.bootOnce(id, serverUrl, session.access_token);
+         } catch (err: any) {
+           addLog(`FATAL: ${err.message}`);
+           setTradingStatus('CONFIG_ERROR');
          }
        } catch (e) {
          console.warn("[LIFECYCLE] Failed to sync algo status", e);
        }
     };
     fetchAlgoStatus();
-    
-    try {
-      // 3. EXECUTE: Single entry point to connection manager
-      connectionManager.bootOnce(id, serverUrl);
-    } catch (err: any) {
-      addLog(`FATAL: ${err.message}`);
-      setTradingStatus('CONFIG_ERROR');
-    }
   }, [bootData, addLog, session]);
 
   // Helper to determine if trading is ready
@@ -449,9 +459,10 @@ const App: React.FC = () => {
       } else if (data.type === 'HISTORY_ORDER_ADDED') {
         store.setHistory([data.data, ...store.history].slice(0, 20));
       } else if (data.type === 'MARKET_ANALYSIS_UPDATE') {
-        const normSelected = selectedSymbol?.toUpperCase() || '';
-        const normReceived = data.symbol?.toUpperCase() || '';
-        if (data.accountId === selectedAccountId && normReceived === normSelected) {
+        const normSelected = selectedSymbol?.toUpperCase().replace(/[^A-Z0-9]/g, '') || '';
+        const normReceived = data.symbol?.toUpperCase().replace(/[^A-Z0-9]/g, '') || '';
+        const isMatch = normSelected === normReceived || normSelected.startsWith(normReceived) || normReceived.startsWith(normSelected);
+        if (data.accountId === selectedAccountId && isMatch) {
           store.setMarketAnalysis(data.analysis);
         }
       }
@@ -878,24 +889,24 @@ const App: React.FC = () => {
     return <PricingPage session={session} bootData={bootData} />;
   }
   
+  if (path === '/reset-password') {
+    return <ResetPasswordForm session={session} />;
+  }
+  
   if (!session) return (
-    <div className="relative flex items-center justify-center min-h-screen bg-black overflow-hidden">
-      {/* Deep robotic background */}
+    <div className="relative flex items-center justify-center min-h-screen bg-[#02040a] overflow-hidden">
+      {/* Deep background */}
       <div className="absolute inset-0 z-0 pointer-events-none">
-        {/* Main robot background image */}
+        {/* User's uploaded brand background image */}
         <div 
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-90 z-0 scale-105"
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-100 z-0"
           style={{ 
-            backgroundImage: "url('/bot-logo.png?v=2')",
-            backgroundColor: "#000"
+            backgroundImage: "url('/login-background.png')",
+            backgroundColor: "#02040a"
           }}
         ></div>
-        
-        {/* Subtle overlays */}
-        <div className="absolute inset-0 bg-black/40 z-10"></div>
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f1a_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f1a_1px,transparent_1px)] bg-[size:14px_24px] z-10"></div>
       </div>
-      <div className="relative z-20 pointer-events-auto">
+      <div className="relative z-20 pointer-events-auto w-full px-4">
         <LoginForm />
       </div>
     </div>
@@ -913,12 +924,16 @@ const App: React.FC = () => {
 
   return (
     <div className={`flex h-screen bg-[#02040a] overflow-hidden text-slate-200 transition-colors duration-1000 ${streakThemeClasses}`}>
-      <div className="absolute inset-0 z-0 pointer-events-none opacity-20">
+      <div className="absolute inset-0 z-0 pointer-events-none opacity-40">
+        {/* Subtle Brand Logo Watermark Overlay */}
         <div 
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat z-0"
-          style={{ backgroundImage: "url('/bot-logo.png?v=2')" }}
+          className="absolute inset-0 bg-contain bg-center bg-no-repeat opacity-[0.03] scale-50 z-0 pointer-events-none"
+          style={{ backgroundImage: "url('/bot-logo.png?v=12')" }}
         ></div>
-        <div className="absolute inset-0 bg-[#02040a]/80 z-10 cyber-grid"></div>
+        <div className="absolute inset-0 bg-[#02040a]/90 z-10 cyber-grid"></div>
+        {/* Soft aesthetic background lighting */}
+        <div className="absolute -top-[20%] left-1/3 w-[600px] h-[600px] bg-cyan-500/5 rounded-full blur-[150px] z-0"></div>
+        <div className="absolute -bottom-[20%] right-1/3 w-[600px] h-[600px] bg-purple-500/5 rounded-full blur-[150px] z-0"></div>
       </div>
 
       <div className="relative z-10 flex w-full h-full">
@@ -957,12 +972,17 @@ const App: React.FC = () => {
             
             <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
               <div className="flex items-center">
-                {tradingStatus === 'BOOTING' || tradingStatus === 'INIT' ? (
+                {['INIT', 'CONNECTING_META'].includes(tradingStatus) ? (
                   <div className="flex items-center gap-1.5 px-2.5 py-1 bg-white/5 border border-white/10 rounded-md animate-pulse">
                     <Cloud className="w-3 h-3 animate-bounce" style={{ color: 'var(--accent-color)' }} />
                     <span className="text-[9px] sm:text-[10px] font-mono font-bold uppercase tracking-widest whitespace-nowrap" style={{ color: 'var(--accent-color)' }}>BOOTING</span>
                   </div>
-                ) : tradingStatus === 'SYNCING' ? (
+                ) : tradingStatus === 'META_CONNECTED' ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 rounded-md">
+                    <Cloud className="w-3 h-3 text-amber-500 animate-pulse" />
+                    <span className="text-[9px] sm:text-[10px] font-mono font-bold text-amber-500 uppercase tracking-widest whitespace-nowrap">CONNECTING...</span>
+                  </div>
+                ) : ['ACCOUNT_SYNCING', 'BROKER_CONNECTED', 'SYNCING'].includes(tradingStatus) ? (
                   <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/20 rounded-md">
                     <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />
                     <span className="text-[9px] sm:text-[10px] font-mono font-bold text-blue-500 uppercase tracking-widest whitespace-nowrap">SYNCING</span>
@@ -972,7 +992,7 @@ const App: React.FC = () => {
                     <AlertCircle className="w-3 h-3 text-rose-500" />
                     <span className="text-[9px] sm:text-[10px] font-mono font-bold text-rose-500 uppercase tracking-widest whitespace-nowrap">OFFLINE</span>
                   </div>
-                ) : tradingStatus === 'READY' ? (
+                ) : ['ACCOUNT_READY', 'STREAMING', 'READY'].includes(tradingStatus) ? (
                   <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-md shadow-[0_0_10px_rgba(16,185,129,0.1)]">
                     <CheckCircle2 className="w-3 h-3 text-emerald-500" />
                     <span className="text-[9px] sm:text-[10px] font-mono font-bold text-emerald-500 uppercase tracking-widest whitespace-nowrap">CONNECTED</span>
