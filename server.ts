@@ -3909,6 +3909,12 @@ async function startServer() {
     const distPath = path.join(process.cwd(), 'dist');
     
     // Serve public first for manifest, icons as raw files
+    app.use('/icons', express.static(path.join(publicPath, 'icons'), { 
+      setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    }));
+    app.use('/manifest.json', express.static(path.join(publicPath, 'manifest.json'), {
+      setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    }));
     app.use(express.static(publicPath));
     app.use(express.static(distPath));
 
