@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ALGOTRADE</string>
+    <string name="title_activity_main">ALGOTRADE</string>
+    <string name="package_name">com.algotrade.app</string>
+    <string name="custom_url_scheme">com.algotrade.app</string>
+</resources>

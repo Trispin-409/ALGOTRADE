@@ -304,6 +304,25 @@ const tradingLimiter = rateLimit({
 });
 
 app.use(cors());
+
+// TRUSTED WEB ACTIVITY (TWA) DOMAIN VERIFICATION
+app.use(
+  "/.well-known",
+  express.static(path.join(process.cwd(), "public/.well-known"), {
+    setHeaders: (res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    }
+  })
+);
+
+app.get("/.well-known/assetlinks.json", (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  const assetlinksPath = path.join(process.cwd(), "public", ".well-known", "assetlinks.json");
+  res.sendFile(assetlinksPath);
+});
+
 app.use("/api/trade/", tradingLimiter);
 app.use("/api/account/", tradingLimiter);
 

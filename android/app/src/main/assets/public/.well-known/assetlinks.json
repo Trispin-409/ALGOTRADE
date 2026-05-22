@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.algotrade_tristech.twa",
+      "sha256_cert_fingerprints": [
+        "6E:4B:1B:D6:4B:DC:02:79:A4:8E:E4:76:06:F2:76:CF:A8:B0:C1:F7:4E:86:A3:6A:75:59:2B:28:70:57:1D:6D"
+      ]
+    }
+  }
+]
