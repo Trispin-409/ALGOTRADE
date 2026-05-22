@@ -73,17 +73,21 @@ const ChartSettings: React.FC = () => {
           <div className="space-y-2">
             <label className="text-xs font-black tracking-widest uppercase text-slate-500">Background Image</label>
             <div className="flex flex-col gap-3">
-              {localSettings.bgImageUrl && (
-                <div className="relative w-full h-32 rounded-xl overflow-hidden border border-white/10 bg-black/40 glowing-frame">
-                  <img src={localSettings.bgImageUrl} alt="Background Preview" className="w-full h-full object-cover opacity-50" />
-                  <button 
-                     onClick={() => setLocalSettings(s => ({ ...s, bgImageUrl: '' }))}
-                     className="absolute top-2 right-2 bg-rose-500/80 hover:bg-rose-500 p-1.5 rounded-lg text-white transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
+              <div className="relative w-full h-32 rounded-xl overflow-hidden border border-white/10 bg-black/40 glowing-frame flex items-center justify-center">
+                {localSettings.bgImageUrl ? (
+                  <>
+                    <img src={localSettings.bgImageUrl} alt="Background Preview" className="w-full h-full object-cover opacity-50" />
+                    <button 
+                       onClick={() => setLocalSettings(s => ({ ...s, bgImageUrl: '' }))}
+                       className="absolute top-2 right-2 bg-rose-500/80 hover:bg-rose-500 p-1.5 rounded-lg text-white transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-slate-600 text-xs font-mono uppercase bg-black/50 px-3 py-1 rounded">No Image Set</span>
+                )}
+              </div>
               {!localSettings.bgImageUrl?.startsWith('data:image') && (
                 <input 
                   type="text" 

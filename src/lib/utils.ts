@@ -37,6 +37,16 @@ export const generateFingerprint = () => {
   return navigator.userAgent + '||' + window.screen.width + 'x' + window.screen.height + '||' + navigator.language;
 };
 
+export const getApiBaseUrl = () => {
+  if (typeof window !== 'undefined') {
+    const isCapacitor = (window as any).Capacitor?.isNative;
+    if (isCapacitor) {
+      return import.meta.env.VITE_API_URL || 'https://algotrade-tristech.com';
+    }
+  }
+  return '';
+};
+
 export const safeFetch = async (url: string, options?: RequestInit) => {
   // Automatically inject fresh token if Authorization header is missing or placeholder
   let finalOptions = { ...options };
@@ -55,7 +65,8 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
     }
   }
 
-  const res = await fetch(url, finalOptions);
+  const fetchUrl = url.startsWith('/') ? `${getApiBaseUrl()}${url}` : url;
+  const res = await fetch(fetchUrl, finalOptions);
   const text = await res.text();
   
   if (!res.ok) {

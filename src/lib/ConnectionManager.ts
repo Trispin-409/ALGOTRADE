@@ -1,5 +1,5 @@
 
-import { safeFetch, delay } from './utils';
+import { safeFetch, delay, getApiBaseUrl } from './utils';
 
 export const TradingPhase = {
   INIT: 'INIT',
@@ -301,9 +301,8 @@ class ConnectionManager {
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
       
-      const res = await fetch(`/api/account/${accountId}/status`, { headers });
-      if (res.ok) {
-          const data = await res.json();
+      const data = await safeFetch(`/api/account/${accountId}/status`, { headers });
+      if (data) {
           if (data.state !== 'DEPLOYED' || data.connectionStatus !== 'CONNECTED') {
               console.warn(`[RECONNECT_GUARD] Account ${accountId} is not active (${data.state}, ${data.connectionStatus}). Cancelling connection loop.`);
               return;
@@ -313,8 +312,15 @@ class ConnectionManager {
       // If network is down, we might want to still attempt, or wait. We'll proceed to try websocket.
     }
 
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const socket = new WebSocket(protocol + (typeof window !== 'undefined' ? window.location.host : ''));
+    let wsUrl = '';
+    const apiBase = getApiBaseUrl();
+    if (apiBase) {
+        wsUrl = apiBase.replace(/^http/, 'ws');
+    } else {
+        const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        wsUrl = protocol + (typeof window !== 'undefined' ? window.location.host : '');
+    }
+    const socket = new WebSocket(wsUrl);
         
     socket.onopen = () => {
         console.log(`[CONN] Account ${accountId} Connected.`);

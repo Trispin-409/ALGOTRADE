@@ -147,7 +147,7 @@ export default function CandlestickChart({
           cursor: 'crosshair', 
           borderRadius: '12px', 
           border: '1px solid #1e293b',
-          backgroundImage: bgImageUrl ? `url(${bgImageUrl})` : 'none',
+          backgroundImage: bgImageUrl ? `url("${bgImageUrl}")` : 'none',
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat'
