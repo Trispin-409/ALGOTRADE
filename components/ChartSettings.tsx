@@ -17,8 +17,7 @@ const ChartSettings: React.FC = () => {
     setIsSaving(true);
     setChartSettings(localSettings);
     setStrategySettings(localStrategy);
-    // Simulate save duration for better UX
-    setTimeout(() => setIsSaving(false), 500);
+    setIsSaving(false);
   };
 
   return (

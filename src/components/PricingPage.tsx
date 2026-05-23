@@ -352,7 +352,11 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
             <button 
                 onClick={async () => {
                     const { supabase } = await import('../lib/supabase');
+                    const chartSettings = localStorage.getItem('chartSettings');
+                    const strategySettings = localStorage.getItem('strategySettings');
                     localStorage.clear();
+                    if (chartSettings) localStorage.setItem('chartSettings', chartSettings);
+                    if (strategySettings) localStorage.setItem('strategySettings', strategySettings);
                     await supabase.auth.signOut();
                     window.location.reload();
                 }}

@@ -35,8 +35,12 @@ export function LoginForm() {
     setSuccessMessage('');
     setLoading(true);
     
-    // SECURITY ISOLATION: Purge all local cached session state
+    // SECURITY ISOLATION: Purge all local cached session state while preserving layout & strategy preferences
+    const chartSettings = localStorage.getItem('chartSettings');
+    const strategySettings = localStorage.getItem('strategySettings');
     localStorage.clear();
+    if (chartSettings) localStorage.setItem('chartSettings', chartSettings);
+    if (strategySettings) localStorage.setItem('strategySettings', strategySettings);
 
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {

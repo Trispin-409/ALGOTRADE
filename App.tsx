@@ -120,6 +120,10 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    useStore.getState().setCurrentUserEmail(session?.user?.email || null);
+  }, [session]);
+
+  useEffect(() => {
     if (!session || (bootData && !window.location.search.includes('activated=true'))) return;
     setLoadingBootstrap(true);
 
@@ -259,7 +263,20 @@ const App: React.FC = () => {
     const serverUrl = window.location.origin;
     
     useStore.getState().setHistory([]); // Purge history on account switch
-    useStore.getState().setPositions([]); // Purge positions early to avoid flash
+    
+    // Smooth Transition Cache: load cached positions of selected account instantly to prevent flickering
+    const cachedPositionsKey = `positions:${session?.user?.email}:${id}`;
+    let seeded = false;
+    try {
+      const cached = localStorage.getItem(cachedPositionsKey);
+      if (cached) {
+        useStore.getState().setPositions(JSON.parse(cached));
+        seeded = true;
+      }
+    } catch(e) {}
+    if (!seeded) {
+      useStore.getState().setPositions([]); // Purge positions early if no cache
+    }
 
     setSelectedAccountId(id);
     localStorage.setItem('selectedAccountId', id);
@@ -442,20 +459,39 @@ const App: React.FC = () => {
       }
 
       const store = useStore.getState();
+      const currentEmail = session?.user?.email;
+      const activeAccount = selectedAccountId;
+      
       if (data.type === 'POSITIONS_SNAPSHOT') {
-        store.setPositions(data.data || []);
+        const nextPositions = data.data || [];
+        store.setPositions(nextPositions);
+        const targetAccount = data.accountId || activeAccount;
+        if (currentEmail && targetAccount) {
+          localStorage.setItem(`positions:${currentEmail}:${targetAccount}`, JSON.stringify(nextPositions));
+        }
       } else if (data.type === 'POSITION_UPDATE') {
         const p = store.positions;
         const exists = p.findIndex(pos => pos.id === data.data.id);
+        let nextPositions = [];
         if (exists !== -1) {
           const np = [...p];
           np[exists] = data.data;
-          store.setPositions(np);
+          nextPositions = np;
         } else {
-          store.setPositions([...p, data.data]);
+          nextPositions = [...p, data.data];
+        }
+        store.setPositions(nextPositions);
+        const targetAccount = data.accountId || activeAccount;
+        if (currentEmail && targetAccount) {
+          localStorage.setItem(`positions:${currentEmail}:${targetAccount}`, JSON.stringify(nextPositions));
         }
       } else if (data.type === 'POSITION_REMOVED') {
-        store.setPositions(store.positions.filter(p => p.id !== data.data.id));
+        const nextPositions = store.positions.filter(p => p.id !== data.data.id);
+        store.setPositions(nextPositions);
+        const targetAccount = data.accountId || activeAccount;
+        if (currentEmail && targetAccount) {
+          localStorage.setItem(`positions:${currentEmail}:${targetAccount}`, JSON.stringify(nextPositions));
+        }
       } else if (data.type === 'HISTORY_ORDER_ADDED') {
         store.setHistory([data.data, ...store.history].slice(0, 20));
       } else if (data.type === 'MARKET_ANALYSIS_UPDATE') {

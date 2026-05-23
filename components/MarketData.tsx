@@ -99,6 +99,7 @@ const MarketData: React.FC<MarketDataProps> = ({
   const globalHistory = useStore(state => state.history);
   const setHistory = useStore(state => state.setHistory);
   const setPositions = useStore(state => state.setPositions);
+  const currentUserEmail = useStore(state => state.currentUserEmail);
   
   const [latestTick, setLatestTick] = useState<any>(null);
   const [deals, setDeals] = useState<any[]>([]);
@@ -110,11 +111,23 @@ const MarketData: React.FC<MarketDataProps> = ({
   const [showAnalysis, setShowAnalysis] = useState(true);
   
   const systemStatus = connectionStatus; // Use prop from App.tsx instead of internal WS-bound state
-
+  
   const selectedAccount = useMemo(() => accounts.find(a => a.id === selectedAccountId), [accounts, selectedAccountId]);
 
   useEffect(() => {
     if (!selectedAccountId) return;
+    
+    // Seed instantly from email-isolated cache to prevent flicker/gap
+    if (currentUserEmail) {
+      try {
+        const cached = localStorage.getItem(`positions:${currentUserEmail}:${selectedAccountId}`);
+        if (cached) {
+          setPositions(JSON.parse(cached));
+        }
+      } catch (e) {
+        console.warn("Could not retrieve cached positions", e);
+      }
+    }
     
     // Fetch initial snapshot of positions
     safeFetch(`/api/account/${selectedAccountId}/positions`, {
@@ -123,10 +136,13 @@ const MarketData: React.FC<MarketDataProps> = ({
       .then(data => {
         if (Array.isArray(data)) {
           setPositions(data);
+          if (currentUserEmail) {
+            localStorage.setItem(`positions:${currentUserEmail}:${selectedAccountId}`, JSON.stringify(data));
+          }
         }
       })
       .catch(err => console.error("Failed to fetch positions:", err));
-  }, [selectedAccountId]);
+  }, [selectedAccountId, currentUserEmail, token]);
 
   useEffect(() => {
     // Clear intent on unmount
@@ -165,11 +181,31 @@ const MarketData: React.FC<MarketDataProps> = ({
   }, [addLog]);
 
   useEffect(() => {
-    // Clear candles when context changes to prevent ghosting of previous broker data
-    setCandles([]);
+    // Clear/load from cache of previous broker data to achieve instant chart loading
+    let loadedFromCache = false;
+    if (currentUserEmail && selectedAccountId && symbol && timeframe) {
+      const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCandles(parsed);
+            loadedFromCache = true;
+            console.log(`[CANDLES_CACHE] Instantly loaded ${parsed.length} cached candles from memory for ${symbol} (${timeframe})`);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load cached candles", e);
+      }
+    }
+    
+    if (!loadedFromCache) {
+      setCandles([]);
+    }
     setLatestTick(null);
     setDeals([]);
-  }, [selectedAccountId, symbol, timeframe]);
+  }, [selectedAccountId, symbol, timeframe, currentUserEmail]);
 
   useEffect(() => {
     if (!selectedAccountId || !symbol || !timeframe) return;
@@ -214,6 +250,15 @@ const MarketData: React.FC<MarketDataProps> = ({
           setCandles(validHistory);
           addLog(`[CHART_SEEDED] ${validHistory.length} historical candles from snapshot.`);
           console.log("[CHART_SEEDED]", validHistory.length);
+          
+          if (currentUserEmail && selectedAccountId && symbol && timeframe) {
+            const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
+            try {
+              localStorage.setItem(cacheKey, JSON.stringify(validHistory));
+            } catch (e) {
+              console.warn("Failed to write snapshot cache", e);
+            }
+          }
       } else if (data.type === 'CANDLE' && isSymbolMatch(data.symbol, symbol)) {
         if (!data.candle || !data.candle.time) return;
         console.log("[DEBUG_REC_CANDLE]", data);
@@ -233,6 +278,16 @@ const MarketData: React.FC<MarketDataProps> = ({
             next.push(alignedCandle);
             if (next.length > 300) next.shift();
           }
+
+          if (currentUserEmail && selectedAccountId && symbol && timeframe) {
+            const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
+            try {
+              localStorage.setItem(cacheKey, JSON.stringify(next));
+            } catch (e) {
+              console.warn("Failed to write live candle update to cache", e);
+            }
+          }
+
           return next;
         });
         
@@ -253,6 +308,16 @@ const MarketData: React.FC<MarketDataProps> = ({
            last.high = Math.max(last.high, price);
            last.low = Math.min(last.low, price);
            next[next.length - 1] = last;
+
+           if (currentUserEmail && selectedAccountId && symbol && timeframe) {
+             const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
+             try {
+               localStorage.setItem(cacheKey, JSON.stringify(next));
+             } catch (e) {
+               console.warn("Failed to write price update cache", e);
+             }
+           }
+
            return next;
         });
       }

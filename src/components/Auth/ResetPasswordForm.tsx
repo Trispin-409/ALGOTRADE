@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { useStore } from '../../store';
 
 export function ResetPasswordForm({ session }: { session: any }) {
   const [password, setPassword] = useState('');
@@ -35,12 +36,17 @@ export function ResetPasswordForm({ session }: { session: any }) {
     setLoading(false);
   }
 
+  const chartSettings = useStore((state) => state.chartSettings);
+
   return (
     <div className="relative flex items-center justify-center min-h-screen bg-[#02040a] overflow-hidden">
       <div className="absolute inset-0 z-0 pointer-events-none">
         <div 
           className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-100 z-0"
-          style={{ backgroundImage: "url('/login-background.png')", backgroundColor: "#02040a" }}
+          style={{ 
+            backgroundImage: "url('/login-background.png')", 
+            backgroundColor: "#02040a" 
+          }}
         ></div>
       </div>
       

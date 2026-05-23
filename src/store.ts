@@ -34,6 +34,7 @@ interface AccountStore {
     zones: any[];
     detections: any[];
   } | null;
+  currentUserEmail: string | null;
 
   setConnectionStatus: (status: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE") => void;
   updateAccount: (payload: { balance?: number; equity?: number; currency?: string }) => void;
@@ -45,6 +46,7 @@ interface AccountStore {
   setPositions: (positions: any[]) => void;
   setHistory: (history: any[]) => void;
   setStats: (stats: any | null) => void;
+  setCurrentUserEmail: (email: string | null) => void;
   setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string; accentColor?: string }) => void;
   setStrategySettings: (settings: { 
     symbol?: string; 
@@ -73,6 +75,7 @@ export const useStore = create<AccountStore>((set) => ({
   history: [],
   stats: null,
   marketAnalysis: null,
+  currentUserEmail: null,
   chartSettings: (() => {
     try {
       const saved = localStorage.getItem('chartSettings');
@@ -172,10 +175,60 @@ export const useStore = create<AccountStore>((set) => ({
   setPositions: (positions) => set({ positions }),
   setHistory: (history) => set({ history }),
   setStats: (stats) => set({ stats }),
+
+  setCurrentUserEmail: (email) => set((state) => {
+    if (!email) {
+      return { currentUserEmail: null };
+    }
+
+    // Load email-isolated chartSettings
+    let chartSettings = state.chartSettings;
+    try {
+      const saved = localStorage.getItem(`chartSettings:${email}`);
+      if (saved) {
+        chartSettings = JSON.parse(saved);
+      } else {
+        const legacy = localStorage.getItem('chartSettings');
+        if (legacy) {
+          chartSettings = JSON.parse(legacy);
+          localStorage.setItem(`chartSettings:${email}`, legacy);
+        }
+      }
+    } catch (e) {
+      console.warn("Error reading chart settings for email", e);
+    }
+
+    // Load email-isolated strategySettings
+    let strategySettings = state.strategySettings;
+    try {
+      const saved = localStorage.getItem(`strategySettings:${email}`);
+      if (saved) {
+        strategySettings = JSON.parse(saved);
+      } else {
+        const legacy = localStorage.getItem('strategySettings');
+        if (legacy) {
+          strategySettings = JSON.parse(legacy);
+          localStorage.setItem(`strategySettings:${email}`, legacy);
+        }
+      }
+    } catch (e) {
+      console.warn("Error reading strategy settings for email", e);
+    }
+
+    return { 
+      currentUserEmail: email,
+      chartSettings,
+      strategySettings
+    };
+  }),
+
   setChartSettings: (settings) => set((state) => {
     const newSettings = { ...state.chartSettings, ...settings };
     try {
       localStorage.setItem('chartSettings', JSON.stringify(newSettings));
+      if (state.currentUserEmail) {
+        localStorage.setItem(`chartSettings:${state.currentUserEmail}`, JSON.stringify(newSettings));
+      }
     } catch(e) {
       console.warn("Could not save chart settings to localStorage", e);
     }
@@ -228,6 +281,9 @@ export const useStore = create<AccountStore>((set) => ({
 
     try {
       localStorage.setItem('strategySettings', JSON.stringify(newSettings));
+      if (state.currentUserEmail) {
+        localStorage.setItem(`strategySettings:${state.currentUserEmail}`, JSON.stringify(newSettings));
+      }
     } catch(e) {
       console.warn("Could not save strategy settings to localStorage", e);
     }
