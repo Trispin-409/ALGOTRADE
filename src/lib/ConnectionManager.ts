@@ -33,7 +33,7 @@ class ConnectionManager {
   private phase: TradingPhase = TradingPhase.INIT;
   private pendingCommands: any[] = [];
   private syncRetryCounter = 0;
-  private maxSyncRetries = 15;
+  private maxSyncRetries = 60;
   
   // State Locks
   public initialized: boolean = false;
@@ -223,15 +223,11 @@ class ConnectionManager {
           if (this.phase !== TradingPhase.BROKER_CONNECTED && this.phase !== TradingPhase.ACCOUNT_SYNCING) {
               console.log(`[BROKER_CONNECTED]`);
           }
-          if (this.phase === TradingPhase.META_CONNECTED || this.phase === TradingPhase.BROKER_CONNECTED) {
-              nextPhase = TradingPhase.BROKER_CONNECTED;
-          } else {
-              if (this.phase !== TradingPhase.ACCOUNT_SYNCING) {
-                  this.syncRetryCounter = 0;
-                  this.handleSyncRetry();
-              }
-              nextPhase = TradingPhase.ACCOUNT_SYNCING;
+          if (this.phase !== TradingPhase.ACCOUNT_SYNCING) {
+              this.syncRetryCounter = 0;
+              this.handleSyncRetry();
           }
+          nextPhase = TradingPhase.ACCOUNT_SYNCING;
       } else if (brokerConnected && terminalSyncOk) {
           nextPhase = TradingPhase.ACCOUNT_READY;
       }
@@ -336,7 +332,7 @@ class ConnectionManager {
         const data = JSON.parse(event.data);
         
         if (data.type === 'status:update') {
-            const isReady = data.status === 'CONNECTED' || data.status === 'READY' || data.status === 'SYNCHRONIZED';
+            const isReady = data.status === 'CONNECTED' || data.status === 'READY' || data.status === 'SYNCHRONIZED' || data.status === 'SYNCING' || data.status === 'CONNECTED_TO_SERVER';
             this.brokerConnectedState.set(accountId, isReady);
             this.notifyStatus(accountId, isReady);
             this.evaluatePhase();

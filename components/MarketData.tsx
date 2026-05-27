@@ -247,17 +247,29 @@ const MarketData: React.FC<MarketDataProps> = ({
       console.log("[DEBUG_REC_DATA]", data.type, data.symbol); 
       if (data.type === 'HISTORY_SNAPSHOT' && isSymbolMatch(data.symbol, symbol)) {
           const validHistory = data.candles.filter((c: any) => c && c.time && c.open !== undefined && c.close !== undefined);
-          setCandles(validHistory);
-          addLog(`[CHART_SEEDED] ${validHistory.length} historical candles from snapshot.`);
-          console.log("[CHART_SEEDED]", validHistory.length);
-          
-          if (currentUserEmail && selectedAccountId && symbol && timeframe) {
-            const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
-            try {
-              localStorage.setItem(cacheKey, JSON.stringify(validHistory));
-            } catch (e) {
-              console.warn("Failed to write snapshot cache", e);
-            }
+          if (validHistory.length > 0) {
+              setCandles(validHistory);
+              addLog(`[CHART_SEEDED] ${validHistory.length} historical candles from snapshot.`);
+              console.log("[CHART_SEEDED]", validHistory.length);
+              
+              if (currentUserEmail && selectedAccountId && symbol && timeframe) {
+                const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
+                try {
+                  localStorage.setItem(cacheKey, JSON.stringify(validHistory));
+                } catch (e) {
+                  console.warn("Failed to write snapshot cache", e);
+                }
+              }
+          } else {
+              console.warn(`[CHART_RETRY] Received empty history snapshot for ${symbol}, retrying in 5s...`);
+              setTimeout(() => {
+                 connectionManager.send(selectedAccountId, {
+                    type: 'STREAM_SUBSCRIBE',
+                    accountId: selectedAccountId,
+                    symbol,
+                    timeframe
+                 }, true);
+              }, 5000);
           }
       } else if (data.type === 'CANDLE' && isSymbolMatch(data.symbol, symbol)) {
         if (!data.candle || !data.candle.time) return;

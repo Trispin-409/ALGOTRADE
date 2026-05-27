@@ -41,6 +41,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
 
   const chartSettings = useStore(state => state.chartSettings);
   const menuItems = [
+    { id: 'chatrade', label: 'Chatrade AI', icon: Cpu },
     { id: 'accounts', label: 'Accounts', icon: Users },
     { id: 'risk', label: 'Risk Management', icon: ShieldAlert },
     { id: 'settings', label: 'Chart Settings', icon: Settings },
@@ -76,7 +77,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
             />
           </div>
           <div className="truncate">
-            <h2 className="font-black text-white tracking-tighter truncate text-lg">ALGOTRADE</h2>
+            <h2 className="font-black text-white tracking-tighter truncate text-lg">Chatrade AI</h2>
             <p className="text-[10px] terminal-glow font-black uppercase tracking-widest truncate" style={{ color: 'var(--accent-color)' }}>Production</p>
           </div>
         </div>

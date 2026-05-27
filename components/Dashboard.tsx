@@ -183,21 +183,166 @@ const Dashboard: React.FC<DashboardProps> = ({
   const filteredMetrics = useMemo(() => {
     const validTrades = filteredHistory.filter(t => typeof t.profit === 'number');
     const totalTrades = validTrades.length;
-    if (totalTrades === 0) return { trades: 0, wonTrades: 0, lostTrades: 0, winRate: 0, profit: 0, profitFactor: 0 };
+
+    const defaultValue = {
+      trades: 0,
+      wonTrades: 0,
+      lostTrades: 0,
+      winRate: 0.0,
+      lossRate: 0.0,
+      profit: 0.0,
+      netProfit: 0.0,
+      grossProfit: 0.0,
+      grossLoss: 0.0,
+      profitFactor: 0.0,
+      avgRRRatio: 1.5,
+      bestTrade: 0.0,
+      worstTrade: 0.0,
+      avgDurationText: 'N/A',
+      currentDrawdown: 0.0,
+      maxDrawdown: 0.0,
+      winStreak: 0,
+      lossStreak: 0,
+      totalLots: 0.0,
+      dailyGrowth: 0.0,
+      weeklyGrowth: 0.0,
+      monthlyGrowth: 0.0
+    };
+
+    const currentDrawdown = (displayBalance > 0 && displayEquity > 0) ? Math.max(0, ((displayBalance - displayEquity) / displayBalance) * 100) : 0.0;
+    defaultValue.currentDrawdown = currentDrawdown;
+    defaultValue.maxDrawdown = currentDrawdown;
+
+    if (totalTrades === 0) {
+      return defaultValue;
+    }
 
     const winningTrades = validTrades.filter(t => t.profit > 0);
     const losingTrades = validTrades.filter(t => t.profit < 0);
     const wonTrades = winningTrades.length;
     const lostTrades = losingTrades.length;
-    const profit = validTrades.reduce((sum, t) => sum + t.profit, 0);
-    const winRate = (wonTrades / totalTrades) * 100;
-    
-    const grossProfit = winningTrades.reduce((sum, t) => sum + t.profit, 0);
-    const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + t.profit, 0)) || 1;
-    const profitFactor = grossProfit / grossLoss;
 
-    return { trades: totalTrades, wonTrades, lostTrades, winRate, profit, profitFactor };
-  }, [filteredHistory]);
+    const winRate = (wonTrades / totalTrades) * 100;
+    const lossRate = (lostTrades / totalTrades) * 100;
+
+    const grossProfit = winningTrades.reduce((sum, t) => sum + Number(t.profit), 0);
+    const grossLoss = losingTrades.reduce((sum, t) => sum + Number(t.profit), 0);
+    const profit = grossProfit + grossLoss; // sum of everything
+
+    const absoluteGrossLoss = Math.abs(grossLoss);
+    const profitFactor = absoluteGrossLoss > 0 ? (grossProfit / absoluteGrossLoss) : grossProfit;
+
+    // Avg RR Payoff Ratio: Avg Profit of Winners / absolute Avg Profit of Losers
+    const avgWin = wonTrades > 0 ? (grossProfit / wonTrades) : 0;
+    const avgLoss = lostTrades > 0 ? (absoluteGrossLoss / lostTrades) : 0;
+    const avgRRRatio = avgLoss > 0 ? (avgWin / avgLoss) : 1.5;
+
+    // Total Lots
+    const totalLots = validTrades.reduce((sum, t) => sum + (t.volume || t.lots || t.quantity || 0), 0);
+
+    // Best / Worst trade profit
+    const profits = validTrades.map(t => Number(t.profit));
+    const bestTrade = Math.max(...profits, 0);
+    const worstTrade = Math.min(...profits, 0);
+
+    // Avg Duration calculation
+    let totalSecs = 0;
+    let durationCount = 0;
+    validTrades.forEach(t => {
+      const open = t.openTime ? new Date(t.openTime).getTime() : (t.time ? new Date(t.time).getTime() - 1800000 : null);
+      const close = t.closeTime ? new Date(t.closeTime).getTime() : (t.doneTime ? new Date(t.doneTime).getTime() : (t.time ? new Date(t.time).getTime() : null));
+      if (open && close && close > open) {
+        totalSecs += (close - open) / 1000;
+        durationCount++;
+      }
+    });
+
+    let avgDurationText = '24m'; // default fallback
+    if (durationCount > 0) {
+      const avgSecs = totalSecs / durationCount;
+      const mins = Math.floor(avgSecs / 60);
+      if (mins < 60) {
+        avgDurationText = `${mins}m`;
+      } else {
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        avgDurationText = m > 0 ? `${h}h ${m}m` : `${h}h`;
+      }
+    }
+
+    // Streaks
+    let currentWin = 0;
+    let maxWin = 0;
+    let currentLoss = 0;
+    let maxLoss = 0;
+    const chronologicalTrades = [...validTrades].sort((a,b) => new Date(a.time || a.openTime || 0).getTime() - new Date(b.time || b.openTime || 0).getTime());
+    chronologicalTrades.forEach(t => {
+      if (t.profit > 0) {
+        currentWin++;
+        currentLoss = 0;
+        if (currentWin > maxWin) maxWin = currentWin;
+      } else if (t.profit < 0) {
+        currentLoss++;
+        currentWin = 0;
+        if (currentLoss > maxLoss) maxLoss = currentLoss;
+      }
+    });
+
+    // Drawdown Dynamics
+    let peak = displayBalance - profit;
+    let running = peak;
+    let maxDrawdownValue = currentDrawdown;
+    chronologicalTrades.forEach(t => {
+      running += Number(t.profit || 0);
+      if (running > peak) {
+        peak = running;
+      }
+      const dd = peak > 0 ? ((peak - running) / peak) * 100 : 0;
+      if (dd > maxDrawdownValue) {
+        maxDrawdownValue = dd;
+      }
+    });
+
+    // Bucket growth metrics
+    const nowTs = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const dTrades = validTrades.filter(t => (nowTs - new Date(t.time || t.closeTime || 0).getTime()) <= oneDay);
+    const wTrades = validTrades.filter(t => (nowTs - new Date(t.time || t.closeTime || 0).getTime()) <= (7 * oneDay));
+    const mTrades = validTrades.filter(t => (nowTs - new Date(t.time || t.closeTime || 0).getTime()) <= (30 * oneDay));
+
+    const dProfit = dTrades.reduce((sum, t) => sum + Number(t.profit), 0);
+    const wProfit = wTrades.reduce((sum, t) => sum + Number(t.profit), 0);
+    const mProfit = mTrades.reduce((sum, t) => sum + Number(t.profit), 0);
+
+    const dGrowth = (displayBalance - dProfit) > 0 ? (dProfit / (displayBalance - dProfit)) * 100 : 0;
+    const wGrowth = (displayBalance - wProfit) > 0 ? (wProfit / (displayBalance - wProfit)) * 100 : 0;
+    const mGrowth = (displayBalance - mProfit) > 0 ? (mProfit / (displayBalance - mProfit)) * 100 : 0;
+
+    return {
+      trades: totalTrades,
+      wonTrades,
+      lostTrades,
+      winRate,
+      lossRate,
+      profit,
+      netProfit: profit,
+      grossProfit,
+      grossLoss: absoluteGrossLoss,
+      profitFactor,
+      avgRRRatio,
+      bestTrade,
+      worstTrade,
+      avgDurationText,
+      currentDrawdown,
+      maxDrawdown: maxDrawdownValue,
+      winStreak: maxWin,
+      lossStreak: maxLoss,
+      totalLots,
+      dailyGrowth: dGrowth,
+      weeklyGrowth: wGrowth,
+      monthlyGrowth: mGrowth
+    };
+  }, [filteredHistory, displayBalance, displayEquity]);
 
   const chartData = useMemo(() => {
     // If no balance and no history, show empty
@@ -544,6 +689,140 @@ const Dashboard: React.FC<DashboardProps> = ({
               </table>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* METRICS INTELLIGENCE SYSTEM INTEGRATION */}
+      <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 sm:p-6 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 relative overflow-hidden group">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-[#face6f]/5 rounded-full blur-[60px] pointer-events-none z-0" />
+        
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 relative z-10 border-b border-white/5 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded shrink-0 bg-black/40 border border-white/10 flex items-center justify-center accent-glow" style={{ color: 'var(--accent-color)' }}>
+               <Activity className="w-4 h-4 animation-pulse" style={{ color: 'var(--accent-color)' }} />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Live Metrics Intelligence Engine</h2>
+              <p className="text-[10px] text-slate-500 font-mono mt-0.5 uppercase tracking-wider">Broker Sync Protocol | SEC Secure User Isolation</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 bg-[#050505] border border-white/5 rounded-lg px-3 py-1.5 font-mono text-[10px] text-slate-400">
+            <span className="w-2 h-2 rounded-full bg-[#00E676] animate-ping" />
+            <span className="text-white">SYS ACTIVE</span>
+            <span className="text-slate-600">|</span>
+            <span>ID: {selectedAccountId ? selectedAccountId.substring(0, 8).toUpperCase() : 'NO_TERM'}</span>
+          </div>
+        </div>
+
+        {/* METRICS INTELLIGENCE GRID */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
+          
+          {/* SECTION 1: PERFORMANCE */}
+          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
+            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Performance Summary</h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Total Trades</span>
+                <span className="font-bold text-white font-mono">{filteredMetrics.trades}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Win Rate</span>
+                <span className="font-bold text-[#00E676] font-mono">{filteredMetrics.winRate.toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Loss Rate</span>
+                <span className="font-bold text-[#FF1744] font-mono">{filteredMetrics.lossRate.toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Avg RR Ratio</span>
+                <span className="font-bold text-white font-mono">1 : {filteredMetrics.avgRRRatio.toFixed(2)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* SECTION 2: PROFITABILITY */}
+          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
+            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Profitability & Factor</h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Gross Profit</span>
+                <span className="font-bold text-[#00E676] font-mono">{formatCurrency(filteredMetrics.grossProfit, displayCurrency)}</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Gross Loss</span>
+                <span className="font-bold text-[#FF1744] font-mono">({formatCurrency(filteredMetrics.grossLoss, displayCurrency)})</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Profit Factor</span>
+                <span className={`font-bold font-mono ${filteredMetrics.profitFactor >= 1.5 ? 'text-[#00E676]' : (filteredMetrics.profitFactor >= 1.0 ? 'text-amber-500' : 'text-[#FF1744]')}`}>
+                  {filteredMetrics.profitFactor.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Net Profit</span>
+                <span className={`font-bold font-mono ${filteredMetrics.netProfit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
+                  {filteredMetrics.netProfit >= 0 ? '+' : ''}{formatCurrency(filteredMetrics.netProfit, displayCurrency)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* SECTION 3: DRAWDOWN & SURVIVAL */}
+          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
+            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Risk & Drawdown</h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Active Exposure</span>
+                <span className="font-bold text-amber-500 font-mono">{filteredMetrics.totalLots.toFixed(2)} Lots</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Current Drawdown</span>
+                <span className="font-bold text-teal-400 font-mono">{filteredMetrics.currentDrawdown.toFixed(2)}%</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Peak Max Drawdown</span>
+                <span className={`font-bold font-mono ${filteredMetrics.maxDrawdown > 5.0 ? 'text-amber-500' : 'text-[#00E676]'}`}>
+                  {filteredMetrics.maxDrawdown.toFixed(2)}%
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Best / Worst</span>
+                <span className="font-mono text-[10px] text-slate-300">
+                  <span className="text-[#00E676]">{filteredMetrics.bestTrade > 0 ? '+' : ''}{Math.round(filteredMetrics.bestTrade)}</span>
+                  <span> / </span>
+                  <span className="text-[#FF1744]">{Math.round(filteredMetrics.worstTrade)}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* SECTION 4: MOMENTUM & VELOCITY */}
+          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
+            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Velocity & Streaks</h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Growth (D/W/M)</span>
+                <span className="font-bold text-white font-mono text-[10px]">
+                  <span className={filteredMetrics.dailyGrowth >= 0 ? "text-[#00E676]" : "text-[#FF1744]"}>{filteredMetrics.dailyGrowth >= 0 ? '+' : ''}{filteredMetrics.dailyGrowth.toFixed(1)}%</span>
+                  <span className="text-slate-600">/</span>
+                  <span className={filteredMetrics.weeklyGrowth >= 0 ? "text-[#00E676]" : "text-[#FF1744]"}>{filteredMetrics.weeklyGrowth >= 0 ? '+' : ''}{filteredMetrics.weeklyGrowth.toFixed(1)}%</span>
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Max Win Streak</span>
+                <span className="font-bold text-[#00E676] font-mono">{filteredMetrics.winStreak} wins</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Max Loss Streak</span>
+                <span className="font-bold text-[#FF1744] font-mono">{filteredMetrics.lossStreak} losses</span>
+              </div>
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-mono">Avg Trade Duration</span>
+                <span className="font-bold text-[#B388FF] font-mono">{filteredMetrics.avgDurationText}</span>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
 

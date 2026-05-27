@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { safeFetch } from '../src/lib/utils';
 import { Key, Plus, Trash2, Smartphone, Shield, Clock, RefreshCw } from 'lucide-react';
 
-export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'users' | 'logs' }> = ({ session, initialTab }) => {
+export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'users' | 'logs' | 'ai' }> = ({ session, initialTab }) => {
   const [keys, setKeys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -10,9 +10,12 @@ export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'use
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
   const [planType, setPlanType] = useState('Starter');
-  const [activeTab, setActiveTab] = useState<'keys' | 'users' | 'logs'>(initialTab || 'keys');
+  const [activeTab, setActiveTab] = useState<'keys' | 'users' | 'logs' | 'ai'>(initialTab || 'keys');
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+
+  const [aiStats, setAiStats] = useState<any | null>(null);
+  const [loadingAi, setLoadingAi] = useState(false);
 
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab);
@@ -66,10 +69,29 @@ export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'use
     }
   };
 
+  const fetchAiStats = async () => {
+    setLoadingAi(true);
+    try {
+      const data = await safeFetch('/api/admin/ai-analytics', {
+        headers: {
+          'Authorization': `Bearer ${session?.access_token}`
+        }
+      });
+      if (data.success && data.stats) {
+        setAiStats(data.stats);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingAi(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'keys') fetchKeys();
     else if (activeTab === 'users') fetchUsers();
-    else fetchLogs();
+    else if (activeTab === 'logs') fetchLogs();
+    else fetchAiStats();
   }, [session, activeTab]);
 
   const generateKey = async () => {
@@ -183,13 +205,20 @@ export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'use
                 >
                   Admin Logs
                 </button>
+                <button 
+                  onClick={() => setActiveTab('ai')}
+                  className={`px-3 py-2 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-[0.2em] transition-all ${activeTab === 'ai' ? 'text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+                  style={activeTab === 'ai' ? { backgroundColor: 'var(--accent-color)', boxShadow: '0 4px 12px -2px var(--accent-color-rgb)' } : {}}
+                >
+                  AI Analytics
+                </button>
              </div>
              <button 
-               onClick={activeTab === 'keys' ? fetchKeys : activeTab === 'users' ? fetchUsers : fetchLogs}
+               onClick={activeTab === 'keys' ? fetchKeys : activeTab === 'users' ? fetchUsers : activeTab === 'logs' ? fetchLogs : fetchAiStats}
                className="p-2 hover:bg-white/5 rounded-lg text-slate-500 hover:text-white transition-all"
                title="Refresh List"
              >
-               <RefreshCw className={`w-4 h-4 ${(loading || loadingUsers) ? 'animate-spin' : ''}`} />
+               <RefreshCw className={`w-4 h-4 ${(loading || loadingUsers || loadingAi) ? 'animate-spin' : ''}`} />
              </button>
           </div>
         </div>
@@ -395,7 +424,7 @@ export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'use
               )}
             </tbody>
           </table>
-        ) : (
+        ) : activeTab === 'logs' ? (
           <div className="bg-black/20 shadow-xl overflow-hidden rounded-xl border-white/5 font-mono">
             <div className="p-4 border-b border-white/5 flex justify-between items-center text-[10px] font-black uppercase tracking-[0.2em]">
               <span className="text-slate-500">Operation Audit Trail</span>
@@ -437,6 +466,137 @@ export const AdminDashboard: React.FC<{ session: any, initialTab?: 'keys' | 'use
                 </tbody>
               </table>
             </div>
+          </div>
+        ) : (
+          <div className="p-6 space-y-6 bg-slate-950/40 border border-white/5 rounded-2xl">
+            <h3 className="text-sm font-black font-mono uppercase tracking-widest text-emerald-400">
+              Chatrade AI Infrastructure & Quota Analytics
+            </h3>
+            
+            {loadingAi ? (
+              <div className="p-10 font-mono text-center text-xs text-slate-500 animate-pulse">
+                AGGREGATING REAL-TIME USAGE METRICS...
+              </div>
+            ) : aiStats ? (
+              <div className="space-y-6 text-slate-300">
+                
+                {/* 1. Global Metrics Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="p-4 bg-black/40 border border-white/5 rounded-xl space-y-1">
+                    <span className="text-[9px] font-mono text-slate-400 uppercase">Estimated Gemini API Cost</span>
+                    <p className="text-xl font-black font-mono text-white">${(aiStats.totalCost || 0).toFixed(6)} USD</p>
+                  </div>
+                  <div className="p-4 bg-black/40 border border-white/5 rounded-xl space-y-1">
+                    <span className="text-[9px] font-mono text-slate-400 uppercase">Active Subscriptions</span>
+                    <div className="flex gap-2 text-[10px] font-mono mt-1">
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">STARTER: {aiStats.planCounts?.STARTER || 0}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500">PRO: {aiStats.planCounts?.PRO || 0}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-455">ELITE: {aiStats.planCounts?.ELITE || 0}</span>
+                    </div>
+                  </div>
+                  <div className="p-4 bg-black/40 border border-white/5 rounded-xl space-y-1">
+                    <span className="text-[9px] font-mono text-slate-400 uppercase">Total Logged AI Requests</span>
+                    <p className="text-xl font-black font-mono text-emerald-400">{aiStats.recentLogs?.length || 0} calls</p>
+                  </div>
+                </div>
+
+                {/* 2. Top Resource Consumers */}
+                <div className="space-y-2">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest block font-bold">Highest Resource Consumers</span>
+                  <div className="border border-white/5 rounded-xl overflow-hidden bg-black/20 text-xs">
+                    <table className="w-full text-left">
+                      <thead className="bg-black/50 text-slate-500 text-[9px] tracking-widest uppercase border-b border-white/5 font-mono">
+                        <tr>
+                          <th className="px-5 py-3">Trader Email</th>
+                          <th className="px-5 py-3">Active Plan</th>
+                          <th className="px-5 py-3 text-center">Light Chats</th>
+                          <th className="px-5 py-3 text-center">Deep Analyses</th>
+                          <th className="px-5 py-3 text-right">Est. Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 font-mono">
+                        {(!aiStats.highestConsumers || aiStats.highestConsumers.length === 0) ? (
+                          <tr><td colSpan={5} className="px-5 py-4 text-center text-slate-500 italic">No usage recorded</td></tr>
+                        ) : (
+                          aiStats.highestConsumers.map((c: any, index: number) => (
+                            <tr key={index} className="hover:bg-white/5 transition-colors">
+                              <td className="px-5 py-3 font-semibold text-white">{c.email}</td>
+                              <td className="px-5 py-3">
+                                <span className="px-2 py-0.5 rounded text-[9px] bg-slate-800 border border-white/10">{c.plan || 'STARTER'}</span>
+                              </td>
+                              <td className="px-5 py-3 text-center text-slate-400">{c.chats || 0}</td>
+                              <td className="px-5 py-3 text-center text-slate-400">{c.deeps || 0}</td>
+                              <td className="px-5 py-3 text-right text-emerald-400">${(c.cost || 0).toFixed(5)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* 3. Model Utilization */}
+                <div className="space-y-2 pt-2">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest block font-bold">LLM Model Distribution</span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+                    {Object.entries(aiStats.modelsUsed || {}).map(([model, count]: any) => (
+                      <div key={model} className="p-3 bg-black/20 border border-white/5 rounded-lg flex justify-between items-center">
+                        <span className="truncate text-slate-400 text-[10px]" title={model}>{model}</span>
+                        <span className="text-white font-extrabold">{count}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4. Recent AI Transaction Logs */}
+                <div className="space-y-2 pt-2">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest block font-bold">Recent AI Transaction Logs</span>
+                  <div className="border border-white/5 rounded-xl overflow-hidden bg-black/30 max-h-60 overflow-y-auto">
+                    <table className="w-full text-left font-mono text-[10px] text-slate-300">
+                      <thead className="bg-black/80 text-slate-500 font-bold tracking-wider uppercase border-b border-white/5 animate-pulse">
+                        <tr>
+                          <th className="px-4 py-3">Time</th>
+                          <th className="px-4 py-3">Trader</th>
+                          <th className="px-4 py-3 text-center">Mode</th>
+                          <th className="px-4 py-3 text-center">Status</th>
+                          <th className="px-4 py-3">Model</th>
+                          <th className="px-4 py-3 text-right">Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {(!aiStats.recentLogs || aiStats.recentLogs.length === 0) ? (
+                          <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500 italic">No recent AI transactions logged.</td></tr>
+                        ) : (
+                          aiStats.recentLogs.map((log: any, idx: number) => (
+                            <tr key={idx} className="hover:bg-white/5 transition-all">
+                              <td className="px-4 py-2.5 text-slate-400">{new Date(log.timestamp).toLocaleTimeString()}</td>
+                              <td className="px-4 py-2.5 font-bold text-white max-w-[120px] truncate" title={log.email}>{log.email}</td>
+                              <td className="px-4 py-2.5 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${log.mode === 'DEEP' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/25' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/25'}`}>
+                                  {log.mode}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${log.success ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/15'}`}>
+                                  {log.success ? 'SUCCESS' : 'FALLBACK'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-slate-400 truncate max-w-[100px]" title={log.modelUsed}>{log.modelUsed}</td>
+                              <td className="px-4 py-2.5 text-right text-emerald-400 font-bold">${(log.estimatedCost || 0).toFixed(5)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+              </div>
+            ) : (
+              <div className="p-8 text-center text-xs font-mono text-slate-500 italic">
+                Failed to load systemic AI usage statistics.
+              </div>
+            )}
           </div>
         )}
       </div>

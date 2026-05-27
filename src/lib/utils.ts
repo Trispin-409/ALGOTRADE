@@ -4,12 +4,25 @@ import { supabase } from './supabase';
 export const formatCurrency = (value: number, currency?: string) => {
   const currencyCode = (currency || 'ZAR').toUpperCase();
   try {
-    return new Intl.NumberFormat('en-ZA', {
+    const valStr = Math.abs(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const sign = (value || 0) < 0 ? '-' : '';
+    if (currencyCode === 'ZAR') {
+      return `${sign}R${valStr}`;
+    }
+    if (currencyCode === 'USD') {
+      return `${sign}$${valStr}`;
+    }
+    if (currencyCode === 'GBP') {
+      return `${sign}£${valStr}`;
+    }
+    if (currencyCode === 'EUR') {
+      return `${sign}€${valStr}`;
+    }
+    return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: currencyCode,
     }).format(value || 0);
   } catch (e) {
-    // Fallback if currency code is invalid or formatting fails
     return `${currencyCode} ${(value || 0).toLocaleString()}`;
   }
 };
@@ -17,20 +30,25 @@ export const formatCurrency = (value: number, currency?: string) => {
 export const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export const getVerifiedSession = async () => {
-  let { data: { session }, error } = await supabase.auth.getSession();
-  if (error || !session) return null;
-  
-  if (session.expires_at && Date.now() / 1000 > session.expires_at - 10) {
-    // Token is expiring very soon or is expired. Try to refresh.
-    const refresh = await supabase.auth.refreshSession();
-    if (refresh.data.session) {
-      session = refresh.data.session;
-    } else {
-      return null;
+  try {
+    let { data: { session }, error } = await supabase.auth.getSession();
+    if (error || !session) return null;
+    
+    if (session.expires_at && Date.now() / 1000 > session.expires_at - 10) {
+      // Token is expiring very soon or is expired. Try to refresh.
+      const refresh = await supabase.auth.refreshSession();
+      if (refresh.data.session) {
+        session = refresh.data.session;
+      } else {
+        return null;
+      }
     }
+    
+    return session;
+  } catch (err) {
+    console.error("[AUTH] Error in getVerifiedSession:", err);
+    return null;
   }
-  
-  return session;
 };
 
 export const generateFingerprint = () => {

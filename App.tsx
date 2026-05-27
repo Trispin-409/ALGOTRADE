@@ -30,6 +30,7 @@ import Sidebar from './components/Sidebar';
 import AccountConfig from './components/AccountConfig';
 import News from './components/News';
 import RiskManagement from './components/RiskManagement';
+import ChatradeAI from './components/ChatradeAI';
   // Remove ea-deployer state
 
 import SystemMonitor from './components/SystemMonitor';
@@ -150,7 +151,7 @@ const App: React.FC = () => {
   }, [session, bootData]);
 
   // Global State
-  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'dashboard');
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'chatrade');
   const [adminSubTab, setAdminSubTab] = useState<'keys' | 'users' | 'logs'>('keys');
   const [accounts, setAccounts] = useState<TradingAccount[]>(() => {
     try {
@@ -213,26 +214,29 @@ const App: React.FC = () => {
     if (!selectedAccountId || !session) return;
     
     const fetchStatus = async () => {
+      if (!selectedAccountId) return;
       try {
-        // useStore.getState() is fine, but we need fresh token
-        // safeFetch now handles token internally, but we'll pass it anyway for clarity or rely on auto-inject
-        const data = await safeFetch(`/api/account/${selectedAccountId}/status`);
+        const url = `/api/account/${encodeURIComponent(selectedAccountId)}/status`;
+        const data = await safeFetch(url);
         if (data) {
            setEaStatuses(prev => ({ ...prev, [selectedAccountId]: data }));
            // Sync algo running state with terminal state if in EA mode
            if (executionModes[selectedAccountId] === 'EA') {
-              setIsAlgoTradeRunning(data.status === 'ACTIVE' || data.status === 'RUNNING');
+              setIsAlgoTradeRunning(data.status === 'ACTIVE' || data.status === 'RUNNING' || data.algoRunning === true);
            }
         }
       } catch (err: any) {
-        if (!err.message?.includes('Failed to fetch')) {
-          console.error("EA status poll failed:", err);
+        // Suppress benign network flap errors to keep console clean, but log systemic routing errors 
+        const isNetworkError = err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError');
+        if (!isNetworkError) {
+          addLog?.(`HEALTH: Status poll for ${selectedAccountId} failed: ${err.message}`);
+          console.error(`[POLL] Status error:`, err);
         }
       }
     };
     
     fetchStatus();
-    const interval = setInterval(fetchStatus, 15000); // 15 seconds to limit CPU credits
+    const interval = setInterval(fetchStatus, 15000); // 15 seconds for reactive UI (backend throttles to 5s)
     return () => clearInterval(interval);
   }, [selectedAccountId, session, executionModes]);
 
@@ -283,11 +287,11 @@ const App: React.FC = () => {
     
     const fetchAlgoStatus = async () => {
        try {
-         const data = await safeFetch(`/api/account/${id}/status`, {
+         const data = await safeFetch(`/api/account/${encodeURIComponent(id)}/status`, {
            headers: { Authorization: `Bearer ${session.access_token}` }
          });
          
-         if (data.algoRunning !== undefined) {
+         if (data && data.algoRunning !== undefined) {
            setIsAlgoTradeRunning(data.algoRunning);
          }
 
@@ -1076,6 +1080,20 @@ const App: React.FC = () => {
                 exit={{ opacity: 0, scale: 1.02, Filter: 'blur(10px)' }}
                 transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
               >
+                {activeTab === 'chatrade' && (
+                  <ChatradeAI 
+                    accounts={accounts} 
+                    selectedAccountId={selectedAccountId} 
+                    currentUserEmail={session?.user?.email || 'trispinblackops@gmail.com'} 
+                    addLog={addLog} 
+                    availableSymbols={availableBrokerSymbols}
+                    token={session?.access_token}
+                    isAlgoTradeRunning={isAlgoTradeRunning}
+                    toggleAlgoTrade={handleToggleAlgo}
+                    selectedSymbol={selectedSymbol}
+                    setSelectedSymbol={setSelectedSymbol}
+                  />
+                )}
                 {activeTab === 'dashboard' && (
                   <Dashboard 
                     accounts={accounts} 
