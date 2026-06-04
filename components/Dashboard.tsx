@@ -439,7 +439,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   }
 
   return (
-    <div className="space-y-4 max-w-[1200px] mx-auto pb-20 animate-in fade-in duration-500 text-slate-200">
+    <div className="space-y-4 max-w-[1200px] mx-auto pb-4 animate-in fade-in duration-500 text-slate-200">
       
       {/* TOP ROW METRICS - 3 columns even on mobile */}
       <div className="grid grid-cols-3 gap-2 sm:gap-3">

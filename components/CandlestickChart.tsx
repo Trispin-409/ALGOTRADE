@@ -62,16 +62,22 @@ export default function CandlestickChart({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
+  const [dynamicHeight, setDynamicHeight] = useState(height);
   const [mouse, setMouse] = useState<{ x: number, y: number } | null>(null);
 
   // Auto layout sizing
   useEffect(() => {
     const obs = new ResizeObserver(entries => {
-      if (entries[0]) setWidth(entries[0].contentRect.width);
+      if (entries[0]) {
+        setWidth(entries[0].contentRect.width);
+        setDynamicHeight(entries[0].contentRect.height);
+      }
     });
     if (containerRef.current) obs.observe(containerRef.current);
     return () => obs.disconnect();
   }, []);
+
+  const effectiveHeight = dynamicHeight || height;
 
   // Merge latest tick into final candle for live updating
   const chartData = useMemo(() => {
@@ -105,9 +111,9 @@ export default function CandlestickChart({
   const range = (maxP - minP) || 1;
 
   // Axis Coordinate Helpers
-  const getY = useCallback((p: number) => height - ((p - minP) / range) * height, [minP, range, height]);
+  const getY = useCallback((p: number) => effectiveHeight - ((p - minP) / range) * effectiveHeight, [minP, range, effectiveHeight]);
   const getX = useCallback((i: number) => currentPan + i * candleW + candleW / 2, [currentPan, candleW]);
-  const getPrice = useCallback((y: number) => maxP - (y / height) * range, [maxP, range, height]);
+  const getPrice = useCallback((y: number) => maxP - (y / effectiveHeight) * range, [maxP, range, effectiveHeight]);
 
   const handleMove = (e: React.MouseEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -139,24 +145,29 @@ export default function CandlestickChart({
     <div 
       ref={containerRef} 
       style={{ 
-          height, 
+          height: '100%', 
           width: '100%', 
           position: 'relative', 
           overflow: 'hidden', 
           backgroundColor: 'transparent',
           cursor: 'crosshair', 
           borderRadius: '12px', 
-          border: '1px solid #1e293b',
-          backgroundImage: bgImageUrl ? `url("${bgImageUrl}")` : 'none',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat'
+          border: '1px solid #1e293b'
       }}
       onMouseLeave={() => setMouse(null)} 
       onMouseMove={handleMove} 
     >
+      {bgImageUrl && (
+        <img 
+          src={bgImageUrl} 
+          alt="Chart Background" 
+          referrerPolicy="no-referrer"
+          className="absolute inset-0 w-full h-full object-cover" 
+          crossOrigin="anonymous"
+        />
+      )}
       {bgImageUrl && <div className="absolute inset-0 bg-slate-950/70" /> /* overlay to dim background */}
-      <svg width={width} height={height} style={{ position: 'absolute', top: 0, left: 0, userSelect: 'none' }}>
+      <svg width={width} height={effectiveHeight} style={{ position: 'absolute', top: 0, left: 0, userSelect: 'none' }}>
         
         {/* Background Grid */}
         {[0.2, 0.4, 0.6, 0.8].map(ratio => {
@@ -176,8 +187,8 @@ export default function CandlestickChart({
             {/* Heatmap Bins */}
             {marketAnalysis.bins.map((weight, i) => {
               if (weight <= 0) return null;
-              const binH = height / marketAnalysis.bins.length;
-              const y = height - (i + 1) * binH;
+              const binH = effectiveHeight / marketAnalysis.bins.length;
+              const y = effectiveHeight - (i + 1) * binH;
               const alpha = Math.min(0.4, weight / 10);
               return (
                 <rect 
@@ -323,7 +334,7 @@ export default function CandlestickChart({
         {/* Realtime User Crosshair Layer */}
         {mouse && mouse.x < mainW && (
           <g>
-            <line x1={mouse.x} x2={mouse.x} y1={0} y2={height} stroke="#818cf8" strokeDasharray="4 4" opacity={0.6} />
+            <line x1={mouse.x} x2={mouse.x} y1={0} y2={effectiveHeight} stroke="#818cf8" strokeDasharray="4 4" opacity={0.6} />
             <line x1={0} x2={mainW} y1={mouse.y} y2={mouse.y} stroke="#818cf8" strokeDasharray="4 4" opacity={0.6} />
             <rect x={mainW} y={mouse.y - 10} width={rightPadding} height={20} fill="#818cf8" />
             <text x={mainW + 5} y={mouse.y + 4} fill="#ffffff" fontSize="11" fontWeight="bold" fontFamily="monospace">{getPrice(mouse.y).toFixed(5)}</text>
@@ -331,7 +342,7 @@ export default function CandlestickChart({
         )}
 
         {/* Right Axis Isolator */}
-        <line x1={mainW} x2={mainW} y1={0} y2={height} stroke="#1e293b" />
+        <line x1={mainW} x2={mainW} y1={0} y2={effectiveHeight} stroke="#1e293b" />
       </svg>
       
       {/* Pattern Summary Overlay */}

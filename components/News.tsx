@@ -219,7 +219,7 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
   }, [activeSymbol, macroAnalysis, technicalTrend]);
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700 w-full pb-20">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700 w-full pb-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl border border-white/10 bg-black/40 accent-glow" style={{ color: 'var(--accent-color)' }}>

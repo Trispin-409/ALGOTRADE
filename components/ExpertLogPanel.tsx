@@ -28,7 +28,36 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
       }
   });
 
-  const [position, setPosition] = useState({ x: 20, y: window.innerHeight - 100 });
+  const [position, setPosition] = useState(() => {
+    const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
+    return {
+      x: isMobile ? window.innerWidth - 64 : 20,
+      y: isMobile ? 80 : window.innerHeight - 100
+    };
+  });
+
+  // Keep button in boundaries during window resizing
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition(prev => {
+        const isMobile = window.innerWidth < 1024;
+        const maxX = window.innerWidth - 64;
+        const maxY = window.innerHeight - 64;
+        
+        let newX = prev.x;
+        let newY = prev.y;
+        
+        if (newX > maxX) newX = maxX;
+        if (newY > maxY) newY = maxY;
+        if (newX < 0) newX = 0;
+        if (newY < 0) newY = 0;
+        
+        return { x: newX, y: newY };
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   const isDragging = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -118,7 +147,7 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
   }
 
   return (
-    <div style={{ zIndex: 9999 }}>
+    <>
       {/* Floating Button / Handle */}
       <div
         className="fixed cursor-grab active:cursor-grabbing hover:scale-105 transition-transform"
@@ -128,7 +157,8 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
         style={{
           top: position.y,
           left: position.x,
-          touchAction: 'none'
+          touchAction: 'none',
+          zIndex: 9999
         }}
       >
         <button
@@ -217,6 +247,6 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };

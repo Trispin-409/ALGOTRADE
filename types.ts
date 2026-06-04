@@ -31,6 +31,7 @@ export interface TradingAccount {
   marginLevel?: number;
   currency?: string;
   ready?: boolean;
+  server?: string;
 }
 
 export interface MetaStats {

@@ -12,24 +12,26 @@
 }
 
 @layer base {
-  html {
-    -webkit-tap-highlight-color: transparent;
-    user-select: text;
+  html, body, #root {
     height: 100%;
+    margin: 0;
+    padding: 0;
     overflow: hidden;
   }
   
+  html {
+    -webkit-tap-highlight-color: transparent;
+    user-select: text;
+  }
+
   body {
     user-select: text;
-    height: 100%;
     width: 100vw;
-    overflow: hidden;
     position: fixed;
     overscroll-behavior: none;
   }
 
   #root {
-    height: 100%;
     display: flex;
     flex-direction: column;
   }

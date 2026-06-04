@@ -11,6 +11,7 @@ import {
   Cloud,
   Terminal,
   Menu,
+  Cpu,
   X,
   Play,
   Moon,
@@ -152,6 +153,22 @@ const App: React.FC = () => {
 
   // Global State
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'chatrade');
+
+  // Redirection guard for Starter plan users who should not have access to Chatrade AI (owner bypassed)
+  useEffect(() => {
+    if (bootData) {
+      const email = session?.user?.email || 'trispinblackops@gmail.com';
+      const plan = bootData.subscription_plan || 'Starter';
+      const isOwner = email.toLowerCase() === 'trispinblackops@gmail.com';
+      const isStarter = plan.toLowerCase() === 'starter';
+      const hasChatradeAccess = isOwner || !isStarter;
+
+      if (!hasChatradeAccess && activeTab === 'chatrade') {
+        setActiveTab('dashboard');
+      }
+    }
+  }, [bootData, session, activeTab]);
+
   const [adminSubTab, setAdminSubTab] = useState<'keys' | 'users' | 'logs'>('keys');
   const [accounts, setAccounts] = useState<TradingAccount[]>(() => {
     try {
@@ -417,7 +434,7 @@ const App: React.FC = () => {
                 equity: (equity !== undefined && equity !== null) ? Number(equity) : acc.equity,
                 currency: currency !== undefined ? currency : acc.currency,
                 connectionStatus: isNowReady ? 'CONNECTED' : acc.connectionStatus,
-                ready: isNowReady
+                ready: Boolean(isNowReady)
               };
             }
             return acc;
@@ -662,7 +679,7 @@ const App: React.FC = () => {
     }
   };
 
-  const [tradeStatus, setTradeStatus] = useState<string | null>(null);
+  const [tradeStatus, setTradeStatus] = useState<"idle" | "executing" | "success" | "error">("idle");
   const lotSize = strategySettings.lotSize;
   const setLotSize = (val: number) => useStore.getState().setStrategySettings({ lotSize: val });
 
@@ -934,7 +951,7 @@ const App: React.FC = () => {
   }
   
   if (!session) return (
-    <div className="relative flex items-center justify-center min-h-screen bg-black overflow-hidden">
+    <div className="relative flex items-center justify-center bg-black overflow-hidden h-[100dvh] w-full">
       {/* Deep background */}
       <div className="absolute inset-0 z-0 pointer-events-none">
         {/* User's uploaded brand background image */}
@@ -963,7 +980,7 @@ const App: React.FC = () => {
 
 
   return (
-    <div className={`flex h-screen bg-[#050608] overflow-hidden text-slate-200 transition-colors duration-1000 ${streakThemeClasses}`}>
+    <div className={`fixed inset-0 flex w-full bg-[#050608] overflow-hidden text-slate-200 transition-colors duration-1000 ${streakThemeClasses}`}>
       <div className="absolute inset-0 z-0 pointer-events-none opacity-45">
         {/* Subtle Brand Logo Watermark Overlay */}
         <div 
@@ -976,7 +993,7 @@ const App: React.FC = () => {
         <div className="absolute -bottom-[20%] right-1/3 w-[600px] h-[600px] bg-[#face6f]/3 rounded-full blur-[150px] z-0"></div>
       </div>
 
-      <div className="relative z-10 flex w-full h-full">
+      <div className="relative z-10 flex w-full h-full min-h-0 max-h-full overflow-hidden">
         <ExpertLogPanel executionMode="STRATEGY" />
         
         {/* Sidebar - Desktop & Mobile overlay */}
@@ -995,7 +1012,7 @@ const App: React.FC = () => {
           />
         </div>
         
-        <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/30">
+        <main className="flex-1 flex flex-col overflow-hidden relative w-full bg-black/30 min-h-0">
           <header className="h-14 sm:h-16 border-b border-white/5 flex items-center justify-between px-3 sm:px-6 bg-black/80 backdrop-blur-3xl shrink-0 z-20">
             <div className="flex items-center gap-2 sm:gap-4">
               <button 
@@ -1064,35 +1081,56 @@ const App: React.FC = () => {
                 {isDNDActive ? <BellOff className="w-3.5 h-3.5 sm:w-4 h-4" /> : <Bell className="w-3.5 h-3.5 sm:w-4 h-4" />}
               </button>
 
-              <button onClick={verifyAndFetch} className="p-1.5 sm:p-2 hover:bg-white/5 rounded-lg border border-white/5 transition-all active:scale-95">
+              <button onClick={() => verifyAndFetch()} className="p-1.5 sm:p-2 hover:bg-white/5 rounded-lg border border-white/5 transition-all active:scale-95">
                 <RefreshCw className={`w-3.5 h-3.5 sm:w-4 h-4 text-slate-400 ${isLoading ? 'animate-spin' : ''}`} />
               </button>
             </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto p-3 sm:p-6 custom-scrollbar z-10 w-full overflow-x-hidden">
-            <div className="max-w-[1600px] mx-auto w-full space-y-4">
+          <div className={`flex-1 ${activeTab === 'chatrade' ? 'overflow-hidden min-h-0 p-0 sm:p-2 lg:p-4 lg:pb-2' : 'overflow-y-auto p-2 sm:p-6 pb-[calc(70px+env(safe-area-inset-bottom))] lg:pb-6'} custom-scrollbar z-10 w-full overflow-x-hidden flex flex-col`}>
+            <div className={`max-w-[1700px] mx-auto w-full ${activeTab === 'chatrade' ? 'flex-1 min-h-0' : 'space-y-4 flex-1'} flex flex-col`}>
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
-                initial={{ opacity: 0, scale: 0.98, Filter: 'blur(10px)' }}
-                animate={{ opacity: 1, scale: 1, Filter: 'blur(0px)' }}
-                exit={{ opacity: 0, scale: 1.02, Filter: 'blur(10px)' }}
+                className={`flex-1 flex flex-col min-h-0 ${activeTab === 'chatrade' ? 'overflow-hidden' : ''}`}
+                initial={{ opacity: 0, scale: 0.98, filter: 'blur(10px)' }}
+                animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, scale: 1.02, filter: 'blur(10px)' }}
                 transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
               >
                 {activeTab === 'chatrade' && (
-                  <ChatradeAI 
-                    accounts={accounts} 
-                    selectedAccountId={selectedAccountId} 
-                    currentUserEmail={session?.user?.email || 'trispinblackops@gmail.com'} 
-                    addLog={addLog} 
-                    availableSymbols={availableBrokerSymbols}
-                    token={session?.access_token}
-                    isAlgoTradeRunning={isAlgoTradeRunning}
-                    toggleAlgoTrade={handleToggleAlgo}
-                    selectedSymbol={selectedSymbol}
-                    setSelectedSymbol={setSelectedSymbol}
-                  />
+                  bootData && (session?.user?.email || '').toLowerCase() !== 'trispinblackops@gmail.com' && (bootData.subscription_plan || '').toLowerCase() === 'starter' ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-[#0b101e] border border-white/10 rounded-3xl max-w-lg mx-auto my-12 shadow-2xl">
+                      <div className="w-16 h-16 bg-slate-800/80 rounded-2xl flex items-center justify-center shadow-lg mb-6 border border-white/10 text-slate-400">
+                        <Cpu className="w-8 h-8 animate-pulse" />
+                      </div>
+                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mb-3">Premium Tool Locked</h2>
+                      <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-sm mb-6">
+                        Chatrade AI is reserved for PRO and ELITE subscribers. Please upgrade your plan to unlock advanced multi-agent trade analysis, real-time risk veto intelligence, and news impact correlation.
+                      </p>
+                      <button 
+                        onClick={() => setActiveTab('dashboard')}
+                        className="py-3 px-6 rounded-xl font-bold text-xs text-white transition-all bg-indigo-600 hover:bg-indigo-500 shadow-lg active:scale-95"
+                      >
+                        Return to Metrics Dashboard
+                      </button>
+                    </div>
+                  ) : (
+                    <ChatradeAI 
+                      accounts={accounts} 
+                      selectedAccountId={selectedAccountId} 
+                      currentUserEmail={session?.user?.email || 'trispinblackops@gmail.com'} 
+                      addLog={addLog} 
+                      availableSymbols={availableBrokerSymbols}
+                      token={session?.access_token}
+                      isAlgoTradeRunning={isAlgoTradeRunning}
+                      toggleAlgoTrade={handleToggleAlgo}
+                      selectedSymbol={selectedSymbol}
+                      setSelectedSymbol={setSelectedSymbol}
+                      selectedTimeframe={selectedTimeframe}
+                      setSelectedTimeframe={setSelectedTimeframe}
+                    />
+                  )
                 )}
                 {activeTab === 'dashboard' && (
                   <Dashboard 
@@ -1198,22 +1236,22 @@ const App: React.FC = () => {
         </footer>
 
         {/* Bottom Navigation */}
-        <nav className="h-14 sm:h-16 bg-black/60 backdrop-blur-md border-t border-white/5 flex items-center justify-center gap-6 sm:gap-16 px-4 shrink-0 z-20 pb-safe w-full">
-          <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'dashboard' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'dashboard' ? { color: 'var(--accent-color)' } : {}}>
+        <nav className="lg:hidden bg-black/95 backdrop-blur-xl border-t border-white/5 flex items-center justify-between px-1 shrink-0 z-50 w-full fixed bottom-0 left-0" style={{ height: 'calc(60px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+          <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'dashboard' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'dashboard' ? { color: 'var(--accent-color)' } : {}}>
             <Activity className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Metrics</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Metrics</span>
           </button>
-          <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'data' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'data' ? { color: 'var(--accent-color)' } : {}}>
+          <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'data' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'data' ? { color: 'var(--accent-color)' } : {}}>
             <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Market</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Market</span>
           </button>
-          <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'accounts' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'accounts' ? { color: 'var(--accent-color)' } : {}}>
+          <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'accounts' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'accounts' ? { color: 'var(--accent-color)' } : {}}>
             <Users className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Account</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Account</span>
           </button>
-          <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center gap-1 w-16 transition-all active:scale-95 ${activeTab === 'risk' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'risk' ? { color: 'var(--accent-color)' } : {}}>
+          <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'risk' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'risk' ? { color: 'var(--accent-color)' } : {}}>
             <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[10px] font-mono font-bold uppercase transition-colors">Risk</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Risk</span>
           </button>
         </nav>
       </main>

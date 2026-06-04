@@ -21,7 +21,7 @@ const ChartSettings: React.FC = () => {
   };
 
   return (
-    <div className="p-4 sm:p-8 pb-24 lg:pb-8 max-w-2xl mx-auto space-y-6 w-full custom-scrollbar overflow-y-auto max-h-full">
+    <div className="p-4 sm:p-8 pb-4 lg:pb-8 max-w-2xl mx-auto space-y-6 w-full custom-scrollbar overflow-y-auto max-h-full">
       <div>
         <h2 className="text-2xl font-black text-white tracking-tighter uppercase">Chart Settings</h2>
         <p className="text-sm text-slate-400 mt-1 uppercase font-bold text-[10px] tracking-widest">Interface Customization Engine</p>
@@ -75,7 +75,7 @@ const ChartSettings: React.FC = () => {
               <div className="relative w-full h-32 rounded-xl overflow-hidden border border-white/10 bg-black/40 glowing-frame flex items-center justify-center">
                 {localSettings.bgImageUrl ? (
                   <>
-                    <img src={localSettings.bgImageUrl} alt="Background Preview" className="w-full h-full object-cover opacity-50" />
+                    <img src={localSettings.bgImageUrl} alt="Background Preview" referrerPolicy="no-referrer" crossOrigin="anonymous" className="w-full h-full object-cover opacity-50" />
                     <button 
                        onClick={() => setLocalSettings(s => ({ ...s, bgImageUrl: '' }))}
                        className="absolute top-2 right-2 bg-rose-500/80 hover:bg-rose-500 p-1.5 rounded-lg text-white transition-colors"

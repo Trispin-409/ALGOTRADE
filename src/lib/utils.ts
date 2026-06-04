@@ -58,7 +58,9 @@ export const generateFingerprint = () => {
 export const getApiBaseUrl = () => {
   if (typeof window !== 'undefined') {
     const isCapacitor = (window as any).Capacitor?.isNative;
-    if (isCapacitor) {
+    const isStandardWeb = (window.location.protocol === 'http:' || window.location.protocol === 'https:') && 
+      !window.location.hostname.match(/^(localhost|127\.0\.0\.1)$/);
+    if (isCapacitor && !isStandardWeb) {
       return import.meta.env.VITE_API_URL || 'https://algotrade-tristech.com';
     }
   }

@@ -96,7 +96,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
   ];
 
   return (
-    <div className="min-h-screen bg-[#02040a] text-slate-200 py-12 md:py-24 pb-32 px-4 relative overflow-y-auto flex flex-col items-center">
+    <div className="min-h-[100dvh] bg-[#02040a] text-slate-200 py-12 md:py-24 pb-32 px-4 relative overflow-y-auto flex flex-col items-center">
       {/* Background Pattern */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f1a_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f1a_1px,transparent_1px)] bg-[size:20px_30px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_110%)]"></div>
       
@@ -124,8 +124,8 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
             <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500`} style={{ background: 'var(--accent-color)' }}></div>
             
             <div className="relative z-10">
-              <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`} style={{ color: 'var(--accent-color)' }}>
-                {React.cloneElement(plan.icon as React.ReactElement, { className: 'w-8 h-8', style: { color: 'var(--accent-color)' } })}
+              <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`}>
+                {plan.icon}
               </div>
               
               <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{plan.name}</h3>

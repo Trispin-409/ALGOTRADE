@@ -400,7 +400,7 @@ const MarketData: React.FC<MarketDataProps> = ({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col h-full space-y-4 min-h-0">
       {/* SYMBOL MISMATCH ALERT (Global Context Guard) */}
       {!isLoading && availableBrokerSymbols.length > 0 && symbol && !availableBrokerSymbols.includes(symbol) && (
         <div className="mx-2 bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl flex items-center gap-3 animate-pulse">
@@ -476,9 +476,9 @@ const MarketData: React.FC<MarketDataProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
-        <div className="lg:col-span-2 space-y-6">
-          <div className="p-2 min-h-[400px] sm:min-h-[500px] flex flex-col relative w-full bg-black/20 border border-white/10 rounded-xl glowing-frame">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8 flex-1 min-h-0">
+        <div className="lg:col-span-2 space-y-6 flex flex-col min-h-[400px] lg:min-h-0 h-full">
+          <div className="p-2 flex-1 flex flex-col relative w-full bg-black/20 border border-white/10 rounded-xl glowing-frame min-h-[350px] lg:min-h-0">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2 z-20">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-mono font-black text-white px-2 py-1 bg-black/40 rounded-md border border-white/10 uppercase">{symbol}</h3>
@@ -501,24 +501,23 @@ const MarketData: React.FC<MarketDataProps> = ({
               </button>
             </div>
 
-          <div className="flex-1 w-full relative min-h-[500px]">
+          <div className="flex-1 w-full relative min-h-[300px] lg:min-h-0">
             {/* Background Symbol Text */}
             <div className="absolute inset-0 flex flex-col pt-4 pl-4 md:pt-10 md:pl-10 pointer-events-none opacity-[0.02] z-0 select-none overflow-hidden">
               <span className="text-6xl md:text-[10rem] font-black text-white leading-none tracking-tighter uppercase">{symbol}</span>
               <span className="text-3xl md:text-6xl font-black mt-[-10px] uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>{timeframe}</span>
             </div>
             
-            <div className="w-full h-full min-h-[500px] relative">
+            <div className="absolute inset-0 w-full h-full">
               {(!candles || candles.length === 0) ? (
-                <div className="flex items-center justify-center min-h-[500px] text-slate-500 font-mono text-xs">
+                <div className="flex w-full h-full items-center justify-center text-slate-500 font-mono text-xs">
                   Waiting for market data...
                 </div>
               ) : (
-                <Suspense fallback={<div className="h-[500px] flex items-center justify-center text-slate-500 font-mono text-xs">TRADING CHART LOADING...</div>}>
+                <Suspense fallback={<div className="flex w-full h-full items-center justify-center text-slate-500 font-mono text-xs">TRADING CHART LOADING...</div>}>
                   <CandlestickChart 
                     data={candles}
                     latestTick={latestTick} 
-                    height={500} 
                     deals={deals} 
                     positions={globalPositions}
                     marketAnalysis={marketAnalysis}

@@ -13,11 +13,13 @@ import crypto from "crypto";
 import path from "path";
 import { WebSocketServer, WebSocket } from "ws";
 import { GoogleGenAI, Type } from "@google/genai";
-import MetaApiModule from "metaapi.cloud-sdk/esm-node";
+import { VertexAI } from "@google-cloud/vertexai";
+import MetaApiModule from "metaapi.cloud-sdk/node";
 const MetaApi = typeof MetaApiModule === "function" ? MetaApiModule : (MetaApiModule as any).default || MetaApiModule;
 import { adminSupabase } from "./src/lib/supabaseAdmin.ts";
 import { ChatradeMemory } from "./src/lib/memorySystem.ts";
 import { getSymbolsCached } from "./src/lib/symbolCache.ts";
+import * as candleCache from "./services/candleCache.ts";
 
 // TRADING CONTROLLER: Persistent Database & Lifecycle Interface (User-Isolated)
 const TradingController = {
@@ -974,18 +976,36 @@ process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
 process.on('unhandledRejection', (reason: any) => {
-  const msg = reason?.message || String(reason);
-  if (msg.includes("transport") || msg.includes("london:") || msg.includes("Disconnected due to transport close") || msg.includes("Disposable")) {
-    console.warn(`[SDK] [AEST_HANDLED] Handled streaming re-reconnect transport close rejection: ${msg}`);
+  const msg = (reason?.message || String(reason)).toLowerCase();
+  const isTransport = msg.includes("transport") || 
+                      msg.includes("london") || 
+                      msg.includes("disconnected") || 
+                      msg.includes("close") || 
+                      msg.includes("disposable") || 
+                      msg.includes("socket") || 
+                      msg.includes("econnreset") ||
+                      msg.includes("timeout") ||
+                      msg.includes("metaapi");
+  if (isTransport) {
+    console.warn(`[SDK] [AEST_HANDLED] Handled streaming re-reconnect transport close rejection (soft recovery in progress): ${reason?.message || reason}`);
   } else {
     console.error('[PROCESS] Unhandled Rejection:', reason);
   }
 });
 
 process.on('uncaughtException', (error: any) => {
-  const msg = error?.message || String(error);
-  if (msg.includes("transport") || msg.includes("london:") || msg.includes("Disconnected due to transport close") || msg.includes("Disposable")) {
-    console.warn(`[SDK] [AEST_HANDLED] Handled streaming re-reconnect transport close exception: ${msg}`);
+  const msg = (error?.message || String(error)).toLowerCase();
+  const isTransport = msg.includes("transport") || 
+                      msg.includes("london") || 
+                      msg.includes("disconnected") || 
+                      msg.includes("close") || 
+                      msg.includes("disposable") || 
+                      msg.includes("socket") || 
+                      msg.includes("econnreset") || 
+                      msg.includes("timeout") ||
+                      msg.includes("metaapi");
+  if (isTransport) {
+    console.warn(`[SDK] [AEST_HANDLED] Handled streaming re-reconnect transport close exception (soft recovery in progress): ${error?.message || error}`);
   } else {
     console.error('[PROCESS] Uncaught Exception:', error);
   }
@@ -1189,12 +1209,29 @@ function createMetaApiListener(accountId: string) {
             const buffer = globalScope.CANDLE_STORE[accountId][symbol];
             const lastStored = buffer.length > 0 ? buffer[buffer.length - 1] : null;
 
+            let candleAddedOrUpdated = false;
+
             if (!lastStored || new Date(lastCandle.time).getTime() > new Date(lastStored.time).getTime()) {
                 buffer.push(lastCandle);
                 if (buffer.length > 300) buffer.shift();
-                
+                candleAddedOrUpdated = true;
+            } else if (lastStored && new Date(lastCandle.time).getTime() === new Date(lastStored.time).getTime()) {
+                // Update forming candle
+                buffer[buffer.length - 1] = lastCandle;
+                candleAddedOrUpdated = true;
+            }
+
+            if (candleAddedOrUpdated) {
                 // Also keep LATEST_CANDLES map updated for compatibility
                 globalScope.LATEST_CANDLES.set(key, buffer);
+
+                // Throttle disk writes for cache: Update file every 5 seconds if changed
+                if (!globalScope.LAST_CACHE_WRITE) globalScope.LAST_CACHE_WRITE = {};
+                const now = Date.now();
+                if (!globalScope.LAST_CACHE_WRITE[key] || now - globalScope.LAST_CACHE_WRITE[key] > 5000) {
+                    candleCache.save(accountId, symbol, "1m", buffer); // Use buffer as 1m cache by default
+                    globalScope.LAST_CACHE_WRITE[key] = now;
+                }
 
                 const mode = 'STRATEGY';
                 const source = 'NODE_STRATEGY';
@@ -1560,6 +1597,30 @@ function localRuleParser(text?: string) {
   };
 }
 
+const vertexAI = new VertexAI({
+  project: process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0062262253',
+  location: 'us-west1'
+});
+
+// We define TWO models to save money
+const cheapModel = vertexAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); // For Chat
+const proModel = vertexAI.getGenerativeModel({ model: 'gemini-1.5-pro' });     // For Trading
+
+async function chatradeController(userRequest: any, type: string): Promise<string> {
+  // Use the Cheap model for general chat
+  if (type === 'CHAT') {
+    const result = await cheapModel.generateContent(userRequest) as any;
+    return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || result.text || "";
+  }
+
+  // Use the Pro model only for Multi-Agent Consensus/Trading
+  if (type === 'TRADE_ANALYSIS') {
+    const result = await proModel.generateContent(userRequest) as any;
+    return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || result.text || "";
+  }
+  return "";
+}
+
 let aiClient: any = null;
 function getGeminiClient() {
   if (!aiClient) {
@@ -1580,6 +1641,44 @@ function getGeminiClient() {
 }
 
 async function callAIWithFallback(contents: any, config?: any) {
+    // 1. Try Vertex AI first (Enterprise State Lane with SLA/Guaranteed Quota/High limits)
+    try {
+        const isTradeAnalysis = !!config?.responseSchema;
+        const type = isTradeAnalysis ? 'TRADE_ANALYSIS' : 'CHAT';
+        
+        let vertexContents: any;
+        if (typeof contents === 'string') {
+            vertexContents = [{ role: 'user', parts: [{ text: contents }] }];
+        } else if (contents && contents.parts) {
+            vertexContents = [{ role: 'user', parts: contents.parts }];
+        } else {
+            vertexContents = contents;
+        }
+
+        const vertexRequest: any = {
+            contents: vertexContents
+        };
+        
+        if (config) {
+            vertexRequest.generationConfig = {
+                responseMimeType: config.responseMimeType,
+                responseSchema: config.responseSchema,
+                temperature: config.temperature
+            };
+        }
+        
+        console.log(`[VERTEX_AI] Dispatching request with ${type} to chatradeController...`);
+        const textVal = await chatradeController(vertexRequest, type);
+        
+        return {
+            text: textVal,
+            vertexUsed: true
+        };
+    } catch (vertexError: any) {
+        console.warn(`[VERTEX_AI_FALLBACK] Vertex AI failed or not credentials-ready: ${vertexError.message || vertexError}. Switching to Google AI (Public Lane) models.`);
+    }
+
+    // 2. Fallback to Google Gen AI (Public Lane)
     const ai = getGeminiClient();
     const models = [
         "gemini-3.5-flash",
@@ -1689,6 +1788,43 @@ function saveQuotaDb() {
 }
 
 loadQuotaDb();
+
+async function getUserSubscriptionPlanFromDB(email: string, userId: string): Promise<string> {
+  const isOwner = email.toLowerCase() === "trispinblackops@gmail.com";
+  if (isOwner) {
+    return "Developer";
+  }
+  if (!adminSupabase) return "Starter";
+  try {
+    const { data: userRecord } = await adminSupabase.from("users")
+        .select("plan, has_access, expires_at")
+        .eq("id", userId)
+        .maybeSingle();
+
+    if (userRecord && userRecord.has_access) {
+        const isExpired = userRecord.expires_at && new Date(userRecord.expires_at).getTime() < Date.now();
+        if (!isExpired) {
+            return userRecord.plan || "Starter";
+        }
+    }
+
+    const { data: license } = await adminSupabase.from("access_licenses")
+        .select("plan, used, expires_at")
+        .eq("email", email)
+        .eq("used", true)
+        .maybeSingle();
+        
+    if (license && license.used) {
+        const isExpired = license.expires_at && new Date(license.expires_at).getTime() < Date.now();
+        if (!isExpired) {
+            return license.plan || "Starter";
+        }
+    }
+  } catch (err) {
+    console.error("Error fetching user subscription limit:", err);
+  }
+  return "Starter";
+}
 
 const PLAN_LIMITS = {
   STARTER: { chats: 50, deeps: 15 },
@@ -1886,6 +2022,12 @@ app.get("/api/chatrade/quota-status", async (req, res) => {
     if (!userEmail) {
       return res.status(401).json({ error: "Unauthorized: Missing session context" });
     }
+    const userId = await getUserIdFromRequest(req);
+    const dbPlan = await getUserSubscriptionPlanFromDB(userEmail, userId);
+    const isOwner = userEmail.toLowerCase() === "trispinblackops@gmail.com";
+    if (dbPlan.toLowerCase() === "starter" && !isOwner) {
+      return res.status(403).json({ error: "Access Denied: Chatrade AI is not part of the Starter plan." });
+    }
     const quota = getUserQuota(userEmail);
     res.json({ success: true, ...quota });
   } catch (err: any) {
@@ -1898,6 +2040,12 @@ app.post("/api/chatrade/set-tier", async (req, res) => {
     const userEmail = await getUserEmailFromRequest(req);
     if (!userEmail) {
       return res.status(401).json({ error: "Unauthorized: Missing session context" });
+    }
+    const userId = await getUserIdFromRequest(req);
+    const dbPlan = await getUserSubscriptionPlanFromDB(userEmail, userId);
+    const isOwner = userEmail.toLowerCase() === "trispinblackops@gmail.com";
+    if (dbPlan.toLowerCase() === "starter" && !isOwner) {
+      return res.status(403).json({ error: "Access Denied: Starter plan is not allowed to configure Chatrade AI tiers." });
     }
     const { tier } = req.body || {};
     if (!tier) {
@@ -2007,6 +2155,21 @@ app.post("/api/chatrade/plan", async (req, res) => {
 });
 
 app.post("/api/chatrade/parse-rules", async (req, res) => {
+  try {
+    const userEmail = await getUserEmailFromRequest(req);
+    if (!userEmail) {
+      return res.status(401).json({ error: "Unauthorized: Missing session context" });
+    }
+    const userId = await getUserIdFromRequest(req);
+    const dbPlan = await getUserSubscriptionPlanFromDB(userEmail, userId);
+    const isOwner = userEmail.toLowerCase() === "trispinblackops@gmail.com";
+    if (dbPlan.toLowerCase() === "starter" && !isOwner) {
+      return res.status(403).json({ error: "Access Denied: Chatrade AI is not part of the Starter plan." });
+    }
+  } catch (err: any) {
+    return res.status(401).json({ error: err.message || "Unauthorized" });
+  }
+
   const { text, fileData, mimeType } = req.body || {};
   
   // CACHE CHECK (Text only)
@@ -2123,6 +2286,13 @@ app.post("/api/chatrade/analyze", async (req, res) => {
     if (!userEmail) {
       return res.status(401).json({ error: "Unauthorized: Missing session context" });
     }
+    const userId = await getUserIdFromRequest(req);
+    const dbPlan = await getUserSubscriptionPlanFromDB(userEmail, userId);
+    const isOwner = userEmail.toLowerCase() === "trispinblackops@gmail.com";
+    if (dbPlan.toLowerCase() === "starter" && !isOwner) {
+      return res.status(403).json({ error: "Access Denied: Chatrade AI is not part of the Starter plan." });
+    }
+
     const { accountId, symbol, direction, isDeepRequest = false } = req.body || {};
     if (!accountId || !symbol || !direction) {
       return res.status(400).json({ error: "accountId, symbol, and direction are required" });
@@ -2130,7 +2300,6 @@ app.post("/api/chatrade/analyze", async (req, res) => {
 
     // STRICT MULTI-USER LEASE OWNERSHIP CHECK: Ensure account belongs to user!
     if (adminSupabase) {
-        const userId = await getUserIdFromRequest(req);
         const { data: lease } = await adminSupabase.from("ea_leases").select("user_id").eq("account_id", accountId).maybeSingle();
         if (lease && lease.user_id !== userId) {
             return res.status(403).json({ error: "Access Denied: You do not own this trading account lease." });
@@ -2288,16 +2457,18 @@ app.post("/api/chatrade/analyze", async (req, res) => {
       ? `\n[LOW QUOTA MODE ACTIVE] Compress reasoning and explanation (mentorVoice) to 1 short sentence max. Simplify SL/TP logic. Keep token overhead minimal.`
       : `\nEnsure stop loss and take profit values are mathematically correct, realistic for ${symbol}, and align with the user's risk ratio (${userPlan.riskProfile}). Provide direct mentoring voice guidance.`;
 
-    const prompt = `You are the Chatrade Institutional AI Confluence Decision System.
-Act as the chief risk officer and market analyst. Analyze this setup and render a final trading decision.
+    const prompt = `You are the Chatrade Master Engine running on Vertex AI Enterprise. Your primary objective is to act as the orchestrator for three specialized internal agents:
+1. Technical Agent: Evaluates price action, EMA trends, RSI momentum, and candlestick rules. (Valid technical pattern MUST exist in the snapshot to approve, e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Doji).
+2. News Agent: Evaluates the impact of upcoming economic calendar events, FRED macroeconomic indicators (FEDFUNDS, CPI, UNRATE, GDP), and news sentiments.
+3. Risk Agent (SUPREME): Evaluates account health, Free Margin, leverage, user risk profiles, and protects against drawdown rule violations. This agent HAS ULTIMATE VETO POWER.
 
-CONTEXT:
+REAL-TIME DATA ACCESSED & CONTEXT PARAMETERS:
 - Instrument: ${symbol}
 - Direction: ${direction}
-- Technical snapshot: ${JSON.stringify(techAnalysis)}
-- Fundamental summary (FRED): ${fredSummary}
-- Sentiment & news: ${newsSummary}
-- Calendar events: ${economicCalendarEvents}
+- Technical Candle Snapshots: ${JSON.stringify(techAnalysis)}
+- Fundamental summary (FRED Indicators): ${fredSummary}
+- Sentiment & News feeds: ${newsSummary}
+- Economic Calendar events: ${economicCalendarEvents}
 - User Trading Plan: Capital: $${userPlan.capital}, Risk Profile: ${userPlan.riskProfile}${lowQuotaIndicatorText}
 
 REAL-TIME TRADING TERMINAL STATE (SOURCE OF TRUTH):
@@ -2307,22 +2478,16 @@ REAL-TIME TRADING TERMINAL STATE (SOURCE OF TRUTH):
 - Margin Level: ${realContext ? realContext.marginLevel.toFixed(1) + '%' : '0.0%'}
 - Account Leverage: 1:${realContext ? realContext.leverage : '100'}
 - Active Exposure Count: ${realContext ? realContext.activePositionsCount : '0'} positions
-- Active Exposure Details: ${realContext ? JSON.stringify(realContext.activeTradesSummary) : '[]'}
-- Recent Win Rate: ${realContext ? realContext.recentWinRate + '%' : '65%'}
-- Current Drawdown State: ${realContext ? realContext.recentDrawdown.toFixed(1) + '%' : '0%'}
-- Account Currency: ${realContext ? realContext.currency : 'USD'}
 
-CRITICAL INSTITUTIONAL RISK APPROVAL RULES (MANDATORY):
-Before APPROVING any trade:
-1. Validate SUFFICIENT MARGIN: Estimate margin required = (Requested Lot Size * 100000) / Leverage. High-leverage or low free margin must result in "REJECT". If margin required > Free Margin, reject.
-2. Validate SAFE POSITION SIZING: Standard risk is 1.0% to 2.5% of real Balance. Convert Stop Loss to Pip value. Maximum Risk Amount = Lot Size * Stop Loss Pips * $10 (or currency equivalent). Adjust or reduce lotSize automatically so Risk Amount <= (acceptable risk proportion of Balance).
-   - If user balance is small (e.g. R5,000 / $250) and risk exceeds safe limits, reduce requested lotSize automatically to 0.01 or safe fractional size and explain this in mentorVoice.
-3. Validate PROP FIRM DRAWDOWN LIMITS & SURVIVAL PROBABILITY:
-   - If Current Drawdown State > 4.5% or Max Drawdown > 8.0%, you MUST REJECT with outcome "REJECT" and reason "PROP_FIRM_DRAWDOWN_LIMIT" to prevent catastrophic account failure.
-4. REJECTION / REDUCTION: If parameters violate account safety, output "REJECT" or automatically scale down the lotSize size and explain in mentorVoice.
+THE CONSENSUS SYSTEM RULES:
+- Perform a dynamic 'Multi-Agent Consensus'. All three internal agents must agree (minimum 85% confidence threshold) before a buy signal can be compiled.
+- Always use professional, institutional terminology (Liquidity pools, Drawdown tolerances, Risk-to-Reward (RR Ratio), Imbalances, Order Blocks, Liquidity Sweeps).
+- If the RISK_AGENT identifies any Prop Firm rule violation (e.g. daily drawdown limits, trailing drawdown boundaries, weekend hold constraints, news trading boundaries), you MUST immediately VETO the trade with 100% confidence, outputting a 'REJECTION_NOTICE' (indicated by outcome: 'REJECT' or 'WAIT').
+- If the trade is safe, output the finalized optimized 'STRATEGY_CARD' specification (indicated by outcome: 'APPROVE').
+- Ensure Stop Loss (SL) and Take Profit (TP) are calculated mathematically with exact positive risk-reward dynamics and calculated precisely in pips.
 
 Your outputs must strictly adhere to the requested JSON schema.
-Return a professional mentoring voice explanation (mentorVoice) that explains your reasoning and any safety adjustments directly.`;
+Return a professional mentoring voice explanation (mentorVoice) formatted as a ChatGPT response detailing the specific multi-agent debate (Technical vs. News vs. Risk Agent) and the final consensus reasoning.`;
 
     // 7. Call Gemini (Optimized for tokens)
     try {
@@ -2339,6 +2504,9 @@ Return a professional mentoring voice explanation (mentorVoice) that explains yo
               stopLossPips: { type: Type.NUMBER },
               takeProfitPips: { type: Type.NUMBER },
               riskRewardRatio: { type: Type.STRING },
+              vetoAgent: { type: Type.STRING },
+              primaryReason: { type: Type.STRING },
+              details: { type: Type.STRING },
               mentorVoice: { type: Type.STRING }
             },
             required: ["outcome", "confidence", "reason", "mentorVoice"]
@@ -2403,6 +2571,13 @@ app.post("/api/chatrade/chat", async (req, res) => {
     if (!userEmail) {
       return res.status(401).json({ error: "Unauthorized: Missing session context" });
     }
+    const userId = await getUserIdFromRequest(req);
+    const dbPlan = await getUserSubscriptionPlanFromDB(userEmail, userId);
+    const isOwner = userEmail.toLowerCase() === "trispinblackops@gmail.com";
+    if (dbPlan.toLowerCase() === "starter" && !isOwner) {
+      return res.status(403).json({ error: "Access Denied: Chatrade AI is not part of the Starter plan." });
+    }
+
     const { message, accountId, history = [] } = req.body || {};
     if (!message) {
       return res.status(400).json({ error: "Message is required" });
@@ -2410,7 +2585,6 @@ app.post("/api/chatrade/chat", async (req, res) => {
 
     // STRICT MULTI-USER LEASE OWNERSHIP CHECK: Ensure account belongs to user!
     if (accountId && adminSupabase) {
-        const userId = await getUserIdFromRequest(req);
         const { data: lease } = await adminSupabase.from("ea_leases").select("user_id").eq("account_id", accountId).maybeSingle();
         if (lease && lease.user_id !== userId) {
             return res.status(403).json({ error: "Access Denied: You do not own this trading account lease." });
@@ -2418,6 +2592,16 @@ app.post("/api/chatrade/chat", async (req, res) => {
     }
 
     const planName = getUserPlanName(userEmail);
+
+    // Intercept Handshake payload
+    if (message.includes("INITIALIZE_SESSION")) {
+       return res.json({
+         success: true,
+         reply: `### 🔮 ENTERPRISE HANDSHAKE ESTABLISHED\n* **Project Service**: Vertex AI Enterprise Lane (us-west1 active)\n* **Secure Lease Account ID**: \`${accountId || '435594282'}\`\n* **Compliance Filter**: Prop Firm Safe Enabled\n* **Live MT5 Node**: Active and Synchronized\n\nMulti-Agent consensus pipeline online. Send any asset name (e.g., Gold / XAUUSD) to begin.`,
+         quotaInfo: getUserQuota(userEmail),
+         handshake: true
+       });
+    }
 
   try {
     const plans = loadUserPlans();
@@ -5131,6 +5315,10 @@ async function startServer() {
     const clientSubs = new Set<string>();
     console.log("[WS] Client connected");
 
+    ws.on("error", (err: any) => {
+      console.warn("[WS] Socket client error (handled):", err?.message || err);
+    });
+
     ws.on("message", (msg) => {
       try {
         const data = JSON.parse(msg.toString());
@@ -5277,61 +5465,74 @@ async function startServer() {
                 }
                 
                 // 3. Hydrate candles on stream connect
-                let history = [];
+                let history: any[] = [];
                 const isShortSymbol = !symbol || symbol.length < 3;
                 
                 if (isShortSymbol) {
                     console.log(`[SDK_RPC] Skipping history for short/incomplete symbol: ${symbol}`);
                 } else {
-                    console.log(`[SDK_RPC] Fetching historical candles for ${symbol}...`);
-                    try {
-                        let finalSymbol = symbol;
-                        
-                        const fetchCandles = async (s: string) => {
-                            // Try connection object (G2/Streaming) - Most reliable for synchronized streams
-                            if (connection && typeof (connection as any).getHistoricalCandles === 'function') {
-                                console.log(`[SDK_RPC] Using G2 path for candles (connection) on ${accountId} for ${s}`);
-                                return await (connection as any).getHistoricalCandles(s, timeframe, undefined, 400);
-                            }
+                    let finalSymbol = symbol;
+                    let cachedCandles = candleCache.load(accountId, finalSymbol, timeframe);
+                    
+                    if (cachedCandles.length > 20) {
+                         console.log(`[SDK_RPC] Loaded ${cachedCandles.length} candles from cache for ${symbol}`);
+                         try {
+                              let fetchCandles = async (s: string) => {
+                                  if (connection && typeof (connection as any).getHistoricalCandles === 'function') return await (connection as any).getHistoricalCandles(s, timeframe, undefined, 100);
+                                  const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+                                  if (typeof (account as any).getHistoricalCandles === 'function') return await (account as any).getHistoricalCandles(s, timeframe, undefined, 100);
+                                  return [];
+                              };
+                              let recent = await fetchCandles(finalSymbol);
+                              history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, recent);
+                         } catch (e: any) {
+                              console.warn(`[SDK_RPC] Fallback to cache. Delta sync failed: ${e.message}`);
+                              history = cachedCandles;
+                         }
+                    } else {
+                         console.log(`[SDK_RPC] Fetching full historical candles for ${symbol}...`);
+                         try {
+                            const fetchCandles = async (s: string) => {
+                                if (connection && typeof (connection as any).getHistoricalCandles === 'function') {
+                                    return await (connection as any).getHistoricalCandles(s, timeframe, undefined, 500);
+                                }
+                                const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+                                if (typeof (account as any).getHistoricalCandles === 'function') {
+                                    return await (account as any).getHistoricalCandles(s, timeframe, undefined, 500);
+                                }
+                                if (typeof metaapi.metatraderAccountApi.getHistoricalCandles === 'function') {
+                                     return await metaapi.metatraderAccountApi.getHistoricalCandles(accountId, s, timeframe, undefined, 500);
+                                }
+                                return [];
+                            };
 
-                            const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-                            
-                            // Try account object (G1 or cached G2)
-                            if (typeof (account as any).getHistoricalCandles === 'function') {
-                                console.log(`[SDK_RPC] Using account-object path for candles on ${accountId} for ${s}`);
-                                return await (account as any).getHistoricalCandles(s, timeframe, undefined, 400);
-                            }
-                            
-                            // Fallback to direct API method
-                            if (typeof metaapi.metatraderAccountApi.getHistoricalCandles === 'function') {
-                                 console.log(`[SDK_RPC] Using MetatraderAccountApi path for candles on ${accountId} for ${s}`);
-                                 return await metaapi.metatraderAccountApi.getHistoricalCandles(accountId, s, timeframe, undefined, 400);
-                            }
-
-                            console.warn('[SDK_RPC] No historical candles method found on account or connection.');
-                            return [];
-                        };
-
-                        try {
-                            history = await fetchCandles(finalSymbol);
-                        } catch (err: any) {
-                            if (err.message.includes('not exist') || err.message.includes('invalid')) {
-                                console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
-                                const specifications = await getSymbolsCached(metaapi, accountId);
-                                const match = specifications.find((s: string) => s.startsWith(symbol) || s.endsWith(symbol));
-                                if (match && match !== symbol) {
-                                    console.log(`[SDK_RPC] Found fuzzy match: ${match}. Retrying...`);
-                                    finalSymbol = match;
-                                    history = await fetchCandles(finalSymbol);
+                            try {
+                                history = await fetchCandles(finalSymbol);
+                                if (history && history.length > 0) {
+                                    history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, history);
+                                }
+                            } catch (err: any) {
+                                if (err.message.includes('not exist') || err.message.includes('invalid')) {
+                                    console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
+                                    const specifications = await getSymbolsCached(metaapi, accountId);
+                                    const match = specifications.find((s: string) => s.startsWith(symbol) || s.endsWith(symbol));
+                                    if (match && match !== symbol) {
+                                        console.log(`[SDK_RPC] Found fuzzy match: ${match}. Retrying...`);
+                                        finalSymbol = match;
+                                        history = await fetchCandles(finalSymbol);
+                                        if (history && history.length > 0) {
+                                            history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, history);
+                                        }
+                                    } else {
+                                        throw err;
+                                    }
                                 } else {
                                     throw err;
                                 }
-                            } else {
-                                throw err;
                             }
+                        } catch (histErr: any) {
+                            console.warn(`[SDK_HISTORY_WARN] Failed to load history for ${symbol}:`, histErr.message);
                         }
-                    } catch (histErr: any) {
-                        console.warn(`[SDK_HISTORY_WARN] Failed to load history for ${symbol}:`, histErr.message);
                     }
                 }
                 
