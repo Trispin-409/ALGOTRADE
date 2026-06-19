@@ -139,6 +139,14 @@ const App: React.FC = () => {
       if (data.execution_modes) {
         setExecutionModes(data.execution_modes);
       }
+      if (data.chart_settings) {
+        console.log("[PREFS] Overriding chart settings from database load", data.chart_settings);
+        useStore.getState().setChartSettings(data.chart_settings);
+      }
+      if (data.strategy_settings) {
+        console.log("[PREFS] Overriding strategy settings from database load", data.strategy_settings);
+        useStore.getState().setStrategySettings(data.strategy_settings);
+      }
       if (window.location.search.includes('activated=true')) {
         window.history.replaceState({}, '', '/');
       }
@@ -623,6 +631,31 @@ const App: React.FC = () => {
 
     syncSettings();
   }, [strategySettings, selectedAccountId, session]);
+
+  // Sync preferences and chart layout settings to database (Supabase metadata)
+  useEffect(() => {
+    if (!session) return;
+
+    const syncPrefs = async () => {
+      try {
+        await safeFetch('/api/user/preferences', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({ chartSettings, strategySettings })
+        });
+        console.log("[SYNC] User preferences synced to database successfully");
+      } catch (err) {
+        console.warn("[SYNC] Could not sync preferences to database", err);
+      }
+    };
+
+    // Keep save frequency performance-optimal with debouncing
+    const timer = setTimeout(syncPrefs, 2000);
+    return () => clearTimeout(timer);
+  }, [chartSettings, strategySettings, session]);
 
 
   const handleToggleAlgo = async () => {

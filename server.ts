@@ -1,6 +1,84 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+// SECURE CONSOLE & I/O FILTER: Suppress expected MetaApi / engine.io-client polling error noise during node/server startups
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+const originalConsoleLog = console.log;
+const originalConsoleInfo = console.info;
+
+const cleanString = (str: string): boolean => {
+  const lowerStr = str.toLowerCase();
+  if (
+    lowerStr.includes("xhr poll error") ||
+    lowerStr.includes("websocket client closed") ||
+    lowerStr.includes("engine.io-client") ||
+    lowerStr.includes("transport_error") ||
+    lowerStr.includes("at xhr.onerror") ||
+    lowerStr.includes("at request.onerror") ||
+    lowerStr.includes("type: 'transporterror'") ||
+    (lowerStr.includes("london") && (lowerStr.includes("failed to connect") || lowerStr.includes("poll error") || lowerStr.includes("closed") || lowerStr.includes("socket")))
+  ) {
+    return true; 
+  }
+  return false;
+};
+
+const shouldSuppress = (args: any[]): boolean => {
+  for (const arg of args) {
+    if (!arg) continue;
+    const str = typeof arg === 'string' ? arg : (arg.message || String(arg));
+    const stack = arg.stack ? String(arg.stack) : '';
+    if (cleanString(str + '\n' + stack)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+console.error = function(...args: any[]) {
+  if (shouldSuppress(args)) return;
+  originalConsoleError.apply(console, args);
+};
+
+console.warn = function(...args: any[]) {
+  if (shouldSuppress(args)) return;
+  originalConsoleWarn.apply(console, args);
+};
+
+console.log = function(...args: any[]) {
+  if (shouldSuppress(args)) return;
+  originalConsoleLog.apply(console, args);
+};
+
+console.info = function(...args: any[]) {
+  if (shouldSuppress(args)) return;
+  originalConsoleInfo.apply(console, args);
+};
+
+const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+process.stdout.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+  if (cleanString(str)) {
+    if (typeof encoding === 'function') encoding();
+    else if (typeof callback === 'function') callback();
+    return true;
+  }
+  return originalStdoutWrite(chunk, encoding, callback);
+} as any;
+
+process.stderr.write = function(chunk: any, encoding?: any, callback?: any): boolean {
+  const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+  if (cleanString(str)) {
+    if (typeof encoding === 'function') encoding();
+    else if (typeof callback === 'function') callback();
+    return true;
+  }
+  return originalStderrWrite(chunk, encoding, callback);
+} as any;
+
 // IGNORE SSL ERRORS FOR METAAPI INFRASTRUCTURE (Required for agiliumtrade.agiliumtrade.ai domains)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -13,7 +91,6 @@ import crypto from "crypto";
 import path from "path";
 import { WebSocketServer, WebSocket } from "ws";
 import { GoogleGenAI, Type } from "@google/genai";
-import { VertexAI } from "@google-cloud/vertexai";
 import MetaApiModule from "metaapi.cloud-sdk/node";
 const MetaApi = typeof MetaApiModule === "function" ? MetaApiModule : (MetaApiModule as any).default || MetaApiModule;
 import { adminSupabase } from "./src/lib/supabaseAdmin.ts";
@@ -83,10 +160,15 @@ const TradingController = {
   async updateEAStatus(accountId: string, userId: string, deployed: boolean, status: string) {
     if (!adminSupabase) return;
     
-    // Explicit ownership check before update to prevent cross-user account takeover
-    const { data: existing } = await adminSupabase.from("ea_deployments").select("user_id").eq("account_id", accountId).maybeSingle();
-    if (existing && existing.user_id !== userId) {
-      console.warn(`[SECURITY] Cross-user updateEAStatus prevented for ${accountId}`);
+    // Explicit lease check
+    const { data: lease } = await adminSupabase.from("ea_leases")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("user_id", userId)
+      .maybeSingle();
+      
+    if (!lease) {
+      console.warn(`[SECURITY] Unauthorized updateEAStatus prevented for ${accountId} (User: ${userId})`);
       return;
     }
 
@@ -99,10 +181,15 @@ const TradingController = {
   async setAlgoRunning(accountId: string, userId: string, running: boolean) {
     if (!adminSupabase) return;
     
-    // Explicit ownership check
-    const { data: existing } = await adminSupabase.from("algo_sessions").select("user_id").eq("account_id", accountId).maybeSingle();
-    if (existing && existing.user_id !== userId) {
-      console.warn(`[SECURITY] Cross-user setAlgoRunning prevented for ${accountId}`);
+    // Explicit lease check
+    const { data: lease } = await adminSupabase.from("ea_leases")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("user_id", userId)
+      .maybeSingle();
+      
+    if (!lease) {
+      console.warn(`[SECURITY] Unauthorized setAlgoRunning prevented for ${accountId} (User: ${userId})`);
       return;
     }
 
@@ -496,7 +583,13 @@ async function enforceOwnership(req: express.Request, res: express.Response, nex
   
   try {
      const userId = await getUserIdFromRequest(req);
+     const email = await getUserEmailFromRequest(req);
      const now = Date.now();
+     
+     // DEVELOPER OVERRIDE: trispinblackops@gmail.com bypassed globally
+     if (email.toLowerCase() === "trispinblackops@gmail.com") {
+         return next();
+     }
      
      // CACHED OWNERSHIP CHECK (10 minute cache)
      const cached = LEASE_OWNER_CACHE.get(accountId);
@@ -505,17 +598,16 @@ async function enforceOwnership(req: express.Request, res: express.Response, nex
      }
 
      if (adminSupabase) {
-         // Strict security checks
-         const { data: deployment } = await adminSupabase.from("ea_deployments").select("user_id").eq("account_id", accountId).maybeSingle();
-         if (deployment && deployment.user_id !== userId) {
-             console.log(`[SECURITY ALERT] REJECTION: User ${userId} attempted to access foreign deployment ${accountId} (Actual Owner: ${deployment.user_id})`);
-             return res.status(403).json({ error: "Access Denied: Foreign Account Request blocked." });
-         }
-         
-         const { data: lease } = await adminSupabase.from("ea_leases").select("user_id").eq("account_id", accountId).maybeSingle();
-         if (lease && lease.user_id !== userId) {
-             console.log(`[SECURITY ALERT] REJECTION: User ${userId} attempted to access foreign lease ${accountId} (Actual Owner: ${lease.user_id})`);
-             return res.status(403).json({ error: "Access Denied: Foreign Lease Execution blocked." });
+         // Check if this user holds a valid lease for this account
+         const { data: lease } = await adminSupabase.from("ea_leases")
+             .select("id")
+             .eq("account_id", accountId)
+             .eq("user_id", userId)
+             .maybeSingle();
+             
+         if (!lease) {
+             console.log(`[SECURITY ALERT] REJECTION: User ${userId} (${email}) attempted to access account ${accountId} without a valid lease.`);
+             return res.status(403).json({ error: "Access Denied: No active lease found for this broker account." });
          }
          
          LEASE_OWNER_CACHE.set(accountId, { userId, timestamp: now });
@@ -1597,51 +1689,40 @@ function localRuleParser(text?: string) {
   };
 }
 
-const vertexAI = new VertexAI({
-  project: process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0062262253',
-  location: 'us-west1'
-});
+let vertexAIClientInstance: GoogleGenAI | null = null;
 
-// We define TWO models to save money
-const cheapModel = vertexAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); // For Chat
-const proModel = vertexAI.getGenerativeModel({ model: 'gemini-1.5-pro' });     // For Trading
-
-async function chatradeController(userRequest: any, type: string): Promise<string> {
-  // Use the Cheap model for general chat
-  if (type === 'CHAT') {
-    const result = await cheapModel.generateContent(userRequest) as any;
-    return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || result.text || "";
-  }
-
-  // Use the Pro model only for Multi-Agent Consensus/Trading
-  if (type === 'TRADE_ANALYSIS') {
-    const result = await proModel.generateContent(userRequest) as any;
-    return result.response?.candidates?.[0]?.content?.parts?.[0]?.text || result.text || "";
-  }
-  return "";
-}
-
-let aiClient: any = null;
-function getGeminiClient() {
-  if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) {
-      console.warn("[GEMINI] Warning: GEMINI_API_KEY is not defined in environment secrets. Attempting fallback.");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: key || "MOCK_KEY",
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
+function getVertexClient() {
+  if (!vertexAIClientInstance) {
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || 'gen-lang-client-0062262253';
+    vertexAIClientInstance = new GoogleGenAI({
+      vertexai: true,
+      project: projectId,
+      location: 'us-central1'
     });
   }
-  return aiClient;
+  return vertexAIClientInstance;
+}
+
+async function chatradeController(userRequest: any, type: string): Promise<string> {
+  const ai = getVertexClient();
+  const isTradeAnalysis = type === 'TRADE_ANALYSIS';
+  const modelName = isTradeAnalysis ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+
+  const params: any = {
+    model: modelName,
+    contents: userRequest.contents
+  };
+
+  if (userRequest.generationConfig) {
+    params.config = userRequest.generationConfig;
+  }
+
+  const result = await ai.models.generateContent(params);
+  return result.text || "";
 }
 
 async function callAIWithFallback(contents: any, config?: any) {
-    // 1. Try Vertex AI first (Enterprise State Lane with SLA/Guaranteed Quota/High limits)
+    // Vertex AI Enterprise State Lane
     try {
         const isTradeAnalysis = !!config?.responseSchema;
         const type = isTradeAnalysis ? 'TRADE_ANALYSIS' : 'CHAT';
@@ -1675,38 +1756,22 @@ async function callAIWithFallback(contents: any, config?: any) {
             vertexUsed: true
         };
     } catch (vertexError: any) {
-        console.warn(`[VERTEX_AI_FALLBACK] Vertex AI failed or not credentials-ready: ${vertexError.message || vertexError}. Switching to Google AI (Public Lane) models.`);
+        console.error(`[VERTEX_AI_FAILURE] Vertex AI enterprise generation failed:`, vertexError.message || JSON.stringify(vertexError));
+        const projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || 'gen-lang-client-0062262253';
+        const activeSa = projectId.startsWith('ais-') 
+            ? `ais-sandbox@${projectId}.iam.gserviceaccount.com` 
+            : `ais-sandbox@ais-europe-west2-2a34dc621b8b4.iam.gserviceaccount.com (or the active execution service account)`;
+        
+        throw new Error(
+          `Vertex AI is not fully accessible: ${vertexError.message || JSON.stringify(vertexError)}.\n\n` +
+          `👉 Please ensure that you have configured your Google Cloud project correctly:\n` +
+          `1. Ensure Vertex AI API (aiplatform.googleapis.com) is Enabled in your project '${projectId}'.\n` +
+          `2. Grant the 'Vertex AI User' (aiplatform.user) role to the active service account in IAM:\n` +
+          `   • Principal: ${activeSa}\n` +
+          `   • Role: Vertex AI User\n` +
+          `   • Target Project ID: ${projectId}`
+        );
     }
-
-    // 2. Fallback to Google Gen AI (Public Lane)
-    const ai = getGeminiClient();
-    const models = [
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
-        "gemini-3-flash-preview",
-        "gemini-3.1-pro-preview",
-        "gemini-pro-latest",
-        "gemini-flash-latest"
-    ];
-
-    let lastError: any;
-
-    for (const model of models) {
-        try {
-            const params: any = {
-                model,
-                contents
-            };
-            if (config) {
-                params.config = config;
-            }
-            return await ai.models.generateContent(params);
-        } catch (error: any) {
-            lastError = error;
-            console.warn(`[CHATRADE_AI] Model ${model} failed: ${error.message}`);
-        }
-    }
-    throw lastError || new Error("All Gemini models failed.");
 }
 
 const PLANS_FILE = path.join(process.cwd(), "chatrade_plans.json");
@@ -2662,9 +2727,14 @@ app.post("/api/chatrade/chat", async (req, res) => {
     const limitedHistory = history.slice(-5).map((h: any) => `${h.sender}: ${h.text}`).join('\n');
 
     // 3. LOW QUOTA MODE: Automatically adapt prompt for extreme token compression & cache priority
-    const lowQuotaModifierText = quotaInfo.lowQuotaMode 
+    const isGreeting = /^(hey|hello|hi|greetings|howdy|yo)(\s|$|!|\?|\.)/i.test(message.trim());
+    let lowQuotaModifierText = quotaInfo.lowQuotaMode 
       ? `\n[LOW QUOTA MODE ACTIVE] You must compress your reasoning to the absolute maximum. Do NOT write unnecessary intro/outro fluff. Respond in exactly 1-2 sentences with high technical density. Prefer cache-efficient terminology.`
       : `\nAct as mentor. Use DEEP MODE only if requested. Otherwise, respond concisely (1-2 paragraphs max). Reference rules if a violation exists. Keep responses highly optimized and concise.`;
+
+    if (isGreeting) {
+      lowQuotaModifierText += `\nSince the user is greeting you, welcome them warmly as the ALGOTRADE Mentor Engine (Chatrade AI), officially running on Vertex AI Enterprise infrastructure. Introduce your role as their expert institutional trading mentor who can analyze charts, build robust automated trading strategies, and guide their portfolio risk profile. Keep the tone premium, crisp, and high-impact!`;
+    }
 
     const prompt = `You are Chatrade AI - Institutional mentor mode [LOW-COST].
 Style: Disciplined, direct, professional. No fluff.
@@ -2708,13 +2778,14 @@ CRITICAL AUTOMATION RULE:
       logAIAnalytics(userEmail, planName, isDeepRequested ? 'DEEP' : 'LIGHT', 'gemini-3.5-flash', 'success');
 
       // Save to memory system natively in async background
-      ChatradeMemory.saveChat(crypto.randomUUID(), accountId || userEmail, 'user', message, 'general').catch(console.error);
-      ChatradeMemory.saveChat(crypto.randomUUID(), accountId || userEmail, 'assistant', replyText, 'general').catch(console.error);
+      ChatradeMemory.saveChat(crypto.randomUUID(), userId, 'user', message, 'general', userEmail).catch(console.error);
+      ChatradeMemory.saveChat(crypto.randomUUID(), userId, 'assistant', replyText, 'general', userEmail).catch(console.error);
     } catch (apiErr: any) {
       // 4. EMERGENCY SYSTEM-FAULT API PROTECTION INSTEAD OF FRONTEND CRASHES
       console.warn(`[CHATRADE_AI_FAILURE] System-fault AI error. Engaged Local Fallback. Exception:`, apiErr.message || apiErr);
       
-      replyText = getLocalFallbackChatResponse(message, userPlan, positionsList, availableSymbols);
+      const debugDetails = `\n\n[DIAGNOSTIC BLOCK: ${apiErr.message || JSON.stringify(apiErr)}]`;
+      replyText = getLocalFallbackChatResponse(message, userPlan, positionsList, availableSymbols) + debugDetails;
       systemModel = "local_fallback";
 
       logAIAnalytics(userEmail, planName, isDeepRequested ? 'DEEP' : 'LIGHT', 'local_fallback', 'fallback_active');
@@ -2734,6 +2805,79 @@ CRITICAL AUTOMATION RULE:
   console.error("[CHATRADE_CHAT_OUTER_ERROR]", outerErr);
   res.status(401).json({ error: outerErr.message || "Unauthorized" });
 }
+});
+
+app.get("/api/chatrade/history", async (req, res) => {
+  try {
+    const userId = await getUserIdFromRequest(req);
+    
+    if (!adminSupabase) {
+      return res.status(503).json({ error: "Auth database service unavailable" });
+    }
+
+    const { data, error } = await adminSupabase
+      .from('chat_history')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error("[CHAT_HISTORY_FETCH_ERROR]", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    const messages = (data || []).map((row: any) => ({
+      id: row.id,
+      sender: row.role === 'assistant' ? 'agent' : (row.role === 'user' ? 'user' : 'system'),
+      text: row.message,
+      timestamp: row.created_at ? new Date(row.created_at) : new Date()
+    }));
+
+    res.json({ success: true, messages });
+  } catch (err: any) {
+    console.error("[CHAT_HISTORY_FETCH_OUTER_ERROR]", err);
+    res.status(401).json({ error: err.message || "Unauthorized" });
+  }
+});
+
+app.post("/api/user/preferences", async (req, res) => {
+  try {
+    const userId = await getUserIdFromRequest(req);
+    const { chartSettings, strategySettings } = req.body || {};
+    
+    if (!adminSupabase) {
+      return res.status(503).json({ error: "Auth database service unavailable" });
+    }
+
+    const authHeaderToken = req.headers.authorization?.replace("Bearer ", "");
+    const { data: getUserData, error: getUserError } = await adminSupabase.auth.getUser(authHeaderToken!);
+    
+    if (getUserError || !getUserData?.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const currentMetadata = getUserData.user.user_metadata || {};
+    const updatedMetadata = {
+      ...currentMetadata,
+      chart_settings: chartSettings !== undefined ? chartSettings : currentMetadata.chart_settings,
+      strategy_settings: strategySettings !== undefined ? strategySettings : currentMetadata.strategy_settings
+    };
+
+    const { data, error } = await adminSupabase.auth.admin.updateUserById(
+      userId,
+      { user_metadata: updatedMetadata }
+    );
+
+    if (error) {
+      console.error("[PREFERENCES_SAVE_ERROR]", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ success: true, metadata: updatedMetadata });
+  } catch (err: any) {
+    console.error("[PREFERENCES_SAVE_OUTER_ERROR]", err);
+    res.status(401).json({ error: err.message || "Unauthorized" });
+  }
 });
 
 function getLocalFallbackChatResponse(message: string, userPlan: any, positionsList: any[], availableSymbols: string[]) {
@@ -3239,7 +3383,7 @@ app.post("/api/subscription/activate-device", async (req, res) => {
 
     const authHeader = req.headers.authorization?.replace("Bearer ", "");
     const { data: userData } = await adminSupabase.auth.getUser(authHeader!);
-    const userEmail = userData.user?.email;
+    const userEmail = userData?.user?.email;
 
     if (!userEmail) return res.status(400).json({ error: "Could not identify user email" });
 
@@ -3380,7 +3524,7 @@ app.get("/api/admin/keys", async (req, res) => {
        if (authHeader) {
            const token = authHeader.replace("Bearer ", "");
            const { data: userData } = await adminSupabase.auth.getUser(token);
-           if (userData.user?.email?.toLowerCase() === "trispinblackops@gmail.com") {
+           if (userData?.user?.email?.toLowerCase() === "trispinblackops@gmail.com") {
                isMasterAdmin = true;
            }
        }
@@ -3664,7 +3808,7 @@ app.get("/api/user/bootstrap", async (req, res) => {
     if (authHeader && adminSupabase) {
         const token = authHeader.replace("Bearer ", "");
         const { data: userData } = await adminSupabase.auth.getUser(token);
-        const userEmail = userData.user?.email || "";
+        const userEmail = userData?.user?.email || "";
         if (userEmail.toLowerCase() === "trispinblackops@gmail.com") {
             has_active_subscription = true;
             subscription_plan = "Developer";
@@ -3690,7 +3834,7 @@ app.get("/api/user/bootstrap", async (req, res) => {
         if (!has_active_subscription) {
             const authHeaderToken = req.headers.authorization?.replace("Bearer ", "");
             const { data: userData } = await adminSupabase.auth.getUser(authHeaderToken!);
-            const userEmailMatch = userData.user?.email;
+            const userEmailMatch = userData?.user?.email;
 
             if (userEmailMatch) {
                 const { data: license } = await adminSupabase.from("access_licenses")
@@ -3711,6 +3855,21 @@ app.get("/api/user/bootstrap", async (req, res) => {
         }
     }
     
+    let chartSettings = null;
+    let strategySettings = null;
+    try {
+      const authHeaderToken = req.headers.authorization?.replace("Bearer ", "");
+      if (authHeaderToken && adminSupabase) {
+        const { data: userData } = await adminSupabase.auth.getUser(authHeaderToken);
+        if (userData?.user) {
+          chartSettings = userData.user.user_metadata?.chart_settings || null;
+          strategySettings = userData.user.user_metadata?.strategy_settings || null;
+        }
+      }
+    } catch (prefErr) {
+      console.warn("[BOOTSTRAP] Preferences load failure:", prefErr);
+    }
+    
     res.json({
       user_id: userId,
       ea_leases: leases,
@@ -3719,7 +3878,9 @@ app.get("/api/user/bootstrap", async (req, res) => {
       ui_state: "READY",
       has_active_subscription,
       subscription_plan,
-      license_key: (res as any).license_key
+      license_key: (res as any).license_key,
+      chart_settings: chartSettings,
+      strategy_settings: strategySettings
     });
   } catch (err: any) {
     res.status(401).json({ error: sanitizeError(err) });
@@ -3733,21 +3894,7 @@ app.get("/api/accounts", async (req, res) => {
     const userId = await getUserIdFromRequest(req);
     const leases = await TradingController.getActiveLeases(userId);
     
-    // OWNERSHIP CLEANUP: Remove foreign leases caused by previous auto-assign bugs
-    const validLeases = [];
-    if (adminSupabase && leases.length > 0) {
-      for (const lease of leases) {
-         const { data: deployment } = await adminSupabase.from("ea_deployments").select("user_id").eq("account_id", lease.account_id).maybeSingle();
-         if (deployment && deployment.user_id !== userId) {
-            console.log(`[SECURITY] Purging foreign lease ${lease.account_id} for user ${userId} (owned by ${deployment.user_id})`);
-            await TradingController.removeLease(lease.account_id, userId);
-         } else {
-            validLeases.push(lease);
-         }
-      }
-    } else {
-      validLeases.push(...leases);
-    }
+    const validLeases = leases;
     
     const activeAccountIds = new Set(validLeases.map(l => l.account_id));
 
@@ -3881,15 +4028,21 @@ app.get("/api/accounts", async (req, res) => {
 app.post("/api/accounts", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
+    const email = await getUserEmailFromRequest(req);
     
-    // VALIDATE SAAS LIMITS
+    // VALIDATE SAAS LIMITS WITH DEVELOPER VIP BYPASS
     if (adminSupabase) {
-        const { data: userData } = await adminSupabase.from("users")
-           .select("plan")
-           .eq("id", userId)
-           .maybeSingle();
-           
-        const plan = userData?.plan || "Starter";
+        let plan = "Starter";
+        if (email.toLowerCase() === "trispinblackops@gmail.com") {
+            plan = "Developer";
+        } else {
+            const { data: userData } = await adminSupabase.from("users")
+               .select("plan")
+               .eq("id", userId)
+               .maybeSingle();
+            plan = userData?.plan || "Starter";
+        }
+
         const leases = await TradingController.getActiveLeases(userId);
         
         let limit = 1;
@@ -3925,20 +4078,7 @@ app.post("/api/accounts", async (req, res) => {
 
     if (account) {
       accountId = account.id || account._data?.id || account._id;
-      console.log(`[ACCOUNT] Found existing account ${accountId} for login ${login}. Validating ownership...`);
-      
-      // Ownership check: If this account is already exclusively owned by someone else in ea_leases, reject it.
-      if (adminSupabase) {
-         const { data: existingLease } = await adminSupabase.from("ea_leases")
-           .select("user_id")
-           .eq("account_id", accountId)
-           .maybeSingle();
-           
-         if (existingLease && existingLease.user_id !== userId) {
-            return res.status(403).json({ error: "Access Denied: This broker account is already registered by another user. If you own this account, please ensure the credentials are not shared. Contact support if this is a mistake." });
-         }
-      }
-      console.log(`[ACCOUNT] Ownership verified or unclaimed. Reusing for user.`);
+      console.log(`[ACCOUNT] Found existing account ${accountId} for login ${login}. Reusing terminal for multi-user deployment...`);
     } else {
       console.log(`[ACCOUNT] Creating new account for login ${login}.`);
       account = await metaapi.metatraderAccountApi.createAccount(req.body || {});
@@ -4485,27 +4625,31 @@ app.get("/api/account/:accountId/positions", async (req, res) => {
     return res.json([]);
   }
   try {
-    const now = Date.now();
-    const cached = POSITIONS_CACHE.get(accountId);
-    if (cached && (now - cached.timestamp < 60000)) { // 60s cache
-        return res.json(cached.data);
+    const userId = await getUserIdFromRequest(req);
+    // Use the synchronized stream connection to get the latest real-time positions
+    const connection = REGISTRY.stream.get(accountId);
+    if (connection && connection.terminalState && connection.terminalState.positions) {
+      const positions = connection.terminalState.positions;
+      return res.json(positions);
+    }
+    
+    // Check local synchronized listener Map in case terminalState is currently reloading
+    const posMap = globalScope.ACTIVE_POSITIONS?.get(accountId);
+    if (posMap && typeof posMap.values === 'function') {
+      const fallback = Array.from(posMap.values());
+      return res.json(fallback);
     }
 
-    const userId = await getUserIdFromRequest(req);
-    // Use the synchronized stream connection instead of RPC to avoid polling limits
-    const connection = REGISTRY.stream.get(accountId);
-    if (!connection || !connection.terminalState) {
-      const posMap = globalScope.ACTIVE_POSITIONS?.get(accountId);
-      if (posMap && typeof posMap.values === 'function') {
-        const fallback = Array.from(posMap.values());
-        POSITIONS_CACHE.set(accountId, { data: fallback, timestamp: now });
-        return res.json(fallback);
-      }
-      return res.json([]);
+    if (connection && connection.terminalState) {
+      try {
+        const positions = await connection.terminalState.positions;
+        if (Array.isArray(positions)) {
+          return res.json(positions);
+        }
+      } catch (e) {}
     }
-    const positions = connection.terminalState.positions || [];
-    POSITIONS_CACHE.set(accountId, { data: positions, timestamp: now });
-    res.json(positions);
+    
+    res.json([]);
   } catch (err: any) {
     console.error("[POSITIONS_FETCH_ERROR]", err);
     res.status(500).json({ error: sanitizeError(err) });
@@ -5342,26 +5486,51 @@ async function startServer() {
                 }
                 const userId = userData.user.id;
 
-                // Validate Ownership
-                const { data: account, error: accError } = await adminSupabase
+                // Validate lease ownership to support multi-account shared leasing securely
+                let isAuthorized = false;
+                const userEmail = userData?.user?.email || "";
+                if (userEmail.toLowerCase() === "trispinblackops@gmail.com") {
+                    isAuthorized = true;
+                } else {
+                    const { data: lease } = await adminSupabase
+                       .from('ea_leases')
+                       .select('id')
+                       .eq('account_id', accountId)
+                       .eq('user_id', userId)
+                       .maybeSingle();
+                       
+                    if (lease) {
+                        isAuthorized = true;
+                    }
+                }
+                   
+                if (!isAuthorized) {
+                   console.error(`[WS] SECURITY REJECT: User ${userId} (${userEmail}) attempted to subscribe to unauthorized account ${accountId}`);
+                   ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized account access (No active lease found)' }));
+                   return;
+                }
+                const account: any = null;
+                const tradingAcc: any = null;
+                const legacy_ignored_ValidateOwnership = true;
+                const { data: legacy_account, error: accError } = await adminSupabase
                    .from('ea_deployments')
                    .select('user_id')
                    .eq('account_id', accountId)
                    .maybeSingle();
                    
-                if (account && account.user_id !== userId) {
+                if (legacy_account && legacy_account.user_id !== userId) {
                    console.error(`[WS] SECURITY REJECT: User ${userId} attempted to subscribe to foreign deploy ${accountId}`);
                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized account access' }));
                    return;
                 }
 
-                const { data: tradingAcc } = await adminSupabase
+                const { data: legacy_tradingAcc } = await adminSupabase
                    .from('trading_accounts')
                    .select('user_id')
                    .eq('id', accountId)
                    .maybeSingle();
 
-                if (tradingAcc && tradingAcc.user_id !== userId) {
+                if (legacy_tradingAcc && legacy_tradingAcc.user_id !== userId) {
                    console.error(`[WS] SECURITY REJECT: User ${userId} attempted to subscribe to foreign account ${accountId}`);
                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Unauthorized account access' }));
                    return;

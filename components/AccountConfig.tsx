@@ -747,58 +747,89 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
           )}
 
           <div className="flex flex-col space-y-4 sm:space-y-6">
-            {accounts.map(acc => (
-              <div 
-                key={acc.id} 
-                onClick={() => onSelectAccount && onSelectAccount(acc.id)}
-                className="glowing-panel p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] hover:border-white/20 transition-all group overflow-hidden cursor-pointer flex flex-col md:flex-row md:items-center justify-between"
-              >
-                <div className="flex items-start md:items-center gap-3 sm:gap-4 overflow-hidden mb-4 md:mb-0">
-                  <div 
-                    className="w-10 h-10 sm:w-12 h-12 bg-black/40 rounded-xl flex items-center justify-center font-black transition-all shadow-inner uppercase font-mono shrink-0 accent-glow border border-white/5"
-                    style={{ color: 'var(--accent-color)' }}
-                  >
-                    {acc.platform}
-                  </div>
-                  <div className="truncate">
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-black text-white text-sm sm:text-base truncate">{acc.name}</h4>
-                    </div>
-                    <p className="text-[9px] sm:text-[10px] text-slate-500 font-mono truncate">{acc.login} • {acc.server}</p>
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-end justify-between gap-3 shrink-0">
-                  <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
-                    <div className={`px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest border ${acc.connectionStatus?.toUpperCase() === 'CONNECTED' || acc.connectionStatus?.toUpperCase() === 'READY' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
-                    <div className={`px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest border ${acc.state === 'DEPLOYED' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-slate-500/10 text-slate-400 border-slate-500/20'}`}>{acc.state || 'UNDEPLOYED'}</div>
-                    <div className="px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest bg-violet-500/10 text-violet-400 border border-violet-500/20 flex items-center gap-1">
-                      <CheckCircle2 className="w-2.5 h-2.5" />
-                      OWNER VERIFIED
-                    </div>
-                  </div>
-                  
-                  <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
-                    <button 
-                      onClick={() => handleDeleteAccount(acc.id, acc.name || 'Unknown', acc.login || 'Unknown')}
-                      disabled={actionLoading === `${acc.id}-delete`}
-                      className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-black uppercase tracking-widest border border-rose-500/20 transition-colors flex items-center gap-1"
-                    >
-                      {actionLoading === `${acc.id}-delete` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Hide</span>}
-                    </button>
-                    {acc.connectionStatus?.toUpperCase() !== 'CONNECTED' && acc.connectionStatus?.toUpperCase() !== 'READY' && acc.state === 'DEPLOYED' && (
-                      <button 
-                        onClick={() => handleReconnect(acc.id)}
-                        disabled={actionLoading === `${acc.id}-reconnect`}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest border border-emerald-500/20 transition-colors flex items-center gap-1"
+            {accounts.map(acc => {
+              const isDisconnectedFromBroker = acc.connectionStatus?.toUpperCase() === 'DISCONNECTED_FROM_BROKER';
+              return (
+                <div 
+                  key={acc.id} 
+                  onClick={() => onSelectAccount && onSelectAccount(acc.id)}
+                  className="glowing-panel p-6 sm:p-8 rounded-[30px] sm:rounded-[40px] hover:border-white/20 transition-all group overflow-hidden cursor-pointer flex flex-col space-y-4"
+                >
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-start md:items-center gap-3 sm:gap-4 overflow-hidden mb-4 md:mb-0">
+                      <div 
+                        className="w-10 h-10 sm:w-12 h-12 bg-black/40 rounded-xl flex items-center justify-center font-black transition-all shadow-inner uppercase font-mono shrink-0 accent-glow border border-white/5"
+                        style={{ color: 'var(--accent-color)' }}
                       >
-                        {actionLoading === `${acc.id}-reconnect` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Connect</span>}
-                      </button>
-                    )}
+                        {acc.platform}
+                      </div>
+                      <div className="truncate">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-white text-sm sm:text-base truncate">{acc.name}</h4>
+                        </div>
+                        <p className="text-[9px] sm:text-[10px] text-slate-500 font-mono truncate">{acc.login} • {acc.server}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col items-end justify-between gap-3 shrink-0">
+                      <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+                        <div className={`px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest border ${acc.connectionStatus?.toUpperCase() === 'CONNECTED' || acc.connectionStatus?.toUpperCase() === 'READY' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{acc.connectionStatus}</div>
+                        <div className={`px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest border ${acc.state === 'DEPLOYED' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-slate-500/10 text-slate-400 border-slate-500/20'}`}>{acc.state || 'UNDEPLOYED'}</div>
+                        <div className="px-2 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest bg-violet-500/10 text-violet-400 border border-violet-500/20 flex items-center gap-1">
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                          OWNER VERIFIED
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                        <button 
+                          onClick={() => handleDeleteAccount(acc.id, acc.name || 'Unknown', acc.login || 'Unknown')}
+                          disabled={actionLoading === `${acc.id}-delete`}
+                          className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-black uppercase tracking-widest border border-rose-500/20 transition-colors flex items-center gap-1"
+                        >
+                          {actionLoading === `${acc.id}-delete` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Hide</span>}
+                        </button>
+                        {acc.connectionStatus?.toUpperCase() !== 'CONNECTED' && acc.connectionStatus?.toUpperCase() !== 'READY' && acc.state === 'DEPLOYED' && (
+                          <button 
+                            onClick={() => handleReconnect(acc.id)}
+                            disabled={actionLoading === `${acc.id}-reconnect`}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest border border-emerald-500/20 transition-colors flex items-center gap-1"
+                          >
+                            {actionLoading === `${acc.id}-reconnect` ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>Connect</span>}
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
+
+                  {isDisconnectedFromBroker && (
+                    <div className="p-4 sm:p-5 rounded-2xl bg-rose-500/5 border border-rose-500/10 text-rose-200/70" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-start gap-3">
+                        <Info className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
+                        <div className="space-y-1.5 text-[11px] sm:text-xs leading-relaxed">
+                          <p className="font-bold text-rose-300">⚠️ BROKER CONNECTION FAILURE (MT4/MT5 Credentials Mismatch)</p>
+                          <p className="text-slate-400 font-medium">Your cloud trading terminal is successfully <strong>DEPLOYED</strong> and lease <strong>OWNER VERIFIED</strong> on agiliumtrade.ai. However, the broker server rejected the configuration connection. Here's how to fix it:</p>
+                          <ul className="list-disc list-inside space-y-1 text-slate-400 mt-2 font-mono text-[9px] sm:text-[10px] border-l-2 border-slate-800 pl-3">
+                            <li>Check that your <span className="text-white">Login ID ({acc.login})</span> matches exactly your broker MT4/MT5 login.</li>
+                            <li>Check that the server selected <span className="text-white">({acc.server})</span> is identical to your broker server name.</li>
+                            <li>Re-create the account with the correct trading password (investor/read-only passwords often block live telemetry streamings).</li>
+                            <li>On Saturdays & Sundays (weekends), most Forex broker servers undergo maintenance and will disconnect temporarily.</li>
+                          </ul>
+                          <div className="pt-2 flex items-center gap-2">
+                             <button
+                               onClick={() => handleDeleteAccount(acc.id, acc.name || 'Unknown', acc.login || 'Unknown')}
+                               className="px-3 py-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 font-bold uppercase tracking-widest text-[8px] sm:text-[9px] border border-rose-500/20 transition-all font-mono"
+                             >
+                               Rebuild Terminal (Re-Add)
+                             </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       ) : (

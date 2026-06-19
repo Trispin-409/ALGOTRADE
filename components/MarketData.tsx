@@ -508,10 +508,45 @@ const MarketData: React.FC<MarketDataProps> = ({
               <span className="text-3xl md:text-6xl font-black mt-[-10px] uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>{timeframe}</span>
             </div>
             
-            <div className="absolute inset-0 w-full h-full">
+            <div className="absolute inset-0 w-full h-full flex items-center justify-center">
               {(!candles || candles.length === 0) ? (
-                <div className="flex w-full h-full items-center justify-center text-slate-500 font-mono text-xs">
-                  Waiting for market data...
+                <div className="w-full">
+                  {!selectedAccount ? (
+                    <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                      <AlertCircle className="w-8 h-8 text-amber-500/80 animate-pulse" />
+                      <p className="font-mono text-xs text-slate-300 uppercase tracking-widest font-bold">No Active Terminal Selected</p>
+                      <p className="text-[11px] text-slate-500 max-w-sm">Please select or construct an active trading terminal on the <strong>Accounts Config</strong> tab to begin streaming charts.</p>
+                    </div>
+                  ) : selectedAccount.state !== 'DEPLOYED' ? (
+                    <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                      <Settings className="w-8 h-8 text-slate-500 animate-spin" style={{ animationDuration: '4s' }} />
+                      <p className="font-mono text-xs text-slate-300 uppercase tracking-widest font-bold">Terminal Undeployed</p>
+                      <p className="text-[11px] text-slate-500 max-w-sm">The terminal <strong>{selectedAccount.name}</strong> is offline. Navigate to the <strong>Accounts Config</strong> tab and deploy the cloud node.</p>
+                    </div>
+                  ) : selectedAccount.connectionStatus?.toUpperCase() === 'DISCONNECTED_FROM_BROKER' ? (
+                    <div className="flex flex-col items-center justify-center text-center p-5 sm:p-6 space-y-3 bg-rose-500/5 rounded-[20px] sm:rounded-[25px] border border-rose-500/10 max-w-lg mx-4">
+                      <Lock className="w-7 h-7 text-rose-400 accent-glow" />
+                      <p className="font-mono text-xs text-rose-300 uppercase tracking-widest font-black">Broker Connection Blocked</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed max-w-md">
+                        Your Agilium cloud terminal node is successfully online, but your MetaTrader broker has rejected the login credentials.
+                      </p>
+                      <div className="text-[10px] text-slate-500 text-left space-y-1 bg-black/40 p-4 rounded-xl border border-white/5 font-mono leading-relaxed w-full">
+                        <p className="text-white/80 font-bold mb-1">📋 Troubleshooting Steps:</p>
+                        <p>1. Check that Login ID <span className="text-white">({selectedAccount.login})</span> matches your MT4/MT5 account.</p>
+                        <p>2. Check that Server Selected <span className="text-white">({selectedAccount.server})</span> is identical to your broker name.</p>
+                        <p>3. Ensure you used the Master Trading password, not the read-only Investor password.</p>
+                        <p>4. Weekend Notice: Most broker servers disconnect for maintenance from Saturday 00:00 to Sunday 23:59 GMT.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                      <RefreshCw className="w-6 h-6 text-sky-400 animate-spin" />
+                      <p className="font-mono text-xs text-slate-400 uppercase tracking-widest font-bold">Initiating Telemetry Stream ({symbol})</p>
+                      <p className="text-[11px] text-slate-500 max-w-sm leading-relaxed">
+                        Synchronizing active market logs from the London cluster. This can take up to 45 seconds on first boot to build local candles.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <Suspense fallback={<div className="flex w-full h-full items-center justify-center text-slate-500 font-mono text-xs">TRADING CHART LOADING...</div>}>

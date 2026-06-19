@@ -127,6 +127,48 @@ export default function ChatradeAI({
     }
   }, [propTimeframe]);
 
+  // Load chat history from backend on component mount or token change
+  useEffect(() => {
+    if (!token) return;
+
+    let isMounted = true;
+    const fetchChatHistory = async () => {
+      try {
+        const res = await fetch('/api/chatrade/history', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        const data = await res.json();
+        if (!isMounted) return;
+
+        if (data && data.success && Array.isArray(data.messages)) {
+          if (data.messages.length > 0) {
+            setMessages(data.messages.map((m: any) => ({
+              ...m,
+              timestamp: new Date(m.timestamp)
+            })));
+            setSessionStarted(true);
+          } else {
+             handleStartSession();
+          }
+        } else {
+           handleStartSession();
+        }
+      } catch (err) {
+        console.warn("[CHATRADE_AI] Could not load chat history:", err);
+        if (isMounted) {
+          handleStartSession();
+        }
+      }
+    };
+
+    fetchChatHistory();
+    return () => {
+      isMounted = false;
+    };
+  }, [token]);
+
   // Dynamic branding color generator aligned with selected chart settings / accent
   const getAccentStyle = (type: 'text' | 'bg' | 'border' | 'border-glow' | 'shadow-glow', opacity: number = 1) => {
     const rgb = document.documentElement.style.getPropertyValue('--accent-color-rgb') || '250, 206, 111';
@@ -174,7 +216,8 @@ export default function ChatradeAI({
       const res = await fetch('/api/chatrade/chat', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
         },
         body: JSON.stringify({
           message: JSON.stringify({

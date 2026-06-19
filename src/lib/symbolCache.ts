@@ -218,6 +218,17 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
         return [];
       }
 
+      if (err.message?.toLowerCase().includes('not found') || err.message?.toLowerCase().includes('404')) {
+        console.warn(`[SYMBOL_CACHE] Trading account ${accountId} not found on server or deleted. Using empty list of symbols.`);
+        symbolsCache.set(accountId, { 
+          symbols: [], 
+          lastFetchTime: Date.now(), 
+          isFetching: false,
+          lastErrorTime: Date.now() + 1000 * 60 * 55 // Wait 55 minutes before querying again for this missing account
+        });
+        return [];
+      }
+
       if (isRateLimit) {
         console.warn(`[SYMBOL_CACHE] API Rate-limited for ${accountId}: ${err.message}. Using cache/fallback.`);
       } else {

@@ -97,8 +97,38 @@ export class ChatradeMemory {
     return data;
   }
 
-  static async saveChat(id: string, userId: string, role: string, message: string, contextType: string = 'general') {
+  static async saveChat(id: string, userId: string, role: string, message: string, contextType: string = 'general', email?: string) {
     if (!adminSupabase) return null;
+
+    // Validate if userId is a valid UUID to prevent pg syntax errors
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId);
+    if (!isUUID) {
+      console.warn(`[MEMORY] Cannot save chat: userId '${userId}' is not a valid UUID.`);
+      return null;
+    }
+
+    try {
+      // Ensure containing parent user exists first to solve foreign key REFERENCES users(id) failures
+      const { data: existingUser } = await adminSupabase
+        .from('users')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (!existingUser) {
+        await adminSupabase
+          .from('users')
+          .insert({
+            id: userId,
+            email: email || `${userId.substring(0, 8)}@example.com`,
+            name: 'Trader',
+            created_at: new Date().toISOString()
+          });
+      }
+    } catch (parentErr: any) {
+      console.warn(`[MEMORY] Chat Save parent user validation error:`, parentErr.message || parentErr);
+    }
+
     const { data, error } = await adminSupabase
       .from('chat_history')
       .insert({
