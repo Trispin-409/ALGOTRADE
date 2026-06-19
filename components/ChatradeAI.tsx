@@ -1205,14 +1205,14 @@ export default function ChatradeAI({
                           <div className="bg-[#0b101e] border border-white/10 rounded-2xl p-4 sm:p-5 font-mono text-xs text-slate-200 mt-2 space-y-4 w-full relative overflow-hidden hover:border-white/20 transition-all">
                             
                             {/* Header section with outcome badges & confidence */}
-                            <div className="flex justify-between items-start border-b border-white/10 pb-3">
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-white/10 pb-3 gap-2">
                                <div className="flex items-center gap-2.5">
-                                   <Brain className="w-4 h-4 text-slate-400" />
-                                   <h3 className="font-extrabold text-sm text-white tracking-widest uppercase">TRADE RECOMMENDATION</h3>
+                                   <Brain className="w-4 h-4 text-slate-400 shrink-0" />
+                                   <h3 className="font-extrabold text-[11px] sm:text-sm text-white tracking-widest uppercase">TRADE RECOMMENDATION</h3>
                                </div>
-                               <div className="flex items-center gap-2">
-                                 <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest mr-1">Confidence:</span>
-                                 <span className="text-amber-400 font-black text-sm">{m.cardData.confidence}%</span>
+                               <div className="flex items-center gap-2 shrink-0">
+                                 <span className="text-[9px] sm:text-[10px] text-slate-500 uppercase font-black tracking-widest mr-1">Confidence:</span>
+                                 <span className="text-amber-400 font-black text-xs sm:text-sm">{m.cardData.confidence}%</span>
                                </div>
                             </div>
 
@@ -1221,21 +1221,21 @@ export default function ChatradeAI({
                               
                               {/* PARAMETERS LIST */}
                               <div className="space-y-2.5">
-                                <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-xl border border-white/5">
-                                  <div className="text-left">
+                                <div className="flex flex-wrap items-center justify-between p-2.5 bg-black/40 rounded-xl border border-white/5 gap-2">
+                                  <div className="text-left flex-1 min-w-[80px]">
                                     <span className="text-[8px] text-slate-500 block uppercase font-bold tracking-wider">Asset Setup</span>
-                                    <span className="text-lg font-black text-white">{m.cardData.symbol}</span>
+                                    <span className="text-sm sm:text-lg font-black text-white break-words">{m.cardData.symbol}</span>
                                   </div>
-                                  <div className="text-right">
-                                    <span className="text-[8px] text-slate-500 block uppercase font-bold tracking-wider">Action</span>
-                                    <span className="text-base font-black px-2.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                                  <div className="text-right shrink-0">
+                                    <span className="text-[8px] text-slate-500 block uppercase font-bold tracking-wider mb-0.5">Action</span>
+                                    <span className="text-xs sm:text-base font-black px-2.5 py-1 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
                                       BUY
                                     </span>
                                   </div>
                                 </div>
 
                                 {/* Target Ranges Grid */}
-                                <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+                                <div className="grid grid-cols-1 min-[360px]:grid-cols-3 gap-2 text-center text-[10px] sm:text-[11px]">
                                   <div className="p-2 bg-black/30 rounded-lg border border-white/5">
                                     <span className="text-[8px] text-slate-500 block uppercase font-bold">Entry Price</span>
                                     <span className="font-extrabold text-slate-200">1.14500</span>
@@ -1250,7 +1250,7 @@ export default function ChatradeAI({
                                   </div>
                                 </div>
 
-                                <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
+                                <div className="grid grid-cols-1 min-[360px]:grid-cols-3 gap-2 text-center text-[9px] sm:text-[10px]">
                                   <div className="p-2 bg-black/20 rounded-lg border border-white/5">
                                     <span className="text-[8px] text-slate-500 block">Risk-Reward</span>
                                     <span className="font-bold text-white">{m.cardData.riskRewardRatio || "1:2"}</span>
@@ -1384,18 +1384,18 @@ export default function ChatradeAI({
                             </div>
 
                             {/* Confirm Direct execution triggers within card */}
-                            <div className="flex items-center gap-3 bg-white/5 p-2 rounded-xl mt-3">
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 bg-white/5 p-2 rounded-xl mt-3">
                               <button
                                 type="button"
                                 onClick={() => handleSendMessage(undefined, `Confirm Execute ${m.cardData?.symbol}`)}
-                                className="flex-1 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-extrabold font-mono rounded-lg transition-all"
+                                className="flex-1 py-2 sm:py-2.5 px-3 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-extrabold font-mono rounded-lg transition-all w-full text-center"
                               >
                                 TRANSMIT TRADE ORDER
                               </button>
                               <button
                                 type="button"
                                 onClick={() => handleSendMessage(undefined, "CANCEL TRADE")}
-                                className="px-4 py-2 border border-white/10 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all"
+                                className="px-4 py-2 sm:py-2.5 border border-white/10 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all w-full sm:w-auto font-mono font-bold"
                               >
                                 DECLINE
                               </button>
@@ -1408,12 +1408,12 @@ export default function ChatradeAI({
                             <div className="absolute inset-0 bg-gradient-to-b from-rose-500/[0.03] to-transparent pointer-events-none" />
                             
                             {/* Header section with outcome badges & confidence */}
-                            <div className="flex justify-between items-start border-b border-rose-500/10 pb-3 relative z-10">
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-rose-500/10 pb-3 relative z-10 gap-2">
                                <div className="flex items-center gap-2.5">
-                                   <Shield className="w-4 h-4 text-rose-500 animate-pulse" />
-                                   <h3 className="font-extrabold text-sm text-white tracking-widest uppercase text-rose-500">RISK VETO: TRADE BLOCKED</h3>
+                                   <Shield className="w-4 h-4 text-rose-500 animate-pulse shrink-0" />
+                                   <h3 className="font-extrabold text-[11px] sm:text-sm text-white tracking-widest uppercase text-rose-500">RISK VETO: TRADE BLOCKED</h3>
                                </div>
-                               <div className="flex items-center gap-1.5 bg-rose-950/40 text-rose-400 font-extrabold px-2.5 py-1 rounded-full border border-rose-500/20 text-[9px] tracking-widest uppercase">
+                               <div className="flex items-center gap-1.5 bg-rose-950/40 text-rose-400 font-extrabold px-2.5 py-1 rounded-full border border-rose-500/20 text-[8px] sm:text-[9px] tracking-widest uppercase shrink-0">
                                  COMPLIANCE: REJECTED
                                </div>
                             </div>
@@ -1423,14 +1423,14 @@ export default function ChatradeAI({
                               
                               {/* VETO SPECIFICS AND STATS */}
                               <div className="space-y-2.5 text-left">
-                                <div className="flex items-center justify-between p-2.5 bg-black/40 rounded-xl border border-rose-500/10">
-                                  <div className="text-left">
+                                <div className="flex flex-wrap items-center justify-between p-2.5 bg-black/40 rounded-xl border border-rose-500/10 gap-2">
+                                  <div className="text-left flex-1 min-w-[80px]">
                                     <span className="text-[8px] text-slate-500 block uppercase font-bold tracking-wider">Asset Filtered</span>
-                                    <span className="text-lg font-black text-white">{m.cardData.symbol}</span>
+                                    <span className="text-sm sm:text-lg font-black text-white break-words">{m.cardData.symbol}</span>
                                   </div>
-                                  <div className="text-right">
-                                    <span className="text-[8px] text-rose-400 block uppercase font-bold tracking-wider">Status Details</span>
-                                    <span className="text-[9px] font-bold text-rose-400 uppercase bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/35">
+                                  <div className="text-right shrink-0">
+                                    <span className="text-[8px] text-rose-400 block uppercase font-bold tracking-wider mb-0.5">Status Details</span>
+                                    <span className="text-[8px] sm:text-[9px] font-bold text-rose-400 uppercase bg-rose-500/10 px-2 py-1 rounded border border-rose-500/35">
                                       VETO ACTIVE
                                     </span>
                                   </div>
@@ -2002,16 +2002,16 @@ export default function ChatradeAI({
             <div className="space-y-3.5 font-mono text-left">
               {aiStrategies.slice(0, 3).map((strat, idx) => (
                 <div key={idx} className="space-y-1">
-                  <div className="flex justify-between items-center text-[11px]">
-                    <span className="font-extrabold text-slate-100">{strat.name}</span>
-                    <span className="font-black text-emerald-400">{strat.roi}</span>
+                  <div className="flex justify-between items-center text-[11px] gap-2">
+                    <span className="font-extrabold text-slate-100 truncate min-w-0">{strat.name}</span>
+                    <span className="font-black text-emerald-400 shrink-0">{strat.roi}</span>
                   </div>
-                  <div className="flex items-center justify-between text-[9px] text-slate-500">
-                    <span className="flex items-center gap-1">
-                      <Sparkles className="w-2.5 h-2.5 text-amber-500" />
+                  <div className="flex items-center justify-between text-[9px] text-slate-500 gap-2">
+                    <span className="flex items-center gap-1 shrink-0">
+                      <Sparkles className="w-2.5 h-2.5 text-amber-500 shrink-0" />
                       Win Rate: <strong className="text-slate-300 font-bold">{strat.winRate}</strong>
                     </span>
-                    <span>{strat.totalTrades} Trades completed</span>
+                    <span className="truncate min-w-0 text-right">{strat.totalTrades} Trades completed</span>
                   </div>
                 </div>
               ))}
@@ -2035,9 +2035,9 @@ export default function ChatradeAI({
                 { name: "Engulfing Micro-Scan", confidence: 91, status: "Active" }
               ].map((v, i) => (
                 <div key={i} className="p-2.5 bg-black/40 border border-white/5 rounded-xl text-left space-y-1.5">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-bold text-white">{v.name}</span>
-                    <span className="text-[9px] text-amber-400 font-black">{v.confidence}% match</span>
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-[10px] font-bold text-white truncate min-w-0">{v.name}</span>
+                    <span className="text-[9px] text-amber-400 font-black shrink-0">{v.confidence}% match</span>
                   </div>
                   <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
                     <div className="h-full bg-amber-400 rounded-full" style={{ width: `${v.confidence}%` }} />

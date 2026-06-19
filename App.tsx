@@ -1131,50 +1131,53 @@ const App: React.FC = () => {
 
           <div className={`flex-1 ${activeTab === 'chatrade' ? 'overflow-hidden min-h-0 p-0 sm:p-2 lg:p-4 lg:pb-2' : 'overflow-y-auto p-2 sm:p-6 pb-[calc(70px+env(safe-area-inset-bottom))] lg:pb-6'} custom-scrollbar z-10 w-full overflow-x-hidden flex flex-col`}>
             <div className={`max-w-[1700px] mx-auto w-full ${activeTab === 'chatrade' ? 'flex-1 min-h-0' : 'space-y-4 flex-1'} flex flex-col`}>
+            {/* BACKGROUND CHATRADE AI INSTANCE TO MAINTAIN POLLING/WEBSOCKETS */}
+            <div className={`${activeTab === 'chatrade' ? 'flex-1 flex flex-col min-h-0' : 'hidden'} w-full overflow-hidden`}>
+              {bootData && (session?.user?.email || '').toLowerCase() !== 'trispinblackops@gmail.com' && (bootData.subscription_plan || '').toLowerCase() === 'starter' ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-[#0b101e] border border-white/10 rounded-3xl max-w-lg mx-auto my-12 shadow-2xl">
+                  <div className="w-16 h-16 bg-slate-800/80 rounded-2xl flex items-center justify-center shadow-lg mb-6 border border-white/10 text-slate-400">
+                    <Cpu className="w-8 h-8 animate-pulse" />
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mb-3">Premium Tool Locked</h2>
+                  <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-sm mb-6">
+                    Chatrade AI is reserved for PRO and ELITE subscribers. Please upgrade your plan to unlock advanced multi-agent trade analysis, real-time risk veto intelligence, and news impact correlation.
+                  </p>
+                  <button 
+                    onClick={() => setActiveTab('dashboard')}
+                    className="py-3 px-6 rounded-xl font-bold text-xs text-white transition-all bg-indigo-600 hover:bg-indigo-500 shadow-lg active:scale-95"
+                  >
+                    Return to Metrics Dashboard
+                  </button>
+                </div>
+              ) : (
+                <ChatradeAI 
+                  accounts={accounts} 
+                  selectedAccountId={selectedAccountId} 
+                  currentUserEmail={session?.user?.email || 'trispinblackops@gmail.com'} 
+                  addLog={addLog} 
+                  availableSymbols={availableBrokerSymbols}
+                  token={session?.access_token}
+                  isAlgoTradeRunning={isAlgoTradeRunning}
+                  toggleAlgoTrade={handleToggleAlgo}
+                  selectedSymbol={selectedSymbol}
+                  setSelectedSymbol={setSelectedSymbol}
+                  selectedTimeframe={selectedTimeframe}
+                  setSelectedTimeframe={setSelectedTimeframe}
+                  subscriptionPlan={bootData?.subscription_plan}
+                />
+              )}
+            </div>
+
             <AnimatePresence mode="wait">
+              {activeTab !== 'chatrade' && (
               <motion.div
                 key={activeTab}
-                className={`flex-1 flex flex-col min-h-0 ${activeTab === 'chatrade' ? 'overflow-hidden' : ''}`}
+                className={`flex-1 flex flex-col min-h-0`}
                 initial={{ opacity: 0, scale: 0.98, filter: 'blur(10px)' }}
                 animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
                 exit={{ opacity: 0, scale: 1.02, filter: 'blur(10px)' }}
                 transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
               >
-                {activeTab === 'chatrade' && (
-                  bootData && (session?.user?.email || '').toLowerCase() !== 'trispinblackops@gmail.com' && (bootData.subscription_plan || '').toLowerCase() === 'starter' ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-[#0b101e] border border-white/10 rounded-3xl max-w-lg mx-auto my-12 shadow-2xl">
-                      <div className="w-16 h-16 bg-slate-800/80 rounded-2xl flex items-center justify-center shadow-lg mb-6 border border-white/10 text-slate-400">
-                        <Cpu className="w-8 h-8 animate-pulse" />
-                      </div>
-                      <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight mb-3">Premium Tool Locked</h2>
-                      <p className="text-xs sm:text-sm text-slate-400 leading-relaxed max-w-sm mb-6">
-                        Chatrade AI is reserved for PRO and ELITE subscribers. Please upgrade your plan to unlock advanced multi-agent trade analysis, real-time risk veto intelligence, and news impact correlation.
-                      </p>
-                      <button 
-                        onClick={() => setActiveTab('dashboard')}
-                        className="py-3 px-6 rounded-xl font-bold text-xs text-white transition-all bg-indigo-600 hover:bg-indigo-500 shadow-lg active:scale-95"
-                      >
-                        Return to Metrics Dashboard
-                      </button>
-                    </div>
-                  ) : (
-                    <ChatradeAI 
-                      accounts={accounts} 
-                      selectedAccountId={selectedAccountId} 
-                      currentUserEmail={session?.user?.email || 'trispinblackops@gmail.com'} 
-                      addLog={addLog} 
-                      availableSymbols={availableBrokerSymbols}
-                      token={session?.access_token}
-                      isAlgoTradeRunning={isAlgoTradeRunning}
-                      toggleAlgoTrade={handleToggleAlgo}
-                      selectedSymbol={selectedSymbol}
-                      setSelectedSymbol={setSelectedSymbol}
-                      selectedTimeframe={selectedTimeframe}
-                      setSelectedTimeframe={setSelectedTimeframe}
-                      subscriptionPlan={bootData?.subscription_plan}
-                    />
-                  )
-                )}
                 {activeTab === 'dashboard' && (
                   <Dashboard 
                     accounts={accounts} 
@@ -1262,6 +1265,7 @@ const App: React.FC = () => {
                   </ErrorBoundary>
                 )}
               </motion.div>
+              )}
             </AnimatePresence>
           </div>
         </div>
