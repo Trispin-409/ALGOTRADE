@@ -541,9 +541,9 @@ const MarketData: React.FC<MarketDataProps> = ({
                   ) : (
                     <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
                       <RefreshCw className="w-6 h-6 text-sky-400 animate-spin" />
-                      <p className="font-mono text-xs text-slate-400 uppercase tracking-widest font-bold">Initiating Telemetry Stream ({symbol})</p>
+                      <p className="font-mono text-xs text-slate-400 uppercase tracking-widest font-bold">Preparing trading workspace ({symbol})</p>
                       <p className="text-[11px] text-slate-500 max-w-sm leading-relaxed">
-                        Synchronizing active market logs from the London cluster. This can take up to 45 seconds on first boot to build local candles.
+                        Establishing connection and building live candles. This can take up to 45 seconds on first boot.
                       </p>
                     </div>
                   )}
@@ -574,7 +574,7 @@ const MarketData: React.FC<MarketDataProps> = ({
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xs font-mono font-black text-white/90 flex items-center gap-2 uppercase tracking-[0.2em]">
                 <Workflow className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
-                Engine
+                Advisor Control
               </h3>
               <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 rounded border border-white/5">
                 <div className={`w-1.5 h-1.5 rounded-full ${connectionStatus === 'READY' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
@@ -587,7 +587,7 @@ const MarketData: React.FC<MarketDataProps> = ({
               <div className="p-3 bg-black/40 rounded-xl border border-white/10 space-y-3 animate-in slide-in-from-top-4 duration-500 glowing-panel">
                 <div className="flex items-center justify-between">
                   <span className="text-[9px] font-mono font-black uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>Parameters</span>
-                  <button onClick={() => setActiveTab('settings')} className="text-[8px] font-mono font-black text-slate-500 hover:text-white uppercase transition-colors shrink-0">Engine Setup</button>
+                  <button onClick={() => setActiveTab('settings')} className="text-[8px] font-mono font-black text-slate-500 hover:text-white uppercase transition-colors shrink-0">Advisor Setup</button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
@@ -647,7 +647,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                   <>
                     <Square className="w-4 h-4 fill-rose-500/50" />
                     <span className="text-[10px] font-mono font-black uppercase tracking-widest">
-                      HALT ENGINE
+                      STOP ENGINE
                     </span>
                   </>
                 ) : (

@@ -1892,9 +1892,9 @@ async function getUserSubscriptionPlanFromDB(email: string, userId: string): Pro
 }
 
 const PLAN_LIMITS = {
-  STARTER: { chats: 50, deeps: 15 },
-  PRO: { chats: 200, deeps: 75 },
-  ELITE: { chats: 500, deeps: 250 }
+  STARTER: { chats: 0, deeps: 0 },
+  PRO: { chats: 100, deeps: 25 },
+  ELITE: { chats: 500, deeps: 100 }
 };
 
 function getTodayDateStr(): string {
@@ -1978,9 +1978,6 @@ function consumeQuotaPoints(email: string, isDeep: boolean): { success: boolean;
     if (quota.deepsRemaining <= 0) {
       return { success: false, error: "Your daily AI analysis limit for your current plan has been reached. Trading functions remain active until quota resets." };
     }
-    if (quota.chatsRemaining < 5) {
-      return { success: false, error: "Your daily AI analysis limit for your current plan has been reached. Trading functions remain active until quota resets." };
-    }
   } else {
     if (quota.chatsRemaining <= 0) {
       return { success: false, error: "Your daily AI analysis limit for your current plan has been reached. Trading functions remain active until quota resets." };
@@ -2002,7 +1999,6 @@ function consumeQuotaPoints(email: string, isDeep: boolean): { success: boolean;
   // Commit points spending
   if (isDeep) {
     userUsage.deepsUsed = (userUsage.deepsUsed || 0) + 1;
-    userUsage.chatsUsed = (userUsage.chatsUsed || 0) + 5;
   } else {
     userUsage.chatsUsed = (userUsage.chatsUsed || 0) + 1;
   }
@@ -2522,10 +2518,17 @@ app.post("/api/chatrade/analyze", async (req, res) => {
       ? `\n[LOW QUOTA MODE ACTIVE] Compress reasoning and explanation (mentorVoice) to 1 short sentence max. Simplify SL/TP logic. Keep token overhead minimal.`
       : `\nEnsure stop loss and take profit values are mathematically correct, realistic for ${symbol}, and align with the user's risk ratio (${userPlan.riskProfile}). Provide direct mentoring voice guidance.`;
 
-    const prompt = `You are the Chatrade Master Engine running on Vertex AI Enterprise. Your primary objective is to act as the orchestrator for three specialized internal agents:
-1. Technical Agent: Evaluates price action, EMA trends, RSI momentum, and candlestick rules. (Valid technical pattern MUST exist in the snapshot to approve, e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Doji).
-2. News Agent: Evaluates the impact of upcoming economic calendar events, FRED macroeconomic indicators (FEDFUNDS, CPI, UNRATE, GDP), and news sentiments.
-3. Risk Agent (SUPREME): Evaluates account health, Free Margin, leverage, user risk profiles, and protects against drawdown rule violations. This agent HAS ULTIMATE VETO POWER.
+    const prompt = `You are Chatrade, a professional institutional trading mentor. Your primary objective is to orchestrate a comprehensive multi-agent expert review panel consisting of 8 specialized internal analytical perspectives in a debate system:
+1. Market Agent: Evaluates market structure (BOS, MSS, Order Blocks, Liquidity Pools/Sweeps, and Support/Resistance).
+2. Technical Agent: Analyzes RSI, MACD, EMA, SMA, and Bollinger Bands trend strength.
+3. Candlestick Agent: Inspects candlestick confirmations. Supported patterns: Bullish Engulfing, Bearish Engulfing, Pin Bar, Hammer, Inverted Hammer, Shooting Star, Morning Star, Evening Star, Doji, Inside Bar, Outside Bar. A BUY or SELL signal MUST NOT be APPROVED without clear candlestick confirmation!
+4. Fundamental Agent: Analyzes live economic event indicators (CPI, NFP, Interest Rates, Central Bank statements, and Sentiment summaries).
+5. Risk Agent (SUPREME VETO): Audits account balance, equity, margin level, free margin, drawdown, and exposure in connected currency. This agent has supreme veto power to protect parameters against Prop Firm or drawdown rules!
+6. Bull Agent: Formulates the maximum upside scenario (Buyers' argument).
+7. Bear Agent: Formulates the maximum downside scenario (Sellers' argument).
+8. Strategy Agent: Adapts strategy parameters by picking current highest win rate strategies based on past trade conditions.
+
+Orchestrate the above 8 sub-agents. Have high-intensity debates (Bull vs. Bear, Technical vs. Fund, and Risk Agent oversight). Gathers all opinions, combines results via a Consensus Agent, and produces a final decision with the Final Decision Agent.
 
 REAL-TIME DATA ACCESSED & CONTEXT PARAMETERS:
 - Instrument: ${symbol}
@@ -2545,14 +2548,13 @@ REAL-TIME TRADING TERMINAL STATE (SOURCE OF TRUTH):
 - Active Exposure Count: ${realContext ? realContext.activePositionsCount : '0'} positions
 
 THE CONSENSUS SYSTEM RULES:
-- Perform a dynamic 'Multi-Agent Consensus'. All three internal agents must agree (minimum 85% confidence threshold) before a buy signal can be compiled.
-- Always use professional, institutional terminology (Liquidity pools, Drawdown tolerances, Risk-to-Reward (RR Ratio), Imbalances, Order Blocks, Liquidity Sweeps).
-- If the RISK_AGENT identifies any Prop Firm rule violation (e.g. daily drawdown limits, trailing drawdown boundaries, weekend hold constraints, news trading boundaries), you MUST immediately VETO the trade with 100% confidence, outputting a 'REJECTION_NOTICE' (indicated by outcome: 'REJECT' or 'WAIT').
-- If the trade is safe, output the finalized optimized 'STRATEGY_CARD' specification (indicated by outcome: 'APPROVE').
-- Ensure Stop Loss (SL) and Take Profit (TP) are calculated mathematically with exact positive risk-reward dynamics and calculated precisely in pips.
+- Perform a dynamic 'Multi-Agent Consensus'.
+- If the Candlestick Agent reports no confirmed candlestick pattern matching the trade direction (e.g., Bullish Engulfing or Hammer for buy, Bearish Engulfing or Shooting Star for sell), you MUST reject or wait!
+- If the Risk Agent identifies any Prop Firm rule violation (e.g. daily drawdown limit, trailing drawdown, weekend hold, news trading boundary), immediately VETO the trade with 100% confidence, outputting outcome: 'REJECT' or 'WAIT'.
+- If approved, output outcome: 'APPROVE' with mathematically logical SL & TP.
 
 Your outputs must strictly adhere to the requested JSON schema.
-Return a professional mentoring voice explanation (mentorVoice) formatted as a ChatGPT response detailing the specific multi-agent debate (Technical vs. News vs. Risk Agent) and the final consensus reasoning.`;
+Return a professional mentoring voice explanation (mentorVoice) formatted as a ChatGPT response detailing the 8-Agent Debate (Market vs. Technical vs. Candlestick vs. Fundamental vs. Risk vs. Bull vs. Bear vs. Strategy Agent) and the final consensus reasoning.`;
 
     // 7. Call Gemini (Optimized for tokens)
     try {
@@ -2662,7 +2664,7 @@ app.post("/api/chatrade/chat", async (req, res) => {
     if (message.includes("INITIALIZE_SESSION")) {
        return res.json({
          success: true,
-         reply: `### 🔮 ENTERPRISE HANDSHAKE ESTABLISHED\n* **Project Service**: Vertex AI Enterprise Lane (us-west1 active)\n* **Secure Lease Account ID**: \`${accountId || '435594282'}\`\n* **Compliance Filter**: Prop Firm Safe Enabled\n* **Live MT5 Node**: Active and Synchronized\n\nMulti-Agent consensus pipeline online. Send any asset name (e.g., Gold / XAUUSD) to begin.`,
+         reply: `### Chatrade is ready to assist.\n* **Status**: Trading account connected.\n* **Risk Shield**: Prop Firm Safe Compliant Active.\n* **Market Status**: Monitoring Opportunities.\n\nWelcome! I am your AI Trading Mentor. Send any asset name (e.g., Gold / XAUUSD) and I will execute a deep, multi-agent confluence search for you.`,
          quotaInfo: getUserQuota(userEmail),
          handshake: true
        });
@@ -2733,7 +2735,7 @@ app.post("/api/chatrade/chat", async (req, res) => {
       : `\nAct as mentor. Use DEEP MODE only if requested. Otherwise, respond concisely (1-2 paragraphs max). Reference rules if a violation exists. Keep responses highly optimized and concise.`;
 
     if (isGreeting) {
-      lowQuotaModifierText += `\nSince the user is greeting you, welcome them warmly as the ALGOTRADE Mentor Engine (Chatrade AI), officially running on Vertex AI Enterprise infrastructure. Introduce your role as their expert institutional trading mentor who can analyze charts, build robust automated trading strategies, and guide their portfolio risk profile. Keep the tone premium, crisp, and high-impact!`;
+      lowQuotaModifierText += `\nSince the user is greeting you, welcome them warmly as Chatrade (your AI Trading Mentor). Introduce your role as their expert institutional trading mentor who can analyze charts, build robust automated trading strategies, and guide their portfolio risk profile. Keep the tone premium, crisp, and high-impact!`;
     }
 
     const prompt = `You are Chatrade AI - Institutional mentor mode [LOW-COST].
@@ -3114,9 +3116,52 @@ function checkInvertedHammer(candle: any): boolean {
   return (body / range < 0.35 && upperShadow >= 1.8 * body && lowerShadow <= 0.6 * body);
 }
 
+function checkPinBar(candle: any): boolean {
+  const body = Math.abs(candle.open - candle.close);
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const lowerShadow = Math.min(candle.open, candle.close) - candle.low;
+  const upperShadow = candle.high - Math.max(candle.open, candle.close);
+  return (body / range < 0.25) && (lowerShadow >= 2.0 * body || upperShadow >= 2.0 * body);
+}
+
+function checkShootingStar(candle: any): boolean {
+  const body = Math.abs(candle.open - candle.close);
+  const range = candle.high - candle.low;
+  if (range <= 0) return false;
+  const lowerShadow = Math.min(candle.open, candle.close) - candle.low;
+  const upperShadow = candle.high - Math.max(candle.open, candle.close);
+  return (body / range < 0.35 && upperShadow >= 2.0 * body && lowerShadow <= 0.5 * body);
+}
+
+function checkMorningStar(c1: any, c2: any, c3: any): boolean {
+  if (!c1 || !c2 || !c3) return false;
+  const c1Down = c1.close < c1.open;
+  const c2Small = Math.abs(c2.open - c2.close) / (c2.high - c2.low || 1) < 0.3;
+  const c3Up = c3.close > c3.open;
+  return c1Down && c2Small && c3Up && c3.close > (c1.open + c1.close)/2;
+}
+
+function checkEveningStar(c1: any, c2: any, c3: any): boolean {
+  if (!c1 || !c2 || !c3) return false;
+  const c1Up = c1.close > c1.open;
+  const c2Small = Math.abs(c2.open - c2.close) / (c2.high - c2.low || 1) < 0.3;
+  const c3Down = c3.close < c3.open;
+  return c1Up && c2Small && c3Down && c3.close < (c1.open + c1.close)/2;
+}
+
+function checkInsideBar(prev: any, curr: any): boolean {
+  if (!prev || !curr) return false;
+  return curr.high < prev.high && curr.low > prev.low;
+}
+
+function checkOutsideBar(prev: any, curr: any): boolean {
+  if (!prev || !curr) return false;
+  return curr.high > prev.high && curr.low < prev.low;
+}
+
 function checkBullishEngulfing(prev: any, curr: any): boolean {
   if (!prev || !curr) return false;
-  // A candle that swallows the previous candle's body or range
   const prevBody = Math.abs(prev.open - prev.close);
   const currBody = Math.abs(curr.open - curr.close);
   const engulfs = curr.close > curr.open && prev.close < prev.open && curr.close >= prev.open && curr.open <= prev.close;
@@ -3132,8 +3177,8 @@ function checkBearishEngulfing(prev: any, curr: any): boolean {
 }
 
 function getPatternPolarity(name: string): number {
-  const bull = ['hammer', 'bullish engulfing', 'inverted hammer', 'morning star'];
-  const bear = ['shooting star', 'bearish engulfing', 'dark cloud cover', 'evening star'];
+  const bull = ['hammer', 'bullish engulfing', 'inverted hammer', 'morning star', 'pin bar', 'outside bar'];
+  const bear = ['shooting star', 'bearish engulfing', 'dark cloud cover', 'evening star', 'outside bar'];
   if (bull.includes(name)) return 1;
   if (bear.includes(name)) return -1;
   return 0;
@@ -3154,14 +3199,21 @@ function performPatternAnalysis(accountId: string, symbol: string, candles: any[
   const bins = new Array(binCount).fill(0);
   const detections: any[] = [];
   
-  for (let i = 1; i < candles.length; i++) {
+  for (let i = 2; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i-1];
+    const prev2 = candles[i-2];
     
     let pattern = '';
     if (checkDoji(curr)) pattern = 'doji';
     else if (checkHammer(curr)) pattern = 'hammer';
     else if (checkInvertedHammer(curr)) pattern = 'inverted hammer';
+    else if (checkPinBar(curr)) pattern = 'pin bar';
+    else if (checkShootingStar(curr)) pattern = 'shooting star';
+    else if (checkMorningStar(prev2, prev, curr)) pattern = 'morning star';
+    else if (checkEveningStar(prev2, prev, curr)) pattern = 'evening star';
+    else if (checkInsideBar(prev, curr)) pattern = 'inside bar';
+    else if (checkOutsideBar(prev, curr)) pattern = 'outside bar';
     else if (checkBullishEngulfing(prev, curr)) pattern = 'bullish engulfing';
     else if (checkBearishEngulfing(prev, curr)) pattern = 'bearish engulfing';
     

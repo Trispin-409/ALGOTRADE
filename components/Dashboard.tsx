@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Bell, RefreshCw, Settings2, Square, Loader2, Zap, Activity } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { AreaChart, Area, BarChart, Bar, ReferenceLine, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { TradingAccount, MetaStats } from '../types';
 import { formatCurrency, safeFetch } from '../src/lib/utils';
 import { useStore } from '../src/store';
+import DailyHeatmap from './DailyHeatmap';
 
 interface DashboardProps {
   accounts: TradingAccount[];
@@ -38,6 +39,24 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
+const CustomJourneyTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    const currency = data.currency || 'USD';
+    const isWin = data.pnl >= 0;
+    return (
+      <div className="bg-[#101524] border border-[#face6f]/20 rounded-xl p-3 shadow-2xl font-mono text-xs">
+        <p className="text-[10px] text-slate-400 mb-1 font-bold">{label}</p>
+        <p className={`text-xs font-black ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
+          PnL: {isWin ? '+' : ''}{formatCurrency(data.pnl, currency)}
+        </p>
+        <p className="text-[9px] text-slate-500 mt-1 uppercase">Volume: {data.count} Trades</p>
+      </div>
+    );
+  }
+  return null;
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ 
   accounts, 
   selectedAccountId,
@@ -54,6 +73,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   
   const history = useStore(state => state.history);
   const setHistory = useStore(state => state.setHistory);
+  const positions = useStore(state => state.positions) || [];
 
   const [isSynced, setIsSynced] = useState(isTradingReady);
   useEffect(() => { if (isTradingReady) setIsSynced(true); }, [isTradingReady]);
@@ -78,19 +98,45 @@ const Dashboard: React.FC<DashboardProps> = ({
     readyAccounts.find(a => a.id === selectedAccountId) || readyAccounts[0]
   , [readyAccounts, selectedAccountId]);
 
-  const totalBalance = useMemo(() => readyAccounts.reduce((sum, acc) => sum + Number(acc.balance), 0), [readyAccounts]);
-  const totalEquity = useMemo(() => readyAccounts.reduce((sum, acc) => sum + Number(acc.equity), 0), [readyAccounts]);
-  const totalMargin = useMemo(() => readyAccounts.reduce((sum, acc) => sum + Number(acc.margin), 0), [readyAccounts]);
-  const totalFreeMargin = useMemo(() => readyAccounts.reduce((sum, acc) => sum + Number(acc.freeMargin), 0), [readyAccounts]);
-  const avgMarginLevel = useMemo(() => {
-    const valid = readyAccounts.filter(a => a.marginLevel > 0);
-    if (!valid.length) return 0;
-    return valid.reduce((sum, acc) => sum + acc.marginLevel, 0) / valid.length;
-  }, [readyAccounts]);
+  const computedMargin = useMemo(() => {
+    if (!positions || positions.length === 0) return 0;
+    return positions.reduce((sum, pos) => {
+      const symbol = (pos.symbol || '').toUpperCase();
+      const lots = Number(pos.volume || pos.lots || pos.qty || 0);
+      const openPrice = Number(pos.openPrice || pos.price || 2000);
+      
+      let contractSize = 100000; // forex default
+      if (symbol.includes('XAU') || symbol.includes('GOLD') || symbol.includes('XAG') || symbol.includes('SILVER')) {
+        contractSize = 100; // metals
+      } else if (symbol.includes('BTC') || symbol.includes('ETH') || symbol.includes('USDT') || symbol.includes('USD')) {
+        contractSize = 1; // crypto
+      } else if (symbol.startsWith('US') || symbol.includes('NDAQ') || symbol.includes('SPX') || symbol.includes('NAS700') || symbol.includes('GER')) {
+        contractSize = 10; // indices
+      }
+      
+      const leverage = 500; // typical leverage on broker
+      if (lots > 0 && openPrice > 0) {
+        return sum + (contractSize * lots * openPrice) / leverage;
+      }
+      return sum;
+    }, 0);
+  }, [positions]);
+
+  const computedEquity = useMemo(() => {
+    const rawBalance = activeAccount ? Number(activeAccount.balance) : lastValidValues.current.balance;
+    const positionsPnL = positions.reduce((sum, p) => sum + Number(p.profit || 0), 0);
+    return rawBalance + positionsPnL;
+  }, [activeAccount, positions]);
+
+  const totalBalance = useMemo(() => activeAccount ? Number(activeAccount.balance) : 0, [activeAccount]);
+  const totalEquity = useMemo(() => computedEquity > 0 ? computedEquity : (activeAccount ? Number(activeAccount.equity) : 0), [activeAccount, computedEquity]);
+  const totalMargin = useMemo(() => (activeAccount && Number(activeAccount.margin) > 0) ? Number(activeAccount.margin) : computedMargin, [activeAccount, computedMargin]);
+  const totalFreeMargin = useMemo(() => totalEquity - totalMargin, [totalEquity, totalMargin]);
+  const avgMarginLevel = useMemo(() => totalMargin > 0 ? (totalEquity / totalMargin) * 100 : 0, [totalEquity, totalMargin]);
   
   const resolvedCurrency = useMemo(() => {
-    return readyAccounts.find(a => a.currency)?.currency || 'ZAR';
-  }, [readyAccounts]);
+    return activeAccount?.currency || 'ZAR';
+  }, [activeAccount]);
 
   useEffect(() => {
     if (totalBalance > 0 || totalEquity > 0) {
@@ -114,12 +160,14 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [readyAccounts]);
 
-  const displayBalance = totalBalance > 0 ? totalBalance : lastValidValues.current.balance;
-  const displayEquity = totalEquity > 0 ? totalEquity : lastValidValues.current.equity;
-  const displayMargin = totalMargin > 0 ? totalMargin : lastValidValues.current.margin;
-  const displayFreeMargin = totalFreeMargin > 0 ? totalFreeMargin : lastValidValues.current.freeMargin;
-  const displayMarginLevel = avgMarginLevel > 0 ? avgMarginLevel : lastValidValues.current.marginLevel;
-  const displayCurrency = (totalBalance > 0 || totalEquity > 0) ? resolvedCurrency : lastValidValues.current.currency;
+  const displayBalance = activeAccount ? Number(activeAccount.balance) : lastValidValues.current.balance;
+  const displayEquity = computedEquity > 0 ? computedEquity : (activeAccount ? Number(activeAccount.equity) : lastValidValues.current.equity);
+  const displayMargin = (activeAccount && Number(activeAccount.margin) > 0) 
+    ? Number(activeAccount.margin) 
+    : (computedMargin > 0 ? computedMargin : lastValidValues.current.margin);
+  const displayFreeMargin = displayEquity - displayMargin;
+  const displayMarginLevel = displayMargin > 0 ? (displayEquity / displayMargin) * 100 : 0;
+  const displayCurrency = activeAccount ? (activeAccount.currency || 'ZAR') : lastValidValues.current.currency;
   
   const subscriberAccount = activeAccount || accounts[0];
 
@@ -378,6 +426,51 @@ const Dashboard: React.FC<DashboardProps> = ({
     return data;
   }, [filteredHistory, displayBalance, filteredMetrics.profit, displayCurrency]);
 
+  const dailyJourneyData = useMemo(() => {
+    const dayMap: Record<string, { date: string, timestamp: number, pnl: number, count: number, currency: string }> = {};
+    const now = new Date();
+    const daysToCover = timeRange === '7D' ? 7 : (timeRange === '30D' ? 30 : (timeRange === '90D' ? 90 : 365));
+    
+    for (let i = daysToCover - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(now.getDate() - i);
+      const dateKey = d.toISOString().split('T')[0];
+      const dateLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      dayMap[dateKey] = {
+        date: dateLabel,
+        timestamp: d.getTime(),
+        pnl: 0,
+        count: 0,
+        currency: displayCurrency
+      };
+    }
+    
+    filteredHistory.forEach(t => {
+      const profit = Number(t.profit);
+      if (isNaN(profit)) return;
+      const dateVal = t.time || t.closeTime || t.openTime;
+      if (!dateVal) return;
+      const d = new Date(dateVal);
+      const dateKey = d.toISOString().split('T')[0];
+      
+      if (dayMap[dateKey]) {
+        dayMap[dateKey].pnl += profit;
+        dayMap[dateKey].count += 1;
+      } else if (timeRange === 'ALL') {
+        const dateLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        dayMap[dateKey] = {
+          date: dateLabel,
+          timestamp: d.getTime(),
+          pnl: profit,
+          count: 1,
+          currency: displayCurrency
+        };
+      }
+    });
+    
+    return Object.values(dayMap).sort((a, b) => a.timestamp - b.timestamp);
+  }, [filteredHistory, timeRange, displayCurrency]);
+
   // Strategy performance grouping
   const strategyData = useMemo(() => {
     const groups: Record<string, { win: number, total: number, pnl: number }> = {};
@@ -628,18 +721,24 @@ const Dashboard: React.FC<DashboardProps> = ({
             
             <div className="h-[200px] w-full relative z-10">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={filteredMetrics.profit >= 0 ? '#00E676' : '#FF1744'} stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor={filteredMetrics.profit >= 0 ? '#00E676' : '#FF1744'} stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
+                <BarChart data={dailyJourneyData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
                   <XAxis dataKey="date" stroke="#334155" fontSize={10} tickLine={false} axisLine={false} tickMargin={10} minTickGap={20} />
-                  <YAxis stroke="#334155" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `${val >= 1000 ? (val/1000).toFixed(0)+'K' : val}`} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="value" stroke={filteredMetrics.profit >= 0 ? '#00E676' : '#FF1744'} strokeWidth={2} fillOpacity={1} fill="url(#colorValue)" />
-                </AreaChart>
+                  <YAxis stroke="#334155" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `${val >= 1000 ? (val/1000).toFixed(1)+'K' : (val <= -1000 ? (val/1000).toFixed(1)+'K' : val)}`} />
+                  <Tooltip content={<CustomJourneyTooltip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+                  <ReferenceLine y={0} stroke="#475569" strokeWidth={1} strokeDasharray="3 3" />
+                  <Bar dataKey="pnl" barSize={12} radius={[3, 3, 3, 3]}>
+                    {dailyJourneyData.map((entry, index) => {
+                      const isWin = entry.pnl >= 0;
+                      return (
+                        <Cell 
+                          key={`cell-${index}`} 
+                          fill={isWin ? '#00E676' : '#FF1744'} 
+                          fillOpacity={entry.pnl === 0 ? 0.08 : 0.85}
+                        />
+                      );
+                    })}
+                  </Bar>
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
@@ -712,6 +811,11 @@ const Dashboard: React.FC<DashboardProps> = ({
             <span className="text-slate-600">|</span>
             <span>ID: {selectedAccountId ? selectedAccountId.substring(0, 8).toUpperCase() : 'NO_TERM'}</span>
           </div>
+        </div>
+
+        {/* D3 PERFORMANCE HEATMAP COMPONENT */}
+        <div className="relative z-10 my-4">
+          <DailyHeatmap trades={history && history.length > 0 ? history : journalTrades} currency={displayCurrency} />
         </div>
 
         {/* METRICS INTELLIGENCE GRID */}

@@ -869,6 +869,15 @@ const App: React.FC = () => {
           equity: (acc.equity !== null && acc.equity !== undefined) 
             ? Number(acc.equity) 
             : (existingAcc?.equity ?? null),
+          margin: (acc.margin !== null && acc.margin !== undefined) 
+            ? Number(acc.margin) 
+            : (existingAcc?.margin ?? null),
+          freeMargin: (acc.freeMargin !== null && acc.freeMargin !== undefined) 
+            ? Number(acc.freeMargin) 
+            : (existingAcc?.freeMargin ?? null),
+          marginLevel: (acc.marginLevel !== null && acc.marginLevel !== undefined) 
+            ? Number(acc.marginLevel) 
+            : (existingAcc?.marginLevel ?? null),
           currency: acc.currency || existingAcc?.currency || 'USD',
           ready: (['CONNECTED', 'READY'].includes(acc.connectionStatus?.toUpperCase())) || (acc.balance !== null && Number(acc.balance) > 0) || (existingAcc?.ready || false)
         };
@@ -1162,6 +1171,7 @@ const App: React.FC = () => {
                       setSelectedSymbol={setSelectedSymbol}
                       selectedTimeframe={selectedTimeframe}
                       setSelectedTimeframe={setSelectedTimeframe}
+                      subscriptionPlan={bootData?.subscription_plan}
                     />
                   )
                 )}
