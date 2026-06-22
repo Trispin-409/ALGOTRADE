@@ -37,6 +37,12 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
   const [loadingNews, setLoadingNews] = useState(true);
   const [errorNews, setErrorNews] = useState<string | null>(null);
   
+  // Real-time Google Grounded Search sentiment state
+  const [googleNews, setGoogleNews] = useState<any>(null);
+  const [loadingGoogleNews, setLoadingGoogleNews] = useState(false);
+  const [errorGoogleNews, setErrorGoogleNews] = useState<string | null>(null);
+  const [isSwipingGround, setIsSwipingGround] = useState(false);
+
   const [fredData, setFredData] = useState<Record<string, {current: number, previous: number}>>({});
   const [loadingFred, setLoadingFred] = useState(true);
   
@@ -116,6 +122,35 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
     fetchNews();
     return () => { mounted = false; };
   }, [activeSymbol]);
+
+  // Fetch Real-time Google Grounded News data when activeSymbol changes
+  useEffect(() => {
+    let mounted = true;
+    const fetchGoogleSentiment = async () => {
+      if (!activeSymbol || activeSymbol === 'No Active Asset') return;
+      try {
+        setLoadingGoogleNews(true);
+        setErrorGoogleNews(null);
+        const res = await fetch(`/api/news/search-sentiment?symbol=${encodeURIComponent(activeSymbol)}`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || "Failed to fetch Google Search grounded sentiment data");
+        }
+        const data = await res.json();
+        if (mounted) {
+          setGoogleNews(data);
+        }
+      } catch (err: any) {
+        console.error("Google Grounded search err:", err);
+        if (mounted) setErrorGoogleNews(err.message || "Failed to retrieve real-time search sentiment.");
+      } finally {
+        if (mounted) setLoadingGoogleNews(false);
+      }
+    };
+
+    fetchGoogleSentiment();
+    return () => { mounted = false; };
+  }, [activeSymbol, isSwipingGround]);
 
   useEffect(() => {
     // If the active symbol is not in our list, pick the first one
@@ -232,19 +267,163 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
         </div>
         
         {/* SYMBOL SELECTOR */}
-        <div className="relative">
-          <select 
-            value={displaySymbols.includes(activeSymbol) ? activeSymbol : (displaySymbols[0] || 'EURUSD')} 
-            onChange={(e) => onSymbolChange(e.target.value)}
-            className="appearance-none bg-black/60 border border-white/10 text-white font-mono font-bold uppercase tracking-widest text-sm rounded-lg px-4 py-3 pr-10 focus:outline-none focus:border-white shadow-lg transition-colors"
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsSwipingGround(p => !p)}
+            disabled={loadingGoogleNews}
+            className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-teal-500/20 bg-teal-500/10 hover:bg-teal-500/20 text-teal-400 font-mono text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-50"
           >
-            {displaySymbols.map(sym => (
-              <option key={sym} value={sym} className="bg-slate-900">{sym}</option>
-            ))}
-          </select>
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-50" style={{ color: 'var(--accent-color)' }}>
-             <Activity className="w-4 h-4" />
+            <Zap className={`w-3.5 h-3.5 ${loadingGoogleNews ? 'animate-spin' : ''}`} />
+            {loadingGoogleNews ? 'Grounding...' : 'Real-time News Sweep'}
+          </button>
+
+          <div className="relative">
+            <select 
+              value={displaySymbols.includes(activeSymbol) ? activeSymbol : (displaySymbols[0] || 'EURUSD')} 
+              onChange={(e) => onSymbolChange(e.target.value)}
+              className="appearance-none bg-black/60 border border-white/10 text-white font-mono font-bold uppercase tracking-widest text-sm rounded-lg px-4 py-3 pr-10 focus:outline-none focus:border-white shadow-lg transition-colors"
+            >
+              {displaySymbols.map(sym => (
+                <option key={sym} value={sym} className="bg-slate-900">{sym}</option>
+              ))}
+            </select>
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-50" style={{ color: 'var(--accent-color)' }}>
+               <Activity className="w-4 h-4" />
+            </div>
           </div>
+        </div>
+      </div>
+
+      {/* NEW SECTION: GOOGLE GROUNDED NEWS SENTIMENT RADAR */}
+      <div className="glowing-panel rounded-xl p-6 shadow-xl backdrop-blur-md bg-black/60 border border-white/10 relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-3 flex items-center gap-1">
+          <span className="flex h-2 w-2 relative">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          <span className="text-[9px] font-mono font-bold text-emerald-400 uppercase tracking-widest">LIVE GROUNDING ACTIVE</span>
+        </div>
+
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="space-y-2 flex-1">
+            <div className="flex items-center gap-2">
+              <Search className="w-4 h-4 text-[#face6f]" />
+              <h3 className="text-[11px] font-mono font-black text-[#face6f] uppercase tracking-widest">
+                Vertex AI real-time search radar ({activeSymbol})
+              </h3>
+            </div>
+            
+            <h4 className="text-lg font-black text-white leading-tight uppercase tracking-tight">
+              Sentiment Confluence & Macro Impact Assessment
+            </h4>
+            
+            <p className="text-xs text-slate-300 font-sans max-w-2xl leading-relaxed">
+              This terminal connects directly with modern Google Search Grounding pipelines. It crawls active macroeconomic news, central bank actions, and geopolitical events for the selected asset to verify signal strength.
+            </p>
+
+            {loadingGoogleNews ? (
+              <div className="flex items-center gap-3 py-4 text-slate-400 font-mono text-xs">
+                <Loader2 className="w-5 h-5 animate-spin text-[#face6f]" />
+                Searching breaking trends and crawling Google Search for {activeSymbol}...
+              </div>
+            ) : errorGoogleNews ? (
+              <p className="text-xs text-rose-400 font-mono py-2">⚠️ Error grounding news: {errorGoogleNews}</p>
+            ) : googleNews ? (
+              <div className="pt-2">
+                <p className="text-xs text-slate-300 font-semibold leading-relaxed border-l-2 border-[#face6f] pl-3 italic">
+                  "{googleNews.explanation}"
+                </p>
+                
+                {/* Real-time search grounded items list */}
+                {googleNews.articles && googleNews.articles.length > 0 && (
+                  <div className="mt-4 space-y-2.5">
+                    <p className="text-[9px] font-mono text-slate-500 uppercase tracking-wider font-bold">Grounded News Sources used:</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {googleNews.articles.slice(0,3).map((art: any, i: number) => (
+                        <a
+                          key={i}
+                          href={art.url || "#"}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-3 bg-black/40 border border-white/5 rounded-lg hover:border-white/20 transition-colors flex flex-col justify-between group"
+                        >
+                          <div>
+                            <span className="text-[7.5px] font-mono text-slate-500 uppercase tracking-widest block mb-1">
+                              {art.source || "Google Web Search"}
+                            </span>
+                            <h5 className="text-[11px] font-bold text-slate-200 line-clamp-2 leading-snug group-hover:text-white transition-colors">
+                              {art.headline}
+                            </h5>
+                          </div>
+                          {art.url && (
+                            <span className="text-[8px] font-mono text-teal-400 mt-2 flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                              Open source <ExternalLink className="w-2.5 h-2.5" />
+                            </span>
+                          )}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-2">
+                <button
+                  onClick={() => setIsSwipingGround(p => !p)}
+                  className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-white font-mono text-xs uppercase transition-colors"
+                >
+                  Retrieve Active Search Data
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* GAUGE CONTAINER */}
+          {!loadingGoogleNews && googleNews && (
+            <div className="w-full lg:w-72 p-5 bg-black/40 rounded-xl border border-white/5 shrink-0 flex flex-col items-center">
+              <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest font-black mb-1">Impact Bias Score</span>
+              
+              <div className={`text-3xl font-black ${
+                googleNews.sentiment === 'BULLISH' ? 'text-emerald-400' : 
+                googleNews.sentiment === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'
+              } tracking-tighter`}>
+                {googleNews.sentiment}
+              </div>
+
+              {/* Impact score value readout */}
+              <div className="text-xs font-mono font-bold text-white mt-1">
+                Score: {googleNews.impactScore > 0 ? '+' : ''}{googleNews.impactScore} / 100
+              </div>
+
+              {/* Impact scale progress bar */}
+              <div className="w-full mt-4 space-y-1">
+                <div className="w-full bg-black/60 h-2.5 rounded-full overflow-hidden border border-white/5 relative">
+                  <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-white/30 z-10" />
+                  {/* We map -100 to +100 score to 0% to 100% width */}
+                  <div 
+                    className={`h-full opacity-90 transition-all duration-1000 ${
+                      googleNews.impactScore > 0 ? 'bg-emerald-500' : 
+                      googleNews.impactScore < 0 ? 'bg-rose-500' : 'bg-slate-500'
+                    }`}
+                    style={{ 
+                      width: `${((googleNews.impactScore + 100) / 200) * 100}%` 
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between text-[8px] font-mono text-slate-500 uppercase tracking-wider">
+                  <span>-100 Severe Panic</span>
+                  <span>Neutral</span>
+                  <span>+100 Extreme FOMO</span>
+                </div>
+              </div>
+
+              {/* Confidence metric indicator */}
+              <div className="w-full mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-[10px] font-mono">
+                <span className="text-slate-400">Search Confidence:</span>
+                <span className="font-bold text-white">{googleNews.sentimentScore}%</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

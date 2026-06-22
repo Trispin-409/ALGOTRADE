@@ -1,0 +1,70 @@
+{
+  "daily": {
+    "2026-06-19": {
+      "trispinblackops@gmail.com": {
+        "chatsUsed": 0,
+        "deepsUsed": 0,
+        "lastRequestTime": 0,
+        "lastRequestText": "hey test random block 992384213",
+        "lastResponseText": "Welcome, trispinblackops@gmail.com. I am Chatrade, your dedicated institutional AI Trading Mentor. My purpose is to provide precise chart analysis, engineer robust automated trading strategies, and meticulously guide your portfolio's risk profile.\n\nHow may I optimize your trading today?"
+      }
+    }
+  },
+  "analytics": [
+    {
+      "id": "a17350e3-bb44-43b5-ba85-671fcc139581",
+      "timestamp": "2026-06-19T12:01:10.430Z",
+      "email": "trispinblackops@gmail.com",
+      "plan": "STARTER",
+      "mode": "LIGHT",
+      "tokensUsed": 950,
+      "estimatedCost": 0,
+      "modelUsed": "local_fallback",
+      "status": "user_quota_blocked"
+    },
+    {
+      "id": "1ab0c3c1-0da5-4e20-a451-b59574d74b46",
+      "timestamp": "2026-06-19T12:50:10.196Z",
+      "email": "trispinblackops@gmail.com",
+      "plan": "ELITE",
+      "mode": "LIGHT",
+      "tokensUsed": 950,
+      "estimatedCost": 0.00015,
+      "modelUsed": "gemini-3.5-flash",
+      "status": "success"
+    },
+    {
+      "id": "ac4db4a8-356c-4e9f-97f6-dbf443f4c7ef",
+      "timestamp": "2026-06-19T12:51:12.524Z",
+      "email": "trispinblackops@gmail.com",
+      "plan": "ELITE",
+      "mode": "DEEP",
+      "tokensUsed": 4200,
+      "estimatedCost": 0.0007499999999999999,
+      "modelUsed": "gemini-3.5-flash",
+      "status": "success"
+    },
+    {
+      "id": "5d0f8ce9-c88d-45e5-9f10-31f315bdaea1",
+      "timestamp": "2026-06-19T12:51:18.501Z",
+      "email": "trispinblackops@gmail.com",
+      "plan": "ELITE",
+      "mode": "DEEP",
+      "tokensUsed": 4200,
+      "estimatedCost": 0.0007499999999999999,
+      "modelUsed": "gemini-3.5-flash",
+      "status": "success"
+    },
+    {
+      "id": "dcc38074-54a4-4e75-a14a-586f7f9228fd",
+      "timestamp": "2026-06-19T12:54:39.303Z",
+      "email": "trispinblackops@gmail.com",
+      "plan": "ELITE",
+      "mode": "LIGHT",
+      "tokensUsed": 950,
+      "estimatedCost": 0.00015,
+      "modelUsed": "gemini-3.5-flash",
+      "status": "success"
+    }
+  ]
+}

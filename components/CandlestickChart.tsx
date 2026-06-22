@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Minus, Plus } from 'lucide-react';
+import { useStore } from '../src/store';
 
 interface Candle {
   time: string | Date | number;
@@ -29,6 +31,24 @@ interface Props {
   upColor?: string;
   downColor?: string;
   bgImageUrl?: string;
+  activeSetup?: {
+    symbol: string;
+    strategyName: string;
+    direction: 'BUY' | 'SELL';
+    entry: number;
+    stopLoss: number;
+    takeProfit: number;
+    confidence: number;
+    sessionName: string;
+    horizon?: string;
+    riskZone?: { low: number; high: number };
+    rewardZone?: { low: number; high: number };
+    liquidityAreas?: { price: number; label: string }[];
+    support?: number;
+    resistance?: number;
+  } | null;
+  lotSize?: number;
+  setLotSize?: (val: number) => void;
 }
 
 const getPatternColor = (pattern: string, polarity: number) => {
@@ -55,7 +75,10 @@ export default function CandlestickChart({
   showAnalysis = false,
   upColor = '#10b981',
   downColor = '#f43f5e',
-  bgImageUrl = ''
+  bgImageUrl = '',
+  activeSetup = null,
+  lotSize,
+  setLotSize
 }: Props) {
   console.log("[CHART_MOUNTED]");
   console.log("[CHART_RENDER_DATA]", data?.length);
@@ -64,6 +87,18 @@ export default function CandlestickChart({
   const [width, setWidth] = useState(800);
   const [dynamicHeight, setDynamicHeight] = useState(height);
   const [mouse, setMouse] = useState<{ x: number, y: number } | null>(null);
+
+  const storeLotSize = useStore(state => state.strategySettings.lotSize) ?? 0.01;
+  const activeLotSize = lotSize !== undefined ? lotSize : storeLotSize;
+
+  const handleChg = useCallback((val: number) => {
+    const clamped = Math.max(0.01, Math.min(10.0, Number(val.toFixed(2)) || 0.01));
+    if (setLotSize) {
+      setLotSize(clamped);
+    } else {
+      useStore.getState().setStrategySettings({ lotSize: clamped });
+    }
+  }, [setLotSize]);
 
   // Auto layout sizing
   useEffect(() => {
@@ -105,10 +140,49 @@ export default function CandlestickChart({
   // Align right edge organically (no panning allowed)
   const currentPan = mainW - totalW - 20;
 
-  // Calculate rendering constraints dynamically based on visible data bounds
-  const minP = chartData.length ? Math.min(...chartData.map(d => d.low)) * 0.9995 : 0;
-  const maxP = chartData.length ? Math.max(...chartData.map(d => d.high)) * 1.0005 : 1;
-  const range = (maxP - minP) || 1;
+  // Calculate rendering constraints dynamically based on visible data bounds to ensure the candlesticks are beautifully centered and well-positioned
+  const visibleCandles = useMemo(() => {
+    if (!chartData.length) return [];
+    return chartData.filter((_, i) => {
+      const x = currentPan + i * candleW + candleW / 2;
+      return x >= -candleW && x <= mainW + candleW;
+    });
+  }, [chartData, currentPan, candleW, mainW]);
+
+  const { minP, maxP, range } = useMemo(() => {
+    if (!chartData.length) return { minP: 0, maxP: 1, range: 1 };
+    
+    const targets = visibleCandles.length ? visibleCandles : chartData;
+    const lows = targets.map(d => d.low).filter(v => v !== undefined && !isNaN(v));
+    const highs = targets.map(d => d.high).filter(v => v !== undefined && !isNaN(v));
+    
+    let minVal = lows.length ? Math.min(...lows) : 1;
+    let maxVal = highs.length ? Math.max(...highs) : 2;
+    
+    let diff = (maxVal - minVal) || 0.1;
+    
+    // Setup strategic padding so candles are beautifully vertically centered & roomy
+    let minP_calc = minVal - diff * 0.15;
+    let maxP_calc = maxVal + diff * 0.15;
+    
+    // Keep active setups nicely positioned and bounded on screen
+    if (activeSetup) {
+      const entry = activeSetup.entry;
+      if (entry < minP_calc) minP_calc = entry - diff * 0.1;
+      if (entry > maxP_calc) maxP_calc = entry + diff * 0.1;
+      
+      const maxAllowedStretch = diff * 2.5;
+      if (activeSetup.stopLoss) {
+        minP_calc = Math.max(minP_calc - maxAllowedStretch, activeSetup.stopLoss);
+      }
+      if (activeSetup.takeProfit) {
+        maxP_calc = Math.min(maxP_calc + maxAllowedStretch, activeSetup.takeProfit);
+      }
+    }
+    
+    const range_calc = (maxP_calc - minP_calc) || 1;
+    return { minP: minP_calc, maxP: maxP_calc, range: range_calc };
+  }, [chartData, visibleCandles, activeSetup]);
 
   // Axis Coordinate Helpers
   const getY = useCallback((p: number) => effectiveHeight - ((p - minP) / range) * effectiveHeight, [minP, range, effectiveHeight]);
@@ -298,6 +372,107 @@ export default function CandlestickChart({
             </g>
           );
         })}
+
+        {/* ACTIVE STRATEGY SETUP LAYER (TRADINGVIEW RISK/REWARD STYLE) */}
+        {activeSetup && (
+          <g>
+            {(() => {
+              const yEntry = getY(activeSetup.entry);
+              const ySL = getY(activeSetup.stopLoss);
+              const yTP = getY(activeSetup.takeProfit);
+              
+              const isBuy = activeSetup.direction === 'BUY';
+              const rewardColor = '#10b981';
+              const riskColor = '#f43f5e';
+              
+              const yRiskTop = Math.min(yEntry, ySL);
+              const riskH = Math.abs(yEntry - ySL);
+              const yRewardTop = Math.min(yEntry, yTP);
+              const rewardH = Math.abs(yEntry - yTP);
+              
+              return (
+                <g>
+                  {/* Reward Area Box */}
+                  <rect 
+                    x={0} 
+                    y={yRewardTop} 
+                    width={mainW} 
+                    height={rewardH} 
+                    fill={rewardColor} 
+                    opacity={0.08} 
+                  />
+                  
+                  {/* Risk Area Box */}
+                  <rect 
+                    x={0} 
+                    y={yRiskTop} 
+                    width={mainW} 
+                    height={riskH} 
+                    fill={riskColor} 
+                    opacity={0.08} 
+                  />
+
+                  {/* Liquidity Pools */}
+                  {activeSetup.liquidityAreas?.map((liq: any, idx: number) => {
+                    const yLiq = getY(liq.price);
+                    return (
+                      <g key={`liq-${idx}`}>
+                        <line x1={0} x2={mainW} y1={yLiq} y2={yLiq} stroke="#818cf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.6} />
+                        <text x={12} y={yLiq - 4} fill="#818cf8" fontSize="8" fontWeight="bold" opacity={0.6} className="uppercase tracking-widest font-mono">{liq.label}</text>
+                      </g>
+                    );
+                  })}
+
+                  {/* S&R Pools */}
+                  {activeSetup.support && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.support)} y2={getY(activeSetup.support)} stroke="#10b981" strokeWidth={1.2} strokeDasharray="4 4" opacity={0.4} />
+                      <text x={12} y={getY(activeSetup.support) + 10} fill="#10b981" fontSize="8" fontWeight="bold" opacity={0.4} className="uppercase tracking-widest font-mono">Setup Support Area</text>
+                    </g>
+                  )}
+                  {activeSetup.resistance && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.resistance)} y2={getY(activeSetup.resistance)} stroke="#f43f5e" strokeWidth={1.2} strokeDasharray="4 4" opacity={0.4} />
+                      <text x={12} y={getY(activeSetup.resistance) - 4} fill="#f43f5e" fontSize="8" fontWeight="bold" opacity={0.4} className="uppercase tracking-widest font-mono">Setup Resistance Area</text>
+                    </g>
+                  )}
+
+                  {/* Take Profit Target Level */}
+                  <line x1={0} x2={mainW} y1={yTP} y2={yTP} stroke={rewardColor} strokeWidth={1.5} strokeDasharray="4 2" />
+                  <rect x={10} y={yTP - 10} width={130} height={20} fill="#02040a" stroke={rewardColor} strokeWidth={1} rx={4} />
+                  <text x={16} y={yTP + 3} fill={rewardColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
+                    TP Target: {activeSetup.takeProfit.toFixed(5)}
+                  </text>
+
+                  {/* Stop Loss Protect Level */}
+                  <line x1={0} x2={mainW} y1={ySL} y2={ySL} stroke={riskColor} strokeWidth={1.5} strokeDasharray="4 2" />
+                  <rect x={10} y={ySL - 10} width={130} height={20} fill="#02040a" stroke={riskColor} strokeWidth={1} rx={4} />
+                  <text x={16} y={ySL + 3} fill={riskColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
+                    SL Target: {activeSetup.stopLoss.toFixed(5)}
+                  </text>
+
+                  {/* Entry Trigger Level */}
+                  <line x1={0} x2={mainW} y1={yEntry} y2={yEntry} stroke="#fbbf24" strokeWidth={2} strokeDasharray="3 3" />
+                  <rect x={10} y={yEntry - 12} width={190} height={24} fill="#02040a" stroke="#fbbf24" strokeWidth={1.2} rx={4} />
+                  <text x={18} y={yEntry + 3} fill="#fbbf24" fontSize="10" fontWeight="bold" fontFamily="monospace">
+                    {activeSetup.direction} ENTRY: {activeSetup.entry.toFixed(5)}
+                  </text>
+
+                  {/* Strategic Setup Badge HUD Overlay (Top-Right of Chart) */}
+                  <g transform={`translate(${Math.max(10, mainW - 310)}, 15)`} opacity={0.95}>
+                    <rect x={0} y={0} width={300} height={42} fill="#0b1329" stroke="#fbbf24" strokeWidth={1} rx={8} />
+                    <text x={12} y={16} fill="#fbbf24" fontSize="10" fontWeight="black" className="uppercase tracking-widest font-sans">
+                      {activeSetup.strategyName} {activeSetup.horizon ? `| ${activeSetup.horizon.toUpperCase()}` : ''}
+                    </text>
+                    <text x={12} y={32} fill="#fff" fontSize="9" fontWeight="bold" className="font-mono">
+                      Dir: <tspan fill={isBuy ? '#10b981' : '#f43f5e'}>{activeSetup.direction}</tspan> | Conf: {activeSetup.confidence}% | Session: {activeSetup.sessionName}
+                    </text>
+                  </g>
+                </g>
+              );
+            })()}
+          </g>
+        )}
 
         {/* EA Executed Deals Array Layer */}
         {deals.map((d, i) => {

@@ -1,5 +1,28 @@
 import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
-import { Activity, Clock, RefreshCw, TrendingUp, TrendingDown, AlertCircle, Play, X, Zap, Shield, Layers, History, Settings, Square, Workflow, Lock } from 'lucide-react';
+import { 
+  Activity, 
+  Clock, 
+  RefreshCw, 
+  TrendingUp, 
+  TrendingDown, 
+  AlertCircle, 
+  Play, 
+  X, 
+  Zap, 
+  Shield, 
+  Layers, 
+  History, 
+  Settings, 
+  Square, 
+  Workflow, 
+  Lock, 
+  Sliders, 
+  ChevronDown, 
+  Minus, 
+  Plus, 
+  XCircle 
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { TradingAccount } from '../types';
 const CandlestickChart = lazy(() => import('./CandlestickChart'));
 import { connectionManager, TradingPhase } from '../src/lib/ConnectionManager';
@@ -59,12 +82,6 @@ const alignToTimeframe = (timestamp: string | number, timeframeMinutes: number) 
   return Math.floor(t / ms) * ms;
 };
 
-const getCandleKey = (brokerTime: string, timeframeMin: number) => {
-  const t = new Date(brokerTime).getTime();
-  const tf = timeframeMin * 60 * 1000;
-  return Math.floor(t / tf) * tf;
-};
-
 const MarketData: React.FC<MarketDataProps> = ({ 
   accounts, 
   selectedAccountId,
@@ -83,7 +100,7 @@ const MarketData: React.FC<MarketDataProps> = ({
   isAlgoRunning,
   tradeStatus,
   connectionStatus,
-        onDeploy,
+  onDeploy,
   onUndeploy,
   setActiveTab,
   token,
@@ -91,33 +108,43 @@ const MarketData: React.FC<MarketDataProps> = ({
 }) => {
   const candles = useStore(state => state.candles);
   const setCandles = useStore(state => state.setCandles);
-  const addCandle = useStore(state => state.addCandle);
   const chartData = candles || [];
-  const historyReady = chartData.length >= 100;
+  const historyReady = chartData.length > 0;
   
   const globalPositions = useStore(state => state.positions);
   const globalHistory = useStore(state => state.history);
   const setHistory = useStore(state => state.setHistory);
   const setPositions = useStore(state => state.setPositions);
   const currentUserEmail = useStore(state => state.currentUserEmail);
-  
+  const strategySettings = useStore(state => state.strategySettings);
+  const setStrategySettings = useStore(state => state.setStrategySettings);
+
   const [latestTick, setLatestTick] = useState<any>(null);
   const [deals, setDeals] = useState<any[]>([]);
   const [isSubscribing, setIsSubscribing] = useState(false);
-  const [isSymbolsLoading, setIsSymbolsLoading] = useState(false);
-  
+  const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [isTimeframeOpen, setIsTimeframeOpen] = useState(false);
+  const [isAssetOpen, setIsAssetOpen] = useState(false);
+  const [assetSearchQuery, setAssetSearchQuery] = useState('');
+
   const chartSettings = useStore(state => state.chartSettings);
   const marketAnalysis = useStore(state => state.marketAnalysis);
+  const activeSetup = useStore(state => state.activeSetup);
   const [showAnalysis, setShowAnalysis] = useState(true);
+
+  const [lotSizeInput, setLotSizeInput] = useState<string>(String(lotSize));
+
+  useEffect(() => {
+    setLotSizeInput(String(lotSize));
+  }, [lotSize]);
   
-  const systemStatus = connectionStatus; // Use prop from App.tsx instead of internal WS-bound state
-  
+  const systemStatus = connectionStatus;
   const selectedAccount = useMemo(() => accounts.find(a => a.id === selectedAccountId), [accounts, selectedAccountId]);
 
   useEffect(() => {
     if (!selectedAccountId) return;
     
-    // Seed instantly from email-isolated cache to prevent flicker/gap
+    // Seed instantly from cache
     if (currentUserEmail) {
       try {
         const cached = localStorage.getItem(`positions:${currentUserEmail}:${selectedAccountId}`);
@@ -129,7 +156,7 @@ const MarketData: React.FC<MarketDataProps> = ({
       }
     }
     
-    // Fetch initial snapshot of positions
+    // Fetch fresh active positions
     safeFetch(`/api/account/${selectedAccountId}/positions`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
@@ -141,19 +168,17 @@ const MarketData: React.FC<MarketDataProps> = ({
           }
         }
       })
-      .catch(err => console.error("Failed to fetch positions:", err));
+      .catch(err => {
+        if (err?.message?.includes('Failed to fetch')) return;
+        console.error("Failed to fetch positions:", err);
+      });
   }, [selectedAccountId, currentUserEmail, token]);
 
   useEffect(() => {
-    // Clear intent on unmount
     return () => {
       connectionManager.clearStreamIntent(selectedAccountId);
     };
   }, [selectedAccountId]);
-
-  useEffect(() => {
-    // Sync logic removed in favor of direct prop usage
-  }, []);
 
   useEffect(() => {
     if (systemStatus === 'CONNECTED') {
@@ -161,27 +186,15 @@ const MarketData: React.FC<MarketDataProps> = ({
     }
   }, [systemStatus, addLog]);
 
-  // Synchronize internal symbols state with global available list
   useEffect(() => {
     if (availableBrokerSymbols.length > 0) {
       addLog(`DATA: ${availableBrokerSymbols.length} synced symbols available for charting.`);
     }
   }, [availableBrokerSymbols, addLog]);
 
-  const accountsRef = useRef(accounts);
-  const addLogRef = useRef(addLog);
   const activeStreamRef = useRef<string>('');
 
   useEffect(() => {
-    accountsRef.current = accounts;
-  }, [accounts]);
-
-  useEffect(() => {
-    addLogRef.current = addLog;
-  }, [addLog]);
-
-  useEffect(() => {
-    // Clear/load from cache of previous broker data to achieve instant chart loading
     let loadedFromCache = false;
     if (currentUserEmail && selectedAccountId && symbol && timeframe) {
       const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
@@ -192,7 +205,7 @@ const MarketData: React.FC<MarketDataProps> = ({
           if (Array.isArray(parsed) && parsed.length > 0) {
             setCandles(parsed);
             loadedFromCache = true;
-            console.log(`[CANDLES_CACHE] Instantly loaded ${parsed.length} cached candles from memory for ${symbol} (${timeframe})`);
+            console.log(`[CANDLES_CACHE] Instantly loaded ${parsed.length} cached candles`);
           }
         }
       } catch (e) {
@@ -211,26 +224,13 @@ const MarketData: React.FC<MarketDataProps> = ({
     if (!selectedAccountId || !symbol || !timeframe) return;
     
     const phaseCheck = setInterval(() => {
-      // Allow initiation if we are at phase BROKER_CONNECTED or higher
-      // Since BROKER_CONNECTED is phase 3, and STREAMING is phase 6.
-      // Based on object keys:
-      // INIT: 0
-      // CONNECTING_META: 1
-      // META_CONNECTED: 2
-      // BROKER_CONNECTED: 3
-      // ...
-      
       if (connectionManager.currentPhase === TradingPhase.META_CONNECTED ||
           connectionManager.currentPhase === TradingPhase.BROKER_CONNECTED || 
           connectionManager.currentPhase === TradingPhase.ACCOUNT_SYNCING ||
           connectionManager.currentPhase === TradingPhase.ACCOUNT_READY ||
           connectionManager.currentPhase === TradingPhase.STREAMING) {
         
-        console.log(`[DEBUG] Phase check passed (${connectionManager.currentPhase}), setting intent.`);
         connectionManager.setStreamIntent(selectedAccountId, symbol, timeframe);
-        
-        // Explicitly subscribe again just in case the intent alone isn't enough
-        // This is a safety measure
         connectionManager.send(selectedAccountId, {
             type: 'STREAM_SUBSCRIBE',
             accountId: selectedAccountId,
@@ -242,16 +242,11 @@ const MarketData: React.FC<MarketDataProps> = ({
       }
     }, 1000);
     
-    // 2. Subscribe to the global data tunnel
     const unsub = connectionManager.subscribe((data: any) => {
-      console.log("[DEBUG_REC_DATA]", data.type, data.symbol); 
       if (data.type === 'HISTORY_SNAPSHOT' && isSymbolMatch(data.symbol, symbol)) {
           const validHistory = data.candles.filter((c: any) => c && c.time && c.open !== undefined && c.close !== undefined);
           if (validHistory.length > 0) {
               setCandles(validHistory);
-              addLog(`[CHART_SEEDED] ${validHistory.length} historical candles from snapshot.`);
-              console.log("[CHART_SEEDED]", validHistory.length);
-              
               if (currentUserEmail && selectedAccountId && symbol && timeframe) {
                 const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
                 try {
@@ -260,24 +255,12 @@ const MarketData: React.FC<MarketDataProps> = ({
                   console.warn("Failed to write snapshot cache", e);
                 }
               }
-          } else {
-              console.warn(`[CHART_RETRY] Received empty history snapshot for ${symbol}, retrying in 5s...`);
-              setTimeout(() => {
-                 connectionManager.send(selectedAccountId, {
-                    type: 'STREAM_SUBSCRIBE',
-                    accountId: selectedAccountId,
-                    symbol,
-                    timeframe
-                 }, true);
-              }, 5000);
           }
       } else if (data.type === 'CANDLE' && isSymbolMatch(data.symbol, symbol)) {
         if (!data.candle || !data.candle.time) return;
-        console.log("[DEBUG_REC_CANDLE]", data);
         const inc = data.candle;
         const tfM = getTimeframeMinutes(timeframe);
         const alignedIncomingTime = alignToTimeframe(inc.time, tfM);
-        
         const alignedCandle = { ...inc, time: new Date(alignedIncomingTime).toISOString() };
         
         setCandles(prev => {
@@ -299,21 +282,23 @@ const MarketData: React.FC<MarketDataProps> = ({
               console.warn("Failed to write live candle update to cache", e);
             }
           }
-
           return next;
         });
         
       } else if (data.type === 'price:update' && isSymbolMatch(data.symbol, symbol)) {
-        console.log("[DEBUG_REC_PRICE]", data);
         const bid = Number(data.bid);
         const ask = Number(data.ask);
         const price = bid || ask;
         
         setLatestTick({ bid, ask });
-        console.log("[LIVE_TICK]", price);
 
         setCandles(prev => {
-           if (prev.length === 0) return prev;
+           if (prev.length === 0) {
+              const now = new Date();
+              const tfM = getTimeframeMinutes(timeframe);
+              const alignedIncomingTime = alignToTimeframe(now.toISOString(), tfM);
+              return [{ time: new Date(alignedIncomingTime).toISOString(), open: price, high: price, low: price, close: price, tickVolume: 1 }];
+           }
            const next = [...prev];
            const last = { ...next[next.length - 1] };
            last.close = price;
@@ -329,7 +314,6 @@ const MarketData: React.FC<MarketDataProps> = ({
                console.warn("Failed to write price update cache", e);
              }
            }
-
            return next;
         });
       }
@@ -339,11 +323,7 @@ const MarketData: React.FC<MarketDataProps> = ({
       clearInterval(phaseCheck);
       unsub();
     };
-  }, [selectedAccountId, symbol, timeframe, addLog]);
-
-  useEffect(() => {
-    console.log("[MARKET_STATE]", candles.length);
-  }, [candles]);
+  }, [selectedAccountId, symbol, timeframe]);
 
   const [localSymbol, setLocalSymbol] = useState(symbol);
 
@@ -353,9 +333,6 @@ const MarketData: React.FC<MarketDataProps> = ({
 
   useEffect(() => {
     if (localSymbol === symbol) return;
-    
-    // VALIDATION: Only propagate to global state if symbol is officially supported by broker
-    // This prevents the SDK from attempting to subscribe to partial strings like "XAU" while typing "XAUUSDm"
     if (!availableBrokerSymbols.includes(localSymbol)) return;
 
     const timer = setTimeout(() => {
@@ -365,48 +342,48 @@ const MarketData: React.FC<MarketDataProps> = ({
     return () => clearTimeout(timer);
   }, [localSymbol, symbol, setSymbol, availableBrokerSymbols, addLog]);
 
-  const displayData = useMemo(() => {
-    if (chartData.length === 0) return null;
-    const last = chartData[chartData.length - 1];
-    if (!last) return null;
-    return {
-      time: last.time ? new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-',
-      open: last.open,
-      high: last.high,
-      low: last.low,
-      close: last.close,
-      spread: last.spread
-    };
-  }, [chartData]);
+  // Handle manual lots adjustment
+  const handleVolumeDecrement = () => {
+    const next = Math.max(0.01, Number((lotSize - 0.01).toFixed(2)));
+    setLotSize(next);
+  };
+
+  const handleVolumeIncrement = () => {
+    const next = Math.min(10.0, Number((lotSize + 0.01).toFixed(2)));
+    setLotSize(next);
+  };
+
+  // Live prices indicators for buy & sell
+  const liveBidPrice = useMemo(() => {
+    if (latestTick?.bid) return latestTick.bid.toFixed(2);
+    if (chartData.length > 0) return chartData[chartData.length - 1].close.toFixed(2);
+    return '----.--';
+  }, [latestTick, chartData]);
+
+  const liveAskPrice = useMemo(() => {
+    if (latestTick?.ask) return latestTick.ask.toFixed(2);
+    if (chartData.length > 0) return (chartData[chartData.length - 1].close + 0.15).toFixed(2); // estimated ask
+    return '----.--';
+  }, [latestTick, chartData]);
 
   const timeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
 
-  // Helper to determine spread in points from tick data based on typical broker formatting if tick spread isn't explicitly available
-  const getTickSpread = (bid?: number, ask?: number) => {
-    if (bid === undefined || ask === undefined) return '-';
-    // Dynamically calculate the multiplier based on the asset class (approximated by price level)
-    // For Forex (e.g. 1.0500), 1 point = 0.00001 (mutiplier 100000)
-    // For Gold/Crypto, often multiplied by 100 or 1000. We'll use the user's specific request logic:
-    // "spread: (tick.ask - tick.bid) * 10000" but adapted generically based on decimals
-    const getDecimals = (n: number) => {
-        const str = n.toString();
-        if (str.includes('.')) return str.split('.')[1].length;
-        return 0;
-    };
-    const decimals = Math.max(getDecimals(bid), getDecimals(ask));
-    const pointMultiplier = Math.pow(10, decimals);
-    
-    return ((ask - bid) * pointMultiplier).toFixed(0);
-  };
+  // Filtered symbols based on Search Query
+  const filteredSymbols = useMemo(() => {
+    const query = assetSearchQuery.toUpperCase().trim();
+    if (!query) return availableBrokerSymbols.slice(0, 50);
+    return availableBrokerSymbols.filter(s => s.toUpperCase().includes(query)).slice(0, 50);
+  }, [availableBrokerSymbols, assetSearchQuery]);
 
   return (
-    <div className="flex flex-col h-full space-y-4 min-h-0">
+    <div className="flex flex-col h-full w-full bg-black text-slate-100 overflow-hidden font-sans space-y-2 select-none relative pb-2 sm:pb-0">
+      
       {/* SYMBOL MISMATCH ALERT (Global Context Guard) */}
       {!isLoading && availableBrokerSymbols.length > 0 && symbol && !availableBrokerSymbols.includes(symbol) && (
-        <div className="mx-2 bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl flex items-center gap-3 animate-pulse">
-           <Zap className="w-4 h-4 text-amber-500" />
+        <div className="mx-2 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-xl flex items-center gap-3 animate-pulse shrink-0">
+           <Zap className="w-3.5 h-3.5 text-amber-500" />
            <div className="flex-1">
-             <p className="text-[10px] font-mono font-bold text-amber-200 uppercase tracking-tighter">Symbol Conflict Detected</p>
+             <p className="text-[9px] font-mono font-black text-amber-200 uppercase tracking-tighter">Symbol Conflict Detected</p>
              <p className="text-[9px] font-mono text-amber-400/80 uppercase font-medium leading-relaxed">
                "{symbol}" is not recognized by your broker.
              </p>
@@ -414,342 +391,477 @@ const MarketData: React.FC<MarketDataProps> = ({
         </div>
       )}
 
-      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-2 p-2">
-        <div className="flex flex-col sm:flex-row flex-wrap items-start sm:items-center gap-2 w-full justify-between sm:justify-start">
-          <div className="flex flex-col gap-0.5 w-full sm:w-auto">
-            <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Terminal</span>
-            <select 
-              value={selectedAccountId}
-              onChange={(e) => setSelectedAccountId(e.target.value)}
-              className="bg-black/40 border border-white/10 text-white text-xs font-mono rounded-lg px-3 py-1.5 focus:border-white outline-none min-w-[150px] w-full sm:w-auto transition-colors appearance-none"
-            >
-              {accounts.map(acc => (
-                <option key={acc.id} value={acc.id}>{acc.login} ({acc.platform})</option>
-              ))}
-            </select>
-          </div>
+      {/* TOP CONTROL BAR - Single horizontal row */}
+      <div className="flex items-center justify-between gap-1.5 px-2 py-1 bg-neutral-900/40 rounded-2xl border border-white/5 shrink-0">
+        
+        {/* Asset dropdown selector widget */}
+        <div className="relative">
+          <button 
+            type="button"
+            onClick={() => setIsAssetOpen(!isAssetOpen)}
+            className="flex items-center justify-between gap-1.5 px-3 py-2 bg-black/60 hover:bg-black/80 text-xs text-white font-mono font-black border border-white/10 rounded-xl transition-all cursor-pointer select-none max-w-[130px] sm:max-w-none text-left"
+          >
+            <span className="truncate">{symbol || 'SELECT ASSET'}</span>
+            <ChevronDown className="w-3.5 h-3.5 text-[#face6f] shrink-0" />
+          </button>
 
-          <div className="flex flex-col gap-0.5 w-full sm:w-auto">
-            <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Asset</span>
-            <div className="relative w-full sm:w-auto">
-              <div className={`flex bg-black/40 border border-white/10 rounded-lg overflow-hidden focus-within:border-white group transition-colors ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
+          {isAssetOpen && (
+            <>
+              <div 
+                className="fixed inset-0 z-40" 
+                onClick={() => { setIsAssetOpen(false); setAssetSearchQuery(''); }} 
+              />
+              <div className="absolute left-0 mt-1.5 w-60 bg-[#070b13] border border-[#face6f]/20 rounded-2xl shadow-2xl z-50 p-2 text-left animate-in fade-in slide-in-from-top-1">
                 <input 
                   type="text"
-                  list="broker-symbols"
-                  value={localSymbol}
-                  disabled={isAlgoRunning}
-                  onChange={(e) => setLocalSymbol(e.target.value)}
-                  className={`bg-transparent text-white text-xs px-3 py-1.5 outline-none w-full sm:w-[120px] font-mono font-bold tracking-tight ${(availableBrokerSymbols.length > 0 && !availableBrokerSymbols.includes(localSymbol)) ? 'text-amber-400' : ''} ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
-                  placeholder="XAUUSDm"
+                  value={assetSearchQuery}
+                  onChange={(e) => setAssetSearchQuery(e.target.value)}
+                  placeholder="Filter instruments..."
+                  className="w-full bg-black text-xs font-mono text-white border border-white/10 rounded-xl px-3 py-2 outline-none focus:border-[#face6f]/50 mb-2"
+                  autoFocus
                 />
-                <datalist id="broker-symbols" className="bg-slate-900">
-                  {availableBrokerSymbols.map(s => <option key={s} value={s} />)}
-                </datalist>
-                <div className="bg-white/5 px-2 flex items-center border-l border-white/10">
-                  <Activity className={`w-3 h-3 ${availableBrokerSymbols.includes(symbol) ? 'text-emerald-500' : 'text-slate-600'}`} />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-0.5 w-full sm:w-auto">
-            <span className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest ml-1">Interval</span>
-            <div className={`flex bg-black/40 rounded-lg p-0.5 border border-white/10 w-full sm:w-auto overflow-x-auto ${isAlgoRunning ? 'opacity-50 cursor-not-allowed' : ''} custom-scrollbar`}>
-              {timeframes.map(tf => (
-                <button
-                  key={tf}
-                  disabled={isAlgoRunning}
-                  onClick={() => setTimeframe(tf)}
-                  className={`px-3 py-1 text-[10px] font-mono font-bold rounded-md transition-all shrink-0 active:scale-95 ${
-                    timeframe === tf 
-                      ? 'text-white shadow-sm' 
-                      : 'text-slate-400 hover:text-white hover:bg-white/5'
-                  } ${isAlgoRunning ? 'cursor-not-allowed' : ''}`}
-                  style={timeframe === tf ? { backgroundColor: 'var(--accent-color)' } : {}}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-          </div>
-          
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8 flex-1 min-h-0">
-        <div className="lg:col-span-2 space-y-6 flex flex-col min-h-[400px] lg:min-h-0 h-full">
-          <div className="p-2 flex-1 flex flex-col relative w-full bg-black/20 border border-white/10 rounded-xl glowing-frame min-h-[350px] lg:min-h-0">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2 z-20">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-mono font-black text-white px-2 py-1 bg-black/40 rounded-md border border-white/10 uppercase">{symbol}</h3>
-                <span className="px-2 py-1 bg-white/10 rounded-md text-[10px] font-mono font-bold border border-white/10" style={{ color: 'var(--accent-color)' }}>
-                  {timeframe}
-                </span>
-                {isSubscribing && <RefreshCw className="w-3 h-3 animate-spin" style={{ color: 'var(--accent-color)' }} />}
-              </div>
-              <button
-                onClick={() => setShowAnalysis(!showAnalysis)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-mono font-black uppercase tracking-widest transition-all ${
-                  showAnalysis 
-                    ? 'bg-white/10 text-white border border-white/20' 
-                    : 'bg-black/40 text-slate-500 border border-white/5 hover:text-white'
-                }`}
-                style={showAnalysis ? { borderColor: 'var(--accent-color)' } : {}}
-              >
-                <Zap className={`w-3 h-3 ${showAnalysis ? 'accent-glow' : ''}`} style={showAnalysis ? { color: 'var(--accent-color)' } : {}} />
-                {showAnalysis ? 'Analysis ON' : 'Analysis OFF'}
-              </button>
-            </div>
-
-          <div className="flex-1 w-full relative min-h-[300px] lg:min-h-0">
-            {/* Background Symbol Text */}
-            <div className="absolute inset-0 flex flex-col pt-4 pl-4 md:pt-10 md:pl-10 pointer-events-none opacity-[0.02] z-0 select-none overflow-hidden">
-              <span className="text-6xl md:text-[10rem] font-black text-white leading-none tracking-tighter uppercase">{symbol}</span>
-              <span className="text-3xl md:text-6xl font-black mt-[-10px] uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>{timeframe}</span>
-            </div>
-            
-            <div className="absolute inset-0 w-full h-full flex items-center justify-center">
-              {(!candles || candles.length === 0) ? (
-                <div className="w-full">
-                  {!selectedAccount ? (
-                    <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
-                      <AlertCircle className="w-8 h-8 text-amber-500/80 animate-pulse" />
-                      <p className="font-mono text-xs text-slate-300 uppercase tracking-widest font-bold">No Active Terminal Selected</p>
-                      <p className="text-[11px] text-slate-500 max-w-sm">Please select or construct an active trading terminal on the <strong>Accounts Config</strong> tab to begin streaming charts.</p>
-                    </div>
-                  ) : selectedAccount.state !== 'DEPLOYED' ? (
-                    <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
-                      <Settings className="w-8 h-8 text-slate-500 animate-spin" style={{ animationDuration: '4s' }} />
-                      <p className="font-mono text-xs text-slate-300 uppercase tracking-widest font-bold">Terminal Undeployed</p>
-                      <p className="text-[11px] text-slate-500 max-w-sm">The terminal <strong>{selectedAccount.name}</strong> is offline. Navigate to the <strong>Accounts Config</strong> tab and deploy the cloud node.</p>
-                    </div>
-                  ) : selectedAccount.connectionStatus?.toUpperCase() === 'DISCONNECTED_FROM_BROKER' ? (
-                    <div className="flex flex-col items-center justify-center text-center p-5 sm:p-6 space-y-3 bg-rose-500/5 rounded-[20px] sm:rounded-[25px] border border-rose-500/10 max-w-lg mx-4">
-                      <Lock className="w-7 h-7 text-rose-400 accent-glow" />
-                      <p className="font-mono text-xs text-rose-300 uppercase tracking-widest font-black">Broker Connection Blocked</p>
-                      <p className="text-[11px] text-slate-400 leading-relaxed max-w-md">
-                        Your Agilium cloud terminal node is successfully online, but your MetaTrader broker has rejected the login credentials.
-                      </p>
-                      <div className="text-[10px] text-slate-500 text-left space-y-1 bg-black/40 p-4 rounded-xl border border-white/5 font-mono leading-relaxed w-full">
-                        <p className="text-white/80 font-bold mb-1">📋 Troubleshooting Steps:</p>
-                        <p>1. Check that Login ID <span className="text-white">({selectedAccount.login})</span> matches your MT4/MT5 account.</p>
-                        <p>2. Check that Server Selected <span className="text-white">({selectedAccount.server})</span> is identical to your broker name.</p>
-                        <p>3. Ensure you used the Master Trading password, not the read-only Investor password.</p>
-                        <p>4. Weekend Notice: Most broker servers disconnect for maintenance from Saturday 00:00 to Sunday 23:59 GMT.</p>
-                      </div>
-                    </div>
+                <div className="max-h-56 overflow-y-auto scrollbar-thin custom-scrollbar space-y-0.5">
+                  {filteredSymbols.length === 0 ? (
+                    <div className="text-[10px] text-slate-500 font-mono p-3 text-center uppercase tracking-wide">No assets matched</div>
                   ) : (
-                    <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
-                      <RefreshCw className="w-6 h-6 text-sky-400 animate-spin" />
-                      <p className="font-mono text-xs text-slate-400 uppercase tracking-widest font-bold">Preparing trading workspace ({symbol})</p>
-                      <p className="text-[11px] text-slate-500 max-w-sm leading-relaxed">
-                        Establishing connection and building live candles. This can take up to 45 seconds on first boot.
-                      </p>
-                    </div>
+                    filteredSymbols.map(sym => (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => {
+                          setSymbol(sym);
+                          setIsAssetOpen(false);
+                          setAssetSearchQuery('');
+                        }}
+                        className={`w-full text-left font-mono text-xs font-bold px-3 py-2 rounded-xl transition-colors truncate block ${
+                          symbol === sym 
+                            ? 'bg-[#face6f]/10 text-[#face6f]' 
+                            : 'text-slate-400 hover:bg-white/5 hover:text-white'
+                        }`}
+                      >
+                        {sym}
+                      </button>
+                    ))
                   )}
                 </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Timeframe dropdown selector widget */}
+        <div className="relative">
+          <button 
+            type="button"
+            onClick={() => setIsTimeframeOpen(!isTimeframeOpen)}
+            className="flex items-center justify-between gap-1.5 px-3 py-2 bg-black/60 hover:bg-black/80 text-xs text-white font-mono font-black border border-white/10 rounded-xl transition-all cursor-pointer select-none"
+          >
+            <span>{timeframe ? timeframe.toUpperCase() : '15M'}</span>
+            <ChevronDown className="w-3.5 h-3.5 text-[#face6f] shrink-0" />
+          </button>
+
+          {isTimeframeOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setIsTimeframeOpen(false)} />
+              <div className="absolute left-0 mt-1.5 w-24 bg-[#070b13] border border-[#face6f]/20 rounded-2xl shadow-2xl z-50 p-1 text-left animate-in fade-in slide-in-from-top-1">
+                {timeframes.map(tf => (
+                  <button
+                    key={tf}
+                    type="button"
+                    onClick={() => {
+                      setTimeframe(tf);
+                      setIsTimeframeOpen(false);
+                    }}
+                    className={`w-full text-left font-mono text-xs font-bold px-3 py-2 rounded-xl transition-colors block ${
+                      timeframe === tf 
+                        ? 'bg-[#face6f]/10 text-[#face6f]' 
+                        : 'text-slate-400 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    {tf.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Start Engine / Stop Engine dynamic executor */}
+        <button
+          type="button"
+          onClick={onToggleAlgo}
+          disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 sm:px-4 rounded-xl border text-xs font-mono font-black tracking-wider transition-all cursor-pointer active:scale-95 text-center ${
+            isAlgoRunning 
+              ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20 shadow-md shadow-rose-500/5' 
+              : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 shadow-md shadow-emerald-500/5'
+          } ${((connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}
+        >
+          {isAlgoRunning ? (
+            <>
+              <Square className="w-3 h-3 fill-rose-400" />
+              <span className="truncate text-[10px] sm:text-xs">STOP ENGINE</span>
+            </>
+          ) : (
+            <>
+              <Play className="w-3 h-3 fill-emerald-400 text-emerald-400 ml-0.5" />
+              <span className="truncate text-[10px] sm:text-xs">START ENGINE</span>
+            </>
+          )}
+        </button>
+
+        {/* Global Settings button */}
+        <button 
+          type="button"
+          onClick={() => setShowSettingsDrawer(true)}
+          className="p-2 bg-black/60 hover:bg-black/80 text-[#face6f] border border-white/10 rounded-xl hover:border-[#face6f]/40 transition-all cursor-pointer select-none active:scale-95 shrink-0"
+        >
+          <Settings className="w-4 h-4 animate-spin-slow" />
+        </button>
+
+      </div>
+
+      {/* BUY / SELL EXECUTION BAR - Positioned snug above chart */}
+      <div className="flex items-stretch gap-2.5 px-1.5 py-1 bg-neutral-950/25 rounded-2xl shrink-0">
+        
+        {/* SELL Trade controller */}
+        <button
+          type="button"
+          onClick={onSell}
+          disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
+          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-3 rounded-xl bg-rose-950/10 border border-rose-500/15 hover:bg-rose-950/20 active:scale-95 transition-all ${
+            ((connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : 'cursor-pointer'
+          }`}
+        >
+          <span className="text-[8px] font-mono font-black text-rose-500 uppercase tracking-widest mb-0.5 leading-none">SELL</span>
+          <div className="flex items-center gap-1">
+            <span className="text-xs sm:text-sm font-mono font-black text-white leading-none">{liveBidPrice}</span>
+            <TrendingDown className="w-3 h-3 text-rose-400 shrink-0" />
+          </div>
+        </button>
+
+        {/* VOLUME CONTROL ADJUSTMENT CAPSULE */}
+        <div className="flex-1 flex flex-col items-center justify-center bg-black/60 border border-white/5 rounded-xl py-1 px-2 font-mono text-center relative">
+          <span className="text-[7px] text-slate-500 block uppercase font-black tracking-widest mb-0.5 leading-none">VOLUME</span>
+          <div className="flex items-center justify-between w-full">
+            <button 
+              type="button"
+              onClick={handleVolumeDecrement}
+              className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg active:scale-95 transition-all cursor-pointer"
+            >
+              <Minus className="w-3 h-3" />
+            </button>
+            <input 
+              id="terminal-volume-input"
+              type="text"
+              inputMode="decimal"
+              value={lotSizeInput}
+              onChange={(e) => {
+                const text = e.target.value;
+                if (/^[0-9]*\.?[0-9]*$/.test(text)) {
+                  setLotSizeInput(text);
+                  const val = parseFloat(text);
+                  if (!isNaN(val) && val >= 0.001 && val <= 100.0) {
+                    setLotSize(val);
+                  }
+                }
+              }}
+              onBlur={() => {
+                const val = parseFloat(lotSizeInput);
+                if (isNaN(val) || val < 0.01) {
+                  setLotSize(0.01);
+                  setLotSizeInput("0.01");
+                } else if (val > 10.0) {
+                  setLotSize(10.0);
+                  setLotSizeInput("10.00");
+                } else {
+                  const rounded = Number(val.toFixed(2));
+                  setLotSize(rounded);
+                  setLotSizeInput(rounded.toString());
+                }
+              }}
+              className="w-14 bg-transparent text-xs sm:text-sm font-black text-white text-center outline-none border-0 p-0 focus:ring-0 focus:outline-none placeholder-slate-500"
+              style={{ color: 'var(--accent-color)' }}
+            />
+            <button 
+              type="button"
+              onClick={handleVolumeIncrement}
+              className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg active:scale-95 transition-all cursor-pointer"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+
+        {/* BUY Trade controller */}
+        <button
+          type="button"
+          onClick={onBuy}
+          disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
+          className={`flex-1 flex flex-col items-center justify-center py-1.5 px-3 rounded-xl bg-emerald-950/10 border border-emerald-500/15 hover:bg-emerald-950/20 active:scale-95 transition-all ${
+            ((connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : 'cursor-pointer'
+          }`}
+        >
+          <span className="text-[8px] font-mono font-black text-emerald-500 uppercase tracking-widest mb-0.5 leading-none">BUY</span>
+          <div className="flex items-center gap-1">
+            <span className="text-xs sm:text-sm font-mono font-black text-white leading-none">{liveAskPrice}</span>
+            <TrendingUp className="w-3 h-3 text-emerald-400 shrink-0" />
+          </div>
+        </button>
+
+      </div>
+
+      {/* COMPACT ORDER FEEDBACK TOAST OVERLAY */}
+      {tradeStatus === 'executing' && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 flex items-center justify-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl animate-pulse shadow-xl backdrop-blur-md">
+          <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+          <span className="text-[9px] font-mono font-black text-amber-400 uppercase tracking-widest leading-none">TRANSMITTING SECURE Payload...</span>
+        </div>
+      )}
+      {tradeStatus === 'success' && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl shadow-xl backdrop-blur-md animate-fade-in">
+          <span className="text-[9px] font-mono font-black text-emerald-400 uppercase tracking-widest leading-none">🛰️ ORDER BROADCAST SUCCESSFUL</span>
+        </div>
+      )}
+
+      {/* FULL SCREEN CHART COMPONENT - Takes remaining available height */}
+      <div className="flex-1 w-full bg-[#050608]/40 border border-white/5 rounded-3xl relative min-h-0 min-w-0 overflow-hidden shadow-2xl glowing-frame">
+        
+        {/* Absolute dynamic background asset indicator */}
+        <div className="absolute top-4 left-4 pointer-events-none opacity-5 z-0 select-none font-mono">
+          <span className="text-5xl font-black text-white leading-none uppercase">{symbol}</span>
+          <span className="text-xs font-bold block uppercase tracking-widest mt-1 text-[#face6f]">{timeframe} INTERVAL</span>
+        </div>
+
+        <div className="absolute inset-0 w-full h-full p-2 flex items-center justify-center z-10">
+          {(!candles || candles.length === 0) ? (
+            <div className="w-full">
+              {!selectedAccount ? (
+                <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                  <AlertCircle className="w-8 h-8 text-amber-500/80 animate-pulse" />
+                  <p className="font-mono text-xs text-slate-300 uppercase tracking-widest font-bold">No Active Terminal Selected</p>
+                  <p className="text-[11px] text-slate-500 max-w-sm">Please select an active trading terminal inside Settings configuration above.</p>
+                </div>
+              ) : selectedAccount.state !== 'DEPLOYED' ? (
+                <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                  <Settings className="w-8 h-8 text-slate-500 animate-spin" style={{ animationDuration: '4s' }} />
+                  <p className="font-mono text-xs text-slate-300 uppercase tracking-widest font-bold">Terminal Off-line</p>
+                  <p className="text-[11px] text-slate-500 max-w-sm">The terminal <strong>{selectedAccount.name}</strong> is offline. Open Settings and deploy the cloud terminal.</p>
+                </div>
+              ) : selectedAccount.connectionStatus?.toUpperCase() === 'DISCONNECTED_FROM_BROKER' ? (
+                <div className="flex flex-col items-center justify-center text-center p-5 space-y-3 bg-rose-500/5 rounded-2xl border border-rose-500/10 max-w-md mx-4">
+                  <Lock className="w-7 h-7 text-rose-400 accent-glow" />
+                  <p className="font-mono text-xs text-rose-300 uppercase tracking-widest font-black">Broker Connection Blocked</p>
+                  <p className="text-[10px] text-slate-400 leading-relaxed max-w-xs">
+                    Terminal is online, but your MetaTrader broker has rejected these login credentials. Please verify your account details inside Settings setup.
+                  </p>
+                </div>
               ) : (
-                <Suspense fallback={<div className="flex w-full h-full items-center justify-center text-slate-500 font-mono text-xs">TRADING CHART LOADING...</div>}>
-                  <CandlestickChart 
-                    data={candles}
-                    latestTick={latestTick} 
-                    deals={deals} 
-                    positions={globalPositions}
-                    marketAnalysis={marketAnalysis}
-                    showAnalysis={showAnalysis}
-                    upColor={chartSettings.upColor}
-                    downColor={chartSettings.downColor}
-                    bgImageUrl={chartSettings.bgImageUrl}
-                  />
-                </Suspense>
+                <div className="flex flex-col items-center justify-center text-center p-6 space-y-3">
+                  <RefreshCw className="w-6 h-6 text-[#face6f] animate-spin" />
+                  <p className="font-mono text-xs text-slate-400 uppercase tracking-widest font-bold">Synchronizing {symbol} workspace</p>
+                  <p className="text-[10px] text-slate-500 max-w-xs leading-relaxed">
+                    Establishing connection and building live candles. This may take up to 45 seconds on first bootstrap cycle.
+                  </p>
+                </div>
               )}
             </div>
-          </div>
+          ) : (
+            <Suspense fallback={<div className="flex w-full h-full items-center justify-center text-slate-500 font-mono text-xs">TRADING TERMINAL LOADING...</div>}>
+              <CandlestickChart 
+                data={candles}
+                latestTick={latestTick} 
+                deals={deals} 
+                positions={globalPositions}
+                marketAnalysis={marketAnalysis}
+                showAnalysis={showAnalysis}
+                upColor={chartSettings.upColor}
+                downColor={chartSettings.downColor}
+                bgImageUrl={chartSettings.bgImageUrl}
+                activeSetup={activeSetup}
+                lotSize={lotSize}
+                setLotSize={setLotSize}
+              />
+            </Suspense>
+          )}
         </div>
       </div>
 
-      <div className="space-y-4 lg:mt-0 mt-6 lg:border-l border-white/5 lg:pl-6">
-          {/* TRADING TERMINAL PANEL */}
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xs font-mono font-black text-white/90 flex items-center gap-2 uppercase tracking-[0.2em]">
-                <Workflow className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
-                Advisor Control
-              </h3>
-              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 rounded border border-white/5">
-                <div className={`w-1.5 h-1.5 rounded-full ${connectionStatus === 'READY' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-                <span className="text-[9px] font-mono font-black text-slate-400 uppercase">{connectionStatus}</span>
-              </div>
-            </div>
+      {/* ALGOTRADE SLIDE-UP CONFIGURATION SETTINGS DRAWER */}
+      <AnimatePresence>
+        {showSettingsDrawer && (
+          <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/85 backdrop-blur-md">
+            
+            {/* Backdrop click away guard */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-transparent"
+              onClick={() => setShowSettingsDrawer(false)}
+            />
 
-            <div className="space-y-4">
-              {/* Strategy Settings */}
-              <div className="p-3 bg-black/40 rounded-xl border border-white/10 space-y-3 animate-in slide-in-from-top-4 duration-500 glowing-panel">
+            {/* Slider Drawer element container */}
+            <motion.div 
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 220 }}
+              className="w-full max-w-lg bg-[#070b13] border-t border-[#face6f]/30 rounded-t-[40px] shadow-2xl relative flex flex-col font-sans select-none max-h-[85vh] overflow-hidden"
+            >
+              {/* LED Spot Strip branding */}
+              <div className="bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 text-[10px] font-mono font-black py-2.5 px-6 flex items-center justify-between tracking-wider">
+                <span className="flex items-center gap-1.5 uppercase font-bold">
+                  <Workflow className="w-3.5 h-3.5 animate-pulse" />
+                  Advisor System Core Node Panel
+                </span>
+                <span className="bg-slate-950 text-amber-400 font-bold px-2 py-0.5 rounded text-[9px] tracking-widest">
+                  SETTINGS
+                </span>
+              </div>
+
+              {/* Slider content scrolling panel */}
+              <div className="p-6 overflow-y-auto space-y-5 flex-1 min-h-0 custom-scrollbar text-left pb-12">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-mono font-black uppercase tracking-widest" style={{ color: 'var(--accent-color)' }}>Parameters</span>
-                  <button onClick={() => setActiveTab('settings')} className="text-[8px] font-mono font-black text-slate-500 hover:text-white uppercase transition-colors shrink-0">Advisor Setup</button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <label className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-widest">Volume</label>
-                    <input 
-                      type="number" 
-                      step="0.01" 
-                      value={lotSize} 
-                      onChange={(e) => setLotSize(parseFloat(e.target.value))}
-                      className="w-full bg-black/60 border border-white/10 rounded-lg px-2 py-1.5 text-[10px] font-mono text-white outline-none focus:border-white transition-colors" 
-                    />
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase tracking-tight">Terminal Settings</h3>
+                    <p className="text-[10px] font-mono text-slate-400">Configure parameters, risk boundaries, and cloud deployments</p>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[8px] font-mono font-bold text-slate-500 uppercase tracking-widest">Asset</label>
-                    <input 
-                      type="text" 
-                      value={symbol} 
-                      readOnly
-                      className="w-full bg-black/20 border border-white/5 rounded-lg px-2 py-1.5 text-[10px] font-mono text-slate-400 outline-none" 
-                    />
-                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => setShowSettingsDrawer(false)}
+                    className="p-1.5 bg-white/5 hover:bg-white/10 rounded-xl transition-all cursor-pointer text-slate-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
+                {/* Account Terminal Selector */}
+                <div className="space-y-1.5 bg-black/40 p-4 rounded-2xl border border-white/5">
+                  <label className="text-[9px] font-mono font-black text-slate-500 uppercase tracking-widest">Active Terminal Connection</label>
+                  <select 
+                    value={selectedAccountId}
+                    onChange={(e) => setSelectedAccountId(e.target.value)}
+                    className="w-full bg-black/80 border border-white/10 text-white text-xs font-mono rounded-xl px-3 py-2.5 outline-none focus:border-[#face6f]/40 transition-colors"
+                  >
+                    {accounts.map(acc => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.login} ({acc.platform?.toUpperCase()}) — {acc.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Volume & Lot allocation setting */}
+                <div className="space-y-2 bg-black/40 p-4 rounded-2xl border border-white/5">
+                  <span className="text-[9px] font-mono font-black text-[#face6f] uppercase tracking-widest block">Volume Settings</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Lot Size Allocation</label>
+                      <input 
+                        type="text" 
+                        inputMode="decimal"
+                        value={lotSizeInput} 
+                        onChange={(e) => {
+                          const text = e.target.value;
+                          if (/^[0-9]*\.?[0-9]*$/.test(text)) {
+                            setLotSizeInput(text);
+                            const val = parseFloat(text);
+                            if (!isNaN(val) && val >= 0.001 && val <= 100.0) {
+                              setLotSize(val);
+                            }
+                          }
+                        }}
+                        onBlur={() => {
+                          const val = parseFloat(lotSizeInput);
+                          if (isNaN(val) || val < 0.01) {
+                            setLotSize(0.01);
+                            setLotSizeInput("0.01");
+                          } else if (val > 10.0) {
+                            setLotSize(10.0);
+                            setLotSizeInput("10.00");
+                          } else {
+                            const rounded = Number(val.toFixed(2));
+                            setLotSize(rounded);
+                            setLotSizeInput(rounded.toString());
+                          }
+                        }}
+                        className="w-full bg-black border border-white/10 text-xs font-mono text-white rounded-xl px-3 py-2 outline-none focus:border-[#face6f]/40" 
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Underlying Symbol</label>
+                      <input 
+                        type="text" 
+                        value={symbol} 
+                        readOnly
+                        className="w-full bg-black/40 border border-white/5 text-xs font-mono text-slate-400 rounded-xl px-3 py-2 outline-none" 
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Risk Management Setting */}
+                <div className="space-y-2 bg-black/40 p-4 rounded-2xl border border-white/5">
+                  <span className="text-[9px] font-mono font-black text-[#face6f] uppercase tracking-widest block">Risk Management</span>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Max Trades Limit</label>
+                      <input 
+                        type="number"
+                        value={strategySettings.maxTrades ?? 1}
+                        onChange={(e) => setStrategySettings({ maxTrades: Math.max(1, parseInt(e.target.value) || 1) })}
+                        className="w-full bg-black border border-white/10 text-xs font-mono text-white rounded-xl px-3 py-2 outline-none focus:border-[#face6f]/40"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Broker Comment</label>
+                      <input 
+                        type="text"
+                        value="ALGOTRADE"
+                        className="w-full bg-[#070b13] border border-white/10 text-xs font-mono text-slate-400 rounded-xl px-3 py-2 outline-none cursor-not-allowed opacity-50"
+                        readOnly
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Active Cloud AI & Analysis Overlay Checkboxes */}
+                <div className="space-y-2 bg-black/40 p-4 rounded-2xl border border-white/5">
+                  <span className="text-[9px] font-mono font-black text-[#face6f] uppercase tracking-widest block">AI & Analysis Settings</span>
+                  <div className="flex items-center justify-between py-1 border-b border-white/5">
+                    <span className="text-xs font-bold text-slate-300">Model Candlestick overlay assist</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowAnalysis(!showAnalysis)}
+                      className={`px-3 py-1.5 rounded-xl text-[10px] font-mono font-black uppercase tracking-wide transition-all ${
+                        showAnalysis 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                          : 'bg-white/5 text-slate-500 border border-white/5'
+                      }`}
+                    >
+                      {showAnalysis ? 'ENABLED ON CHART' : 'DISABLED'}
+                    </button>
+                  </div>
+                </div>
+
+
+
+                {/* Dismiss Actions link */}
                 <button
-                  onClick={onBuy}
-                  disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'CONNECTED' || connectionStatus === 'SYNCING') ? 'hover:bg-emerald-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
+                  type="button"
+                  onClick={() => setShowSettingsDrawer(false)}
+                  className="w-full py-3 px-4 rounded-xl font-mono text-xs font-black text-slate-400 hover:text-white uppercase transition-colors text-center border border-white/10 hover:border-white/20 select-none cursor-pointer"
                 >
-                  <TrendingUp className="w-4 h-4 text-emerald-400 mb-1" />
-                  <span className="text-xs font-mono font-black text-emerald-400 uppercase tracking-widest">BUY</span>
+                  SAVE & CLOSE PANEL
                 </button>
 
-                <button
-                  onClick={onSell}
-                  disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                  className={`group relative flex flex-col items-center justify-center gap-1 py-3 bg-rose-500/10 border border-rose-500/20 rounded-xl transition-all ${(connectionStatus === 'READY' || connectionStatus === 'CONNECTED' || connectionStatus === 'SYNCING') ? 'hover:bg-rose-500/20 active:scale-95' : 'opacity-40 grayscale'} overflow-hidden cursor-pointer`}
-                >
-                  <TrendingDown className="w-4 h-4 text-rose-400 mb-1" />
-                  <span className="text-xs font-mono font-black text-rose-400 uppercase tracking-widest">SELL</span>
-                </button>
               </div>
-
-              {/* Main Execution Toggle */}
-              <button
-                onClick={onToggleAlgo}
-                disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
-                className={`w-full flex items-center justify-center gap-2 py-4 rounded-xl border transition-all active:scale-95 ${
-                  isAlgoRunning 
-                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-400 hover:bg-rose-500/30' 
-                    : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30'
-                } ${((connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing') ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}
-                style={isAlgoRunning ? { boxShadow: '0 0 15px rgba(244,63,94,0.15)' } : { boxShadow: '0 0 15px rgba(16,185,129,0.15)' }}
-              >
-                {isAlgoRunning ? (
-                  <>
-                    <Square className="w-4 h-4 fill-rose-500/50" />
-                    <span className="text-[10px] font-mono font-black uppercase tracking-widest">
-                      STOP ENGINE
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 fill-emerald-500/50 ml-0.5" />
-                    <span className="text-[10px] font-mono font-black uppercase tracking-widest">
-                      START ENGINE
-                    </span>
-                  </>
-                )}
-              </button>
-
-              {tradeStatus === 'executing' && (
-                <div className="flex items-center justify-center gap-2 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg animate-pulse mt-2">
-                  <RefreshCw className="w-3 h-3 text-amber-500 animate-spin" />
-                  <span className="text-[9px] font-mono font-black text-amber-500 uppercase tracking-widest">Transmitting...</span>
-                </div>
-              )}
-              {tradeStatus === 'success' && (
-                <div className="flex items-center justify-center gap-2 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg mt-2">
-                  <span className="text-[9px] font-mono font-black text-emerald-500 uppercase tracking-widest">✅ Broadcasted</span>
-                </div>
-              )}
-            </div>
+            </motion.div>
           </div>
+        )}
+      </AnimatePresence>
 
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <Layers className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
-              <h4 className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Open Ops</h4>
-            </div>
-            <div className="space-y-2">
-              {globalPositions.length === 0 ? (
-                <p className="text-[10px] font-mono text-slate-600 text-center py-4 bg-black/20 rounded-lg">No active logic</p>
-              ) : (
-                globalPositions.map((pos: any, i: number) => {
-                  const isBuy = pos.type === 'POSITION_TYPE_BUY' || pos.type?.toLowerCase() === 'buy';
-                  return (
-                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5 glowing-panel">
-                    <div>
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className="text-[10px] font-mono font-black text-white">{pos.symbol}</span>
-                        <span className="text-[7px] font-mono font-black px-1 py-0.5 bg-white/5 text-slate-400 rounded uppercase border border-white/5">{pos.comment || 'SYS'}</span>
-                      </div>
-                      <p className={`text-[8px] font-mono font-black uppercase tracking-widest ${isBuy ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        {isBuy ? 'BUY' : 'SELL'} {pos.volume}
-                      </p>
-                    </div>
-                    <div className={`text-[10px] font-mono font-black ${pos.unrealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {pos.unrealizedProfit >= 0 ? '+' : ''}{pos.unrealizedProfit ? pos.unrealizedProfit.toFixed(2) : '0.00'}
-                    </div>
-                  </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <History className="w-3.5 h-3.5" style={{ color: 'var(--accent-color)' }} />
-                <h4 className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Feed</h4>
-              </div>
-              {globalHistory.length > 0 && (
-                <button 
-                  onClick={() => setHistory([])}
-                  className="text-[8px] font-mono font-black text-rose-500 hover:text-rose-400 uppercase tracking-widest transition-colors"
-                >
-                  Flush
-                </button>
-              )}
-            </div>
-            <div className="space-y-2">
-              {globalHistory.length === 0 ? (
-                <p className="text-[10px] font-mono text-slate-600 text-center py-4 bg-black/20 rounded-lg">Log empty</p>
-              ) : (
-                globalHistory.slice(0, 10).map((order: any, i: number) => {
-                  if (!order) return null;
-                  const isBuy = order.type?.toUpperCase().includes('BUY');
-                  return (
-                  <div key={i} className="flex items-center justify-between p-2.5 bg-black/40 rounded-lg border border-white/5 glowing-panel">
-                    <div className="flex flex-col gap-0.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-mono font-black text-white">{order.symbol}</span>
-                        <span className={`text-[7px] font-mono font-black px-1 py-0.5 rounded uppercase tracking-widest ${isBuy ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>{isBuy ? 'BUY' : 'SELL'}</span>
-                      </div>
-                      <p className="text-[8px] font-mono text-slate-500 uppercase">{order.time ? new Date(order.time).toLocaleTimeString() : '-'}</p>
-                    </div>
-                    {order.profit !== undefined && (
-                      <div className={`text-[10px] font-mono font-black ${order.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {order.profit >= 0 ? '+' : ''}{order.profit?.toFixed(2) || '0.00'}
-                      </div>
-                    )}
-                  </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

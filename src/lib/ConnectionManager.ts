@@ -301,6 +301,13 @@ class ConnectionManager {
       if (data) {
           if (data.state !== 'DEPLOYED' || data.connectionStatus !== 'CONNECTED') {
               console.warn(`[RECONNECT_GUARD] Account ${accountId} is not active (${data.state}, ${data.connectionStatus}). Cancelling connection loop.`);
+              this.connections.delete(accountId); // Ensure socket is registered absent
+              this.notifyStatus(accountId, false);
+              
+              // Transition to init to show offline or similar
+              if (accountId === this.selectedAccountId) {
+                this.transitionTo(TradingPhase.INIT);
+              }
               return;
           }
       }
@@ -326,6 +333,17 @@ class ConnectionManager {
         
         // Ensure synchronization starts immediately upon connection
         this.send(accountId, { type: 'subscribe', accountId, token: this.tokens.get(accountId) }, true);
+
+        // Resume any active stream intent for this account
+        if (this.desiredStream && this.activeStreamKey && this.activeStreamKey.startsWith(`${accountId}:`)) {
+            console.log(`[RECONNECT_GUARD] Restoring stream ${this.desiredStream.symbol} for ${accountId}...`);
+            this.send(accountId, {
+                type: 'STREAM_SUBSCRIBE',
+                accountId,
+                symbol: this.desiredStream.symbol,
+                timeframe: this.desiredStream.timeframe
+            }, true);
+        }
     };
 
     socket.onmessage = (event) => {

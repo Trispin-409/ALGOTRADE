@@ -70,13 +70,25 @@ export const getApiBaseUrl = () => {
 export const safeFetch = async (url: string, options?: RequestInit) => {
   // Automatically inject fresh token if Authorization header is missing or placeholder
   let finalOptions = { ...options };
-  if (!finalOptions.headers) finalOptions.headers = {};
+  if (finalOptions.headers) {
+    finalOptions.headers = { ...finalOptions.headers };
+  } else {
+    finalOptions.headers = {};
+  }
   
   const headers = finalOptions.headers as Record<string, string>;
   
   // Attach device fingerprint for account security tracking
   headers['X-Device-Fingerprint'] = generateFingerprint();
   
+  // Clean Content-Type/body for GET requests or requests without a body
+  const method = (finalOptions.method || 'GET').toUpperCase();
+  if (method === 'GET' || !finalOptions.body) {
+    delete headers['Content-Type'];
+    delete headers['content-type'];
+    delete (finalOptions as any).body;
+  }
+
   // Always inject fresh auth for internal API routes
   if (url.startsWith('/api/') || !headers['Authorization'] || headers['Authorization'].includes('undefined')) {
     const session = await getVerifiedSession();
@@ -98,9 +110,12 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
       errorMsg += `: ${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`;
     }
     
-    // Auto-logout on token invalidation
-    if (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token'))) {
-       try { await supabase.auth.signOut(); } catch(e) {}
+    // Auto-logout on token invalidation or poisoned giant token (HTTP 413/431)
+    if (res.status === 413 || res.status === 431 || (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token')))) {
+       try { 
+         await supabase.auth.signOut(); 
+         localStorage.clear();
+       } catch(e) {}
        window.location.href = '/';
     }
     
@@ -115,9 +130,10 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
   try {
     return JSON.parse(text);
   } catch (e) {
-    if (text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
-      throw new Error(`Unexpected HTML response (likely a server crash or routing error).`);
+    if (text.trim().toLowerCase().startsWith('<!doctype') || text.trim().toLowerCase().startsWith('<html')) {
+      // Return a softer error without destroying session to prevent brute-force logout loops
+      throw new Error(`Connection Error: Server returned HTML page instead of API data. The proxy might require re-authentication.`);
     }
-    throw new Error(`Invalid JSON response: ${text.slice(0, 50)}`);
+    throw new Error(`Invalid JSON response (HTTP ${res.status}) on ${url}: ${text.slice(0, 50)}`);
   }
 };

@@ -18,7 +18,10 @@ const SystemMonitor: React.FC<SystemMonitorProps> = ({ logs, isAuthValid, lastEr
     fetch('/api/token')
       .then(res => res.json())
       .then(data => setSafeToken(data.token))
-      .catch(console.error);
+      .catch(err => {
+        if (err?.message?.includes('Failed to fetch')) return;
+        console.error(err);
+      });
   }, []);
 
   useEffect(() => {

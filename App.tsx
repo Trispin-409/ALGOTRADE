@@ -22,7 +22,8 @@ import {
   Activity,
   TrendingUp,
   Users,
-  Download
+  Download,
+  Folder
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PlatformType, TradingAccount } from './types';
@@ -37,6 +38,7 @@ import ChatradeAI from './components/ChatradeAI';
 import SystemMonitor from './components/SystemMonitor';
 import { ExpertLogPanel } from './components/ExpertLogPanel';
 import MarketData from './components/MarketData';
+import OpenPositionsView from './components/OpenPositionsView';
 import ChartSettings from './components/ChartSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { connectionManager, TradingPhase } from './src/lib/ConnectionManager';
@@ -55,6 +57,7 @@ const App: React.FC = () => {
   const [session, setSession] = useState<any>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [bootData, setBootData] = useState<any>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [loadingBootstrap, setLoadingBootstrap] = useState(false);
 
   // Zustand State
@@ -153,6 +156,7 @@ const App: React.FC = () => {
     })
     .catch(err => {
       addLog(`FATAL: Failed to retrieve system configuration: ${err.message}`);
+      setBootError(err.message);
     })
     .finally(() => {
       setLoadingBootstrap(false);
@@ -191,12 +195,29 @@ const App: React.FC = () => {
   const [lastError, setLastError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState(() => {
+    return localStorage.getItem('desktop_sidebar_open') !== 'false';
+  });
   const [openPositions, setOpenPositions] = useState<number>(0);
   const [isAlgoTradeRunning, setIsAlgoTradeRunning] = useState(false);
-  const [selectedAccountId, setSelectedAccountId] = useState(() => localStorage.getItem('selectedAccountId') || '');
+  const [selectedAccountId, setSelectedAccountId] = useState(() => {
+    const val = localStorage.getItem('selectedAccountId');
+    if (val && val.length > 200) {
+      localStorage.removeItem('selectedAccountId');
+      return '';
+    }
+    return val || '';
+  });
   const [tradingStatus, setTradingStatus] = useState<string>('INIT');
   const [availableBrokerSymbols, setAvailableBrokerSymbols] = useState<string[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState(() => localStorage.getItem('selectedSymbol') || 'XAUUSDm');
+  const [selectedSymbol, setSelectedSymbol] = useState(() => {
+    const val = localStorage.getItem('selectedSymbol');
+    if (val && val.length > 50) {
+      localStorage.removeItem('selectedSymbol');
+      return 'XAUUSDm';
+    }
+    return val || 'XAUUSDm';
+  });
 
   // Sync selectedSymbol with store strategy settings
   useEffect(() => {
@@ -1011,7 +1032,8 @@ const App: React.FC = () => {
     </div>
   );
   
-  if (loadingBootstrap || !bootData) return <FullScreenLoader message="Loading trading workspace..." />;
+  if (loadingBootstrap || (!bootData && !bootError)) return <FullScreenLoader message="Loading trading workspace..." />;
+  if (bootError) return <FullScreenLoader message="Workspace Failure" error={bootError} />;
 
   // Redirect to pricing if user has no active subscription and is not on the pricing page
   const isBootingWithKey = window.location.search.includes('activated=true');
@@ -1040,7 +1062,11 @@ const App: React.FC = () => {
         
         {/* Sidebar - Desktop & Mobile overlay */}
         <div className={`fixed inset-0 bg-black/85 z-[60] lg:hidden transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={() => setIsSidebarOpen(false)} />
-        <div className={`fixed lg:relative z-[70] lg:z-0 transition-transform duration-300 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} h-full border-r border-white/5 bg-black/95 backdrop-blur-xl`}>
+        <div className={`fixed lg:relative z-[70] lg:z-0 transition-all duration-300 transform 
+          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} 
+          ${isDesktopSidebarOpen ? 'lg:w-64 lg:opacity-100 lg:translate-x-0 lg:border-r border-white/5' : 'lg:w-0 lg:opacity-0 lg:-translate-x-full lg:border-r-0 lg:pointer-events-none'} 
+          h-full bg-black/95 backdrop-blur-xl shrink-0 overflow-hidden`}
+        >
           <Sidebar 
             activeTab={activeTab} 
             setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }} 
@@ -1058,8 +1084,16 @@ const App: React.FC = () => {
           <header className="h-14 sm:h-16 border-b border-white/5 flex items-center justify-between px-3 sm:px-6 bg-black/80 backdrop-blur-3xl shrink-0 z-20">
             <div className="flex items-center gap-2 sm:gap-4">
               <button 
-                onClick={() => setIsSidebarOpen(true)} 
-                className="lg:hidden p-2 hover:bg-white/5 rounded-lg text-slate-400 transition-colors"
+                onClick={() => {
+                  if (window.innerWidth >= 1024) {
+                    const next = !isDesktopSidebarOpen;
+                    setIsDesktopSidebarOpen(next);
+                    localStorage.setItem('desktop_sidebar_open', String(next));
+                  } else {
+                    setIsSidebarOpen(true);
+                  }
+                }} 
+                className="p-2 hover:bg-white/5 rounded-lg text-slate-400 transition-colors cursor-pointer"
                 style={{ color: 'var(--accent-color)' }}
               >
                 <Menu className="w-5 h-5 shadow-sm" />
@@ -1129,8 +1163,8 @@ const App: React.FC = () => {
             </div>
           </header>
 
-          <div className={`flex-1 ${activeTab === 'chatrade' ? 'overflow-hidden min-h-0 p-0 sm:p-2 lg:p-4 lg:pb-2' : 'overflow-y-auto p-2 sm:p-6 pb-[calc(70px+env(safe-area-inset-bottom))] lg:pb-6'} custom-scrollbar z-10 w-full overflow-x-hidden flex flex-col`}>
-            <div className={`max-w-[1700px] mx-auto w-full ${activeTab === 'chatrade' ? 'flex-1 min-h-0' : 'space-y-4 flex-1'} flex flex-col`}>
+          <div className={`flex-1 ${(activeTab === 'chatrade' || activeTab === 'data') ? 'overflow-hidden min-h-0 p-0 sm:p-2 lg:p-4 lg:pb-2' : 'overflow-y-auto p-2 sm:p-6 pb-[calc(70px+env(safe-area-inset-bottom))] lg:pb-6'} custom-scrollbar z-10 w-full overflow-x-hidden flex flex-col`}>
+            <div className={`max-w-[1700px] mx-auto w-full ${(activeTab === 'chatrade' || activeTab === 'data') ? 'flex-1 min-h-0' : 'space-y-4 flex-1'} flex flex-col`}>
             {/* BACKGROUND CHATRADE AI INSTANCE TO MAINTAIN POLLING/WEBSOCKETS */}
             <div className={`${activeTab === 'chatrade' ? 'flex-1 flex flex-col min-h-0' : 'hidden'} w-full overflow-hidden`}>
               {bootData && (session?.user?.email || '').toLowerCase() !== 'trispinblackops@gmail.com' && (bootData.subscription_plan || '').toLowerCase() === 'starter' ? (
@@ -1167,9 +1201,39 @@ const App: React.FC = () => {
                 />
               )}
             </div>
+            
+            {/* BACKGROUND MARKET DATA INSTANCE TO MAINTAIN WEBSOCKETS */}
+            <div className={`${activeTab === 'data' ? 'flex-1 flex flex-col min-h-0' : 'hidden'} w-full overflow-hidden`}>
+              <ErrorBoundary>
+                <MarketData 
+                  accounts={accounts} 
+                  selectedAccountId={selectedAccountId || ''} 
+                  setSelectedAccountId={handleAccountSelect}
+                  symbol={selectedSymbol}
+                  setSymbol={setSelectedSymbol}
+                  timeframe={selectedTimeframe}
+                  setTimeframe={setSelectedTimeframe}
+                  addLog={addLog}
+                  availableBrokerSymbols={availableBrokerSymbols}
+                  lotSize={lotSize}
+                  setLotSize={setLotSize}
+                  onBuy={handleBuy}
+                  onSell={handleSell}
+                  onToggleAlgo={handleToggleAlgo}
+                  isAlgoRunning={isAlgoTradeRunning}
+                  tradeStatus={tradeStatus}
+                  connectionStatus={sdkStatus}
+                  onDeploy={handleDeployTerminal}
+                  onUndeploy={handleUndeployTerminal}
+                  setActiveTab={setActiveTab}
+                  token={session?.access_token}
+                  isLoading={isLoading}
+                />
+              </ErrorBoundary>
+            </div>
 
             <AnimatePresence mode="wait">
-              {activeTab !== 'chatrade' && (
+              {(activeTab !== 'chatrade' && activeTab !== 'data') && (
               <motion.div
                 key={activeTab}
                 className={`flex-1 flex flex-col min-h-0`}
@@ -1197,36 +1261,18 @@ const App: React.FC = () => {
                     hasActiveSubscription={bootData?.has_active_subscription}
                   />
                 )}
-                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} subscriptionPlan={bootData?.subscription_plan} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
-                {activeTab === 'risk' && <RiskManagement />}
-                <div style={{ display: activeTab === 'data' ? 'block' : 'none' }}>
+                {activeTab === 'open_positions' && (
                   <ErrorBoundary>
-                    <MarketData 
-                      accounts={accounts} 
-                      selectedAccountId={selectedAccountId || ''} 
-                      setSelectedAccountId={handleAccountSelect}
-                      symbol={selectedSymbol}
-                      setSymbol={setSelectedSymbol}
-                      timeframe={selectedTimeframe}
-                      setTimeframe={setSelectedTimeframe}
-                      addLog={addLog}
-                      availableBrokerSymbols={availableBrokerSymbols}
-                      lotSize={lotSize}
-                      setLotSize={setLotSize}
-                      onBuy={handleBuy}
-                      onSell={handleSell}
-                      onToggleAlgo={handleToggleAlgo}
-                      isAlgoRunning={isAlgoTradeRunning}
-                      tradeStatus={tradeStatus}
-                      connectionStatus={sdkStatus}
-                      onDeploy={handleDeployTerminal}
-                      onUndeploy={handleUndeployTerminal}
-                      setActiveTab={setActiveTab}
-                      token={session?.access_token}
-                      isLoading={isLoading}
+                    <OpenPositionsView 
+                      accounts={accounts}
+                      token={session?.access_token} 
+                      selectedAccountId={selectedAccountId} 
+                      addLog={addLog} 
                     />
                   </ErrorBoundary>
-                </div>
+                )}
+                {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} subscriptionPlan={bootData?.subscription_plan} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
+                {activeTab === 'risk' && <RiskManagement />}
                 {activeTab === 'settings' && (
                   <ErrorBoundary>
                     <ChartSettings />
@@ -1284,21 +1330,21 @@ const App: React.FC = () => {
 
         {/* Bottom Navigation */}
         <nav className="lg:hidden bg-black/95 backdrop-blur-xl border-t border-white/5 flex items-center justify-between px-1 shrink-0 z-50 w-full fixed bottom-0 left-0" style={{ height: 'calc(60px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)' }}>
-          <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'dashboard' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'dashboard' ? { color: 'var(--accent-color)' } : {}}>
+          <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'dashboard' ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'dashboard' ? { color: 'var(--accent-color)' } : {}}>
             <Activity className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Metrics</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">METRICS</span>
           </button>
-          <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'data' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'data' ? { color: 'var(--accent-color)' } : {}}>
+          <button onClick={() => setActiveTab('data')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'data' ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'data' ? { color: 'var(--accent-color)' } : {}}>
             <TrendingUp className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Market</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">MARKET</span>
           </button>
-          <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'accounts' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'accounts' ? { color: 'var(--accent-color)' } : {}}>
+          <button onClick={() => setActiveTab('open_positions')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'open_positions' ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'open_positions' ? { color: 'var(--accent-color)' } : {}}>
+            <Folder className="w-5 h-5 sm:w-6 sm:h-6" />
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">OPEN POSITIONS</span>
+          </button>
+          <button onClick={() => setActiveTab('accounts')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'accounts' ? 'text-white' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'accounts' ? { color: 'var(--accent-color)' } : {}}>
             <Users className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Account</span>
-          </button>
-          <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center justify-center gap-1 w-1/4 h-full transition-all active:scale-95 ${activeTab === 'risk' ? 'text-white drop-shadow-[0_0_10px_rgba(var(--accent-color-rgb),0.5)]' : 'text-slate-500 hover:text-slate-300'}`} style={activeTab === 'risk' ? { color: 'var(--accent-color)' } : {}}>
-            <Shield className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">Risk</span>
+            <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">ACCOUNT</span>
           </button>
         </nav>
       </main>

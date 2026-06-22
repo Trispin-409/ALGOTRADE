@@ -35,6 +35,7 @@ interface AccountStore {
     detections: any[];
   } | null;
   currentUserEmail: string | null;
+  activeSetup: any | null;
 
   setConnectionStatus: (status: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE") => void;
   updateAccount: (payload: { balance?: number; equity?: number; currency?: string }) => void;
@@ -63,6 +64,7 @@ interface AccountStore {
     }>;
   }) => void;
   setMarketAnalysis: (analysis: any | null) => void;
+  setActiveSetup: (setup: any | null) => void;
 }
 
 export const useStore = create<AccountStore>((set) => ({
@@ -76,6 +78,7 @@ export const useStore = create<AccountStore>((set) => ({
   stats: null,
   marketAnalysis: null,
   currentUserEmail: null,
+  activeSetup: null,
   chartSettings: (() => {
     try {
       const saved = localStorage.getItem('chartSettings');
@@ -290,4 +293,5 @@ export const useStore = create<AccountStore>((set) => ({
     return { strategySettings: newSettings };
   }),
   setMarketAnalysis: (analysis) => set({ marketAnalysis: analysis }),
+  setActiveSetup: (setup) => set({ activeSetup: setup }),
 }));

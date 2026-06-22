@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 
-export const FullScreenLoader = ({ message }: { message: string }) => {
+export const FullScreenLoader = ({ message, error }: { message: string, error?: string | null }) => {
   const [dots, setDots] = useState('');
   const [systemStage, setSystemStage] = useState(0);
 
@@ -129,18 +129,47 @@ export const FullScreenLoader = ({ message }: { message: string }) => {
 
         {/* State Information */}
         <div className="w-full flex flex-col items-center justify-center p-4 bg-white/[0.02] border border-white/5 rounded-xl backdrop-blur-md">
-          {/* Main Action State text */}
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></div>
-            <p className="text-xs font-mono font-bold uppercase tracking-wider text-slate-300">
-              {message}{dots}
-            </p>
-          </div>
+          {error ? (
+            <div className="flex flex-col items-center gap-3 w-full">
+              <div className="w-10 h-10 rounded-full border-2 border-red-500/20 flex items-center justify-center text-red-400">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+              </div>
+              <p className="text-xs font-mono font-bold uppercase tracking-wider text-red-400 text-center">
+                System Error
+              </p>
+              <p className="text-[10px] sm:text-[11px] font-mono text-red-400/80 text-center break-words max-w-full font-bold">
+                {error}
+              </p>
+              <button 
+                onClick={async () => {
+                  try {
+                    const { supabase } = await import('../../lib/supabase');
+                    await supabase.auth.signOut();
+                  } catch (e) {}
+                  localStorage.clear();
+                  window.location.href = '/';
+                }}
+                className="mt-2 px-4 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 font-mono text-[10px] tracking-wider rounded uppercase transition-colors"
+              >
+                Re-initialize Core
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Main Action State text */}
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></div>
+                <p className="text-xs font-mono font-bold uppercase tracking-wider text-slate-300">
+                  {message}{dots}
+                </p>
+              </div>
 
-          {/* Staggered diagnostic info */}
-          <p className="text-[10px] sm:text-[11px] font-mono text-slate-500 text-center transition-all duration-300">
-            {diagnostics[systemStage]}
-          </p>
+              {/* Staggered diagnostic info */}
+              <p className="text-[10px] sm:text-[11px] font-mono text-slate-500 text-center transition-all duration-300">
+                {diagnostics[systemStage]}
+              </p>
+            </>
+          )}
         </div>
       </div>
 
