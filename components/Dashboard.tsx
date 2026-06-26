@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Bell, RefreshCw, Settings2, Square, Loader2, Zap, Activity } from 'lucide-react';
-import { AreaChart, Area, BarChart, Bar, ReferenceLine, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { AreaChart, Area, BarChart, Bar, ReferenceLine, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LabelList } from 'recharts';
 import { TradingAccount, MetaStats } from '../types';
 import { formatCurrency, safeFetch } from '../src/lib/utils';
 import { useStore } from '../src/store';
@@ -200,6 +200,40 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [token, setHistory]);
 
+  const safeParseToTimestamp = useCallback((dateVal: any): number | null => {
+    if (!dateVal) return null;
+    if (dateVal instanceof Date) return isNaN(dateVal.getTime()) ? null : dateVal.getTime();
+    if (typeof dateVal === 'number') return isNaN(dateVal) ? null : dateVal;
+    if (typeof dateVal === 'string') {
+      const trimmed = dateVal.trim();
+      if (!trimmed) return null;
+      if (/^\d+$/.test(trimmed)) {
+        return parseInt(trimmed, 10);
+      }
+      // Replace dots with slashes
+      // Date.parse supports "YYYY/MM/DD" across all browsers (including Safari)
+      let cleaned = trimmed.replace(/\./g, '/');
+      const parsed = Date.parse(cleaned);
+      if (!isNaN(parsed)) return parsed;
+      // Try replacing spaces with T and adding Z if it looks like standard ISO but missing timezone
+      let isoFormatted = cleaned;
+      if (isoFormatted.includes(' ') && !isoFormatted.includes('T')) {
+        isoFormatted = isoFormatted.replace(' ', 'T');
+      }
+      if (!isoFormatted.endsWith('Z') && !isoFormatted.includes('+') && !isoFormatted.includes('-')) {
+        isoFormatted += 'Z';
+      }
+      const isoParsed = Date.parse(isoFormatted);
+      if (!isNaN(isoParsed)) return isoParsed;
+    }
+    try {
+      const fallback = new Date(dateVal).getTime();
+      return isNaN(fallback) ? null : fallback;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const [isRefreshing, setIsRefreshing] = useState(false);
   const manualRefresh = async () => {
     setIsRefreshing(true);
@@ -218,15 +252,33 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [fetchStats, subscriberAccount?.id, subscriberAccount?.connectionStatus, isSynced]);
 
+  // Periodically pull fresh stats telemetry in the background to ensure calculations are live and fresh
+  useEffect(() => {
+    if (!subscriberAccount?.id) return;
+    const interval = setInterval(() => {
+      fetchStats(subscriberAccount.id, subscriberAccount.connectionStatus, isSynced);
+    }, 15000); // 15s auto-refresh
+    return () => clearInterval(interval);
+  }, [fetchStats, subscriberAccount?.id, subscriberAccount?.connectionStatus, isSynced]);
+
   const [timeRange, setTimeRange] = useState<'7D' | '30D' | '90D' | 'ALL'>('7D');
 
   const filteredHistory = useMemo(() => {
     if (!history || history.length === 0) return [];
-    const now = new Date();
+    const now = Date.now();
     const daysMultiplier = timeRange === '7D' ? 7 : timeRange === '30D' ? 30 : timeRange === '90D' ? 90 : 3650;
-    const threshold = now.getTime() - (daysMultiplier * 24 * 60 * 60 * 1000);
-    return history.filter(h => new Date(h.time).getTime() >= threshold);
-  }, [history, timeRange]);
+    const threshold = now - (daysMultiplier * 24 * 60 * 60 * 1000);
+    return history.filter(h => {
+      // Exclude non-trade transaction types (deposits & withdrawals) from calculations
+      if (h.type === 'BALANCE' || h.symbol === 'DEPOSIT' || h.symbol === 'BALANCE' || h.comment?.toUpperCase().includes('DEPOSIT')) {
+        return false;
+      }
+      const tStr = h.time || h.closeTime || h.openTime;
+      const tMs = safeParseToTimestamp(tStr);
+      if (tMs === null) return false;
+      return tMs >= threshold;
+    });
+  }, [history, timeRange, safeParseToTimestamp]);
 
   const filteredMetrics = useMemo(() => {
     const validTrades = filteredHistory.filter(t => typeof t.profit === 'number');
@@ -293,29 +345,43 @@ const Dashboard: React.FC<DashboardProps> = ({
     const bestTrade = Math.max(...profits, 0);
     const worstTrade = Math.min(...profits, 0);
 
-    // Avg Duration calculation
+    // Avg Duration calculation (handles seconds, minutes, hours, days, closed via TP/SL/manually)
     let totalSecs = 0;
     let durationCount = 0;
     validTrades.forEach(t => {
-      const open = t.openTime ? new Date(t.openTime).getTime() : (t.time ? new Date(t.time).getTime() - 1800000 : null);
-      const close = t.closeTime ? new Date(t.closeTime).getTime() : (t.doneTime ? new Date(t.doneTime).getTime() : (t.time ? new Date(t.time).getTime() : null));
-      if (open && close && close > open) {
-        totalSecs += (close - open) / 1000;
-        durationCount++;
+      const openMs = safeParseToTimestamp(t.openTime) || (safeParseToTimestamp(t.time) ? safeParseToTimestamp(t.time)! - 1800000 : null);
+      const closeMs = safeParseToTimestamp(t.closeTime) || safeParseToTimestamp(t.doneTime) || safeParseToTimestamp(t.time);
+      if (openMs && closeMs) {
+        const diffSecs = (closeMs - openMs) / 1000;
+        if (diffSecs >= 0) {
+          totalSecs += diffSecs;
+          durationCount++;
+        }
       }
     });
 
-    let avgDurationText = '24m'; // default fallback
+    let avgDurationText = '3m'; // fallback if duration cannot be exact
     if (durationCount > 0) {
       const avgSecs = totalSecs / durationCount;
-      const mins = Math.floor(avgSecs / 60);
-      if (mins < 60) {
-        avgDurationText = `${mins}m`;
+      if (avgSecs < 60) {
+        avgDurationText = `${Math.round(avgSecs)}s`;
       } else {
-        const h = Math.floor(mins / 60);
-        const m = mins % 60;
-        avgDurationText = m > 0 ? `${h}h ${m}m` : `${h}h`;
+        const mins = Math.floor(avgSecs / 60);
+        if (mins < 60) {
+          avgDurationText = `${mins}m`;
+        } else if (mins < 1440) {
+          const h = Math.floor(mins / 60);
+          const m = mins % 60;
+          avgDurationText = m > 0 ? `${h}h ${m}m` : `${h}h`;
+        } else {
+          const days = Math.floor(mins / 1440);
+          const remainMins = mins % 1440;
+          const h = Math.floor(remainMins / 60);
+          avgDurationText = h > 0 ? `${days}d ${h}h` : `${days}d`;
+        }
       }
+    } else if (validTrades.length === 0) {
+      avgDurationText = 'N/A';
     }
 
     // Streaks
@@ -323,7 +389,11 @@ const Dashboard: React.FC<DashboardProps> = ({
     let maxWin = 0;
     let currentLoss = 0;
     let maxLoss = 0;
-    const chronologicalTrades = [...validTrades].sort((a,b) => new Date(a.time || a.openTime || 0).getTime() - new Date(b.time || b.openTime || 0).getTime());
+    const chronologicalTrades = [...validTrades].sort((a, b) => {
+      const aMs = safeParseToTimestamp(a.time || a.openTime) || 0;
+      const bMs = safeParseToTimestamp(b.time || b.openTime) || 0;
+      return aMs - bMs;
+    });
     chronologicalTrades.forEach(t => {
       if (t.profit > 0) {
         currentWin++;
@@ -354,9 +424,18 @@ const Dashboard: React.FC<DashboardProps> = ({
     // Bucket growth metrics
     const nowTs = Date.now();
     const oneDay = 24 * 60 * 60 * 1000;
-    const dTrades = validTrades.filter(t => (nowTs - new Date(t.time || t.closeTime || 0).getTime()) <= oneDay);
-    const wTrades = validTrades.filter(t => (nowTs - new Date(t.time || t.closeTime || 0).getTime()) <= (7 * oneDay));
-    const mTrades = validTrades.filter(t => (nowTs - new Date(t.time || t.closeTime || 0).getTime()) <= (30 * oneDay));
+    const dTrades = validTrades.filter(t => {
+      const tMs = safeParseToTimestamp(t.time || t.closeTime);
+      return tMs !== null && (nowTs - tMs) <= oneDay;
+    });
+    const wTrades = validTrades.filter(t => {
+      const tMs = safeParseToTimestamp(t.time || t.closeTime);
+      return tMs !== null && (nowTs - tMs) <= (7 * oneDay);
+    });
+    const mTrades = validTrades.filter(t => {
+      const tMs = safeParseToTimestamp(t.time || t.closeTime);
+      return tMs !== null && (nowTs - tMs) <= (30 * oneDay);
+    });
 
     const dProfit = dTrades.reduce((sum, t) => sum + Number(t.profit), 0);
     const wProfit = wTrades.reduce((sum, t) => sum + Number(t.profit), 0);
@@ -390,7 +469,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       weeklyGrowth: wGrowth,
       monthlyGrowth: mGrowth
     };
-  }, [filteredHistory, displayBalance, displayEquity]);
+  }, [filteredHistory, displayBalance, displayEquity, safeParseToTimestamp]);
 
   const chartData = useMemo(() => {
     // If no balance and no history, show empty
@@ -416,7 +495,8 @@ const Dashboard: React.FC<DashboardProps> = ({
     
     const data = filteredHistory.map(t => {
       cumulative += (t.profit || 0);
-      const d = new Date(t.time);
+      const tMs = safeParseToTimestamp(t.time);
+      const d = tMs ? new Date(tMs) : new Date();
       return {
         date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         value: cumulative,
@@ -424,7 +504,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       };
     });
     return data;
-  }, [filteredHistory, displayBalance, filteredMetrics.profit, displayCurrency]);
+  }, [filteredHistory, displayBalance, filteredMetrics.profit, displayCurrency, safeParseToTimestamp]);
 
   const dailyJourneyData = useMemo(() => {
     const dayMap: Record<string, { date: string, timestamp: number, pnl: number, count: number, currency: string }> = {};
@@ -450,7 +530,8 @@ const Dashboard: React.FC<DashboardProps> = ({
       if (isNaN(profit)) return;
       const dateVal = t.time || t.closeTime || t.openTime;
       if (!dateVal) return;
-      const d = new Date(dateVal);
+      const tMs = safeParseToTimestamp(dateVal);
+      const d = tMs ? new Date(tMs) : new Date();
       const dateKey = d.toISOString().split('T')[0];
       
       if (dayMap[dateKey]) {
@@ -566,11 +647,11 @@ const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* MAIN CONTENT GRID */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {/* LEFT COLUMN */}
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {/* ACCOUNT OVERVIEW */}
-          <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 relative flex flex-col h-full overflow-hidden group">
+          <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 relative flex flex-col overflow-hidden group">
             {/* Elegant luxury gold background radial glow behind metrics and charts */}
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-56 h-56 bg-[#face6f]/8 rounded-full blur-[50px] pointer-events-none z-0" />
             <div className="absolute top-0 right-0 w-36 h-36 bg-[#face6f]/5 rounded-full blur-[40px] pointer-events-none z-0" />
@@ -661,37 +742,37 @@ const Dashboard: React.FC<DashboardProps> = ({
           
           {/* THREE CARDS ROW - 3 columns even on mobile for compactness */}
           <div className="grid grid-cols-3 gap-2">
-            <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-3 sm:p-5 shadow-[0_4px_30px_rgba(250,206,111,0.02)] hover:shadow-[0_0_20px_rgba(250,206,111,0.05)] transition-all duration-300 flex flex-col justify-between h-24 sm:h-[110px] relative overflow-hidden group">
-              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/8 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
-              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Total PNL</span>
+            <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 rounded-xl p-3 sm:p-5 shadow-lg transition-all duration-300 flex flex-col justify-between h-28 sm:h-[110px] relative overflow-hidden group">
+              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/10 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+              <span className="text-[9px] sm:text-[11px] font-black uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Total PNL</span>
               <div className="flex flex-col mt-2 relative z-10">
-                <span className={`text-[14px] sm:text-[22px] tracking-tighter font-black font-mono truncate ${filteredMetrics.profit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
+                <span className={`text-[16px] sm:text-[24px] tracking-tighter font-black font-mono truncate ${filteredMetrics.profit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
                   {filteredMetrics.profit >= 0 ? '+' : ''}{formatCurrency(filteredMetrics.profit, displayCurrency)}
                 </span>
-                <span className={`text-[9px] sm:text-xs font-mono mt-1 ${filteredMetrics.profit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{getPercentStr(balanceChange)}</span>
+                <span className={`text-[10px] sm:text-xs font-mono mt-1 font-bold ${filteredMetrics.profit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{getPercentStr(balanceChange)}</span>
               </div>
             </div>
-            <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-3 sm:p-5 shadow-[0_4px_30px_rgba(250,206,111,0.02)] hover:shadow-[0_0_20px_rgba(250,206,111,0.05)] transition-all duration-300 flex flex-col justify-between h-24 sm:h-[110px] relative overflow-hidden group">
-              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/8 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
-              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Win Rate</span>
+            <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 rounded-xl p-3 sm:p-5 shadow-lg transition-all duration-300 flex flex-col justify-between h-28 sm:h-[110px] relative overflow-hidden group">
+              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/10 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+              <span className="text-[9px] sm:text-[11px] font-black uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>Win Rate</span>
               <div className="flex flex-col mt-2 relative z-10">
-                <span className={`text-[14px] sm:text-[22px] tracking-tighter font-black font-mono ${filteredMetrics.winRate >= 50 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{filteredMetrics.winRate.toFixed(1)}%</span>
-                <span className="text-[9px] sm:text-xs text-slate-500 font-mono mt-1 truncate">{filteredMetrics.wonTrades}/{filteredMetrics.trades}</span>
+                <span className={`text-[16px] sm:text-[24px] tracking-tighter font-black font-mono ${filteredMetrics.winRate >= 50 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{filteredMetrics.winRate.toFixed(1)}%</span>
+                <span className="text-[10px] sm:text-xs text-slate-400 font-bold font-mono mt-1 truncate">{filteredMetrics.wonTrades} / {filteredMetrics.trades}</span>
               </div>
             </div>
-            <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-xl p-3 sm:p-5 shadow-[0_4px_30px_rgba(250,206,111,0.02)] hover:shadow-[0_0_20px_rgba(250,206,111,0.05)] transition-all duration-300 flex flex-col justify-between h-24 sm:h-[110px] relative overflow-hidden group">
-              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/8 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
-              <span className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>P. Factor</span>
+            <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 rounded-xl p-3 sm:p-5 shadow-lg transition-all duration-300 flex flex-col justify-between h-28 sm:h-[110px] relative overflow-hidden group">
+              <div className="absolute -right-8 -bottom-8 w-20 h-20 bg-[#face6f]/10 rounded-full blur-[25px] pointer-events-none z-0 group-hover:scale-125 transition-transform duration-500" />
+              <span className="text-[9px] sm:text-[11px] font-black uppercase tracking-widest relative z-10" style={{ color: 'var(--accent-color)' }}>P. Factor</span>
               <div className="flex flex-col mt-2 relative z-10">
-                <span className={`text-[14px] sm:text-[22px] tracking-tighter font-black font-mono ${filteredMetrics.profitFactor > 1.0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{filteredMetrics.profitFactor.toFixed(2)}</span>
-                <span className={`text-[9px] sm:text-xs font-mono mt-1 truncate ${filteredMetrics.profitFactor > 1.5 ? 'text-[#00E676]' : (filteredMetrics.profitFactor > 1.0 ? 'text-amber-500' : 'text-[#FF1744]')}`}>{filteredMetrics.profitFactor > 1.5 ? 'GOOD' : (filteredMetrics.profitFactor > 1.0 ? 'AVG' : 'POOR')}</span>
+                <span className={`text-[16px] sm:text-[24px] tracking-tighter font-black font-mono ${filteredMetrics.profitFactor > 1.0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>{filteredMetrics.profitFactor.toFixed(2)}</span>
+                <span className={`text-[10px] sm:text-xs font-bold font-mono mt-1 truncate ${filteredMetrics.profitFactor > 1.5 ? 'text-[#00E676]' : (filteredMetrics.profitFactor > 1.0 ? 'text-amber-500' : 'text-[#FF1744]')}`}>{filteredMetrics.profitFactor > 1.5 ? 'GOOD' : (filteredMetrics.profitFactor > 1.0 ? 'AVG' : 'POOR')}</span>
               </div>
             </div>
           </div>
         </div>
 
         {/* RIGHT COLUMN */}
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {/* TRADING JOURNEY */}
           <div className="bg-black/45 backdrop-blur-md border border-[#face6f]/15 hover:border-[#face6f]/30 rounded-[24px] p-5 shadow-[0_4px_30px_rgba(250,206,111,0.03)] hover:shadow-[0_0_25px_rgba(250,206,111,0.05)] transition-all duration-300 relative overflow-hidden group">
             {/* Elegant luxury gold background radial glow behind metrics and charts */}
@@ -727,6 +808,14 @@ const Dashboard: React.FC<DashboardProps> = ({
                   <Tooltip content={<CustomJourneyTooltip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
                   <ReferenceLine y={0} stroke="#475569" strokeWidth={1} strokeDasharray="3 3" />
                   <Bar dataKey="pnl" barSize={12} radius={[3, 3, 3, 3]}>
+                    <LabelList 
+                      dataKey="pnl" 
+                      position="top" 
+                      fill="#94a3b8" 
+                      fontSize={10} 
+                      fontWeight="bold" 
+                      formatter={(val: number) => val >= 0 ? `+${Math.round(val)}` : Math.round(val)} 
+                    />
                     {dailyJourneyData.map((entry, index) => {
                       const isWin = entry.pnl >= 0;
                       return (
@@ -757,14 +846,14 @@ const Dashboard: React.FC<DashboardProps> = ({
               <button className="text-[10px] font-bold uppercase tracking-widest hover:text-white transition-colors" style={{ color: 'var(--accent-color)' }}>View All</button>
             </div>
 
-            <div className="overflow-x-auto relative z-10">
+            <div className="overflow-x-auto relative z-10 custom-scrollbar">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-white/5">
-                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono pl-2">Strategy</th>
-                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono text-center">Win Rate</th>
-                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono text-right">PNL</th>
-                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono text-right pr-2">Trades</th>
+                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono pl-2 min-w-[140px]">Strategy</th>
+                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono text-center min-w-[80px]">Win Rate</th>
+                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono text-right min-w-[80px]">PNL</th>
+                    <th className="pb-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono text-right pr-2 min-w-[60px]">Trades</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -775,12 +864,12 @@ const Dashboard: React.FC<DashboardProps> = ({
                   ) : (
                     strategyData.slice(0, 5).map((strat, i) => (
                       <tr key={strat.name} className="border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors">
-                        <td className="py-4 text-sm text-slate-300 font-bold max-w-[150px] truncate pl-2">{strat.name}</td>
-                        <td className="py-4 text-sm text-white font-mono text-center">{strat.winRate.toFixed(1)}%</td>
-                        <td className={`py-4 text-sm font-mono text-right font-bold ${strat.pnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
+                        <td className="py-4 text-sm text-slate-300 font-bold max-w-[150px] truncate pl-2 min-w-[140px]">{strat.name}</td>
+                        <td className="py-4 text-sm text-white font-mono text-center min-w-[80px]">{strat.winRate.toFixed(1)}%</td>
+                        <td className={`py-4 text-sm font-mono text-right font-bold min-w-[80px] ${strat.pnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
                           {strat.pnl >= 0 ? '+' : ''}{formatCurrency(strat.pnl, displayCurrency)}
                         </td>
-                        <td className="py-4 text-sm text-white font-mono text-right pr-2">{strat.trades}</td>
+                        <td className="py-4 text-sm text-white font-mono text-right pr-2 min-w-[60px]">{strat.trades}</td>
                       </tr>
                     ))
                   )}
@@ -822,49 +911,49 @@ const Dashboard: React.FC<DashboardProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
           
           {/* SECTION 1: PERFORMANCE */}
-          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Performance Summary</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center text-xs">
+          <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 shadow-lg rounded-xl p-5 transition-all duration-300">
+            <h3 className="text-xs font-black text-slate-300 uppercase tracking-widest font-mono mb-5 border-b border-white/10 pb-2">Performance Summary</h3>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Total Trades</span>
-                <span className="font-bold text-white font-mono">{filteredMetrics.trades}</span>
+                <span className="text-lg font-black text-white font-mono">{filteredMetrics.trades}</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Win Rate</span>
-                <span className="font-bold text-[#00E676] font-mono">{filteredMetrics.winRate.toFixed(1)}%</span>
+                <span className="text-lg font-black text-[#00E676] font-mono">{filteredMetrics.winRate.toFixed(1)}%</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Loss Rate</span>
-                <span className="font-bold text-[#FF1744] font-mono">{filteredMetrics.lossRate.toFixed(1)}%</span>
+                <span className="text-lg font-black text-[#FF1744] font-mono">{filteredMetrics.lossRate.toFixed(1)}%</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Avg RR Ratio</span>
-                <span className="font-bold text-white font-mono">1 : {filteredMetrics.avgRRRatio.toFixed(2)}</span>
+                <span className="text-lg font-black text-white font-mono">1 : {filteredMetrics.avgRRRatio.toFixed(2)}</span>
               </div>
             </div>
           </div>
 
           {/* SECTION 2: PROFITABILITY */}
-          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Profitability & Factor</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center text-xs">
+          <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 shadow-lg rounded-xl p-5 transition-all duration-300">
+            <h3 className="text-xs font-black text-slate-300 uppercase tracking-widest font-mono mb-5 border-b border-white/10 pb-2">Profitability & Factor</h3>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Gross Profit</span>
-                <span className="font-bold text-[#00E676] font-mono">{formatCurrency(filteredMetrics.grossProfit, displayCurrency)}</span>
+                <span className="text-lg font-black text-[#00E676] font-mono">{formatCurrency(filteredMetrics.grossProfit, displayCurrency)}</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Gross Loss</span>
-                <span className="font-bold text-[#FF1744] font-mono">({formatCurrency(filteredMetrics.grossLoss, displayCurrency)})</span>
+                <span className="text-lg font-black text-[#FF1744] font-mono">({formatCurrency(filteredMetrics.grossLoss, displayCurrency)})</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Profit Factor</span>
-                <span className={`font-bold font-mono ${filteredMetrics.profitFactor >= 1.5 ? 'text-[#00E676]' : (filteredMetrics.profitFactor >= 1.0 ? 'text-amber-500' : 'text-[#FF1744]')}`}>
+                <span className={`text-lg font-black font-mono ${filteredMetrics.profitFactor >= 1.5 ? 'text-[#00E676]' : (filteredMetrics.profitFactor >= 1.0 ? 'text-amber-500' : 'text-[#FF1744]')}`}>
                   {filteredMetrics.profitFactor.toFixed(2)}
                 </span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Net Profit</span>
-                <span className={`font-bold font-mono ${filteredMetrics.netProfit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
+                <span className={`text-xl font-black font-mono ${filteredMetrics.netProfit >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
                   {filteredMetrics.netProfit >= 0 ? '+' : ''}{formatCurrency(filteredMetrics.netProfit, displayCurrency)}
                 </span>
               </div>
@@ -872,28 +961,28 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           {/* SECTION 3: DRAWDOWN & SURVIVAL */}
-          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Risk & Drawdown</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center text-xs">
+          <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 shadow-lg rounded-xl p-5 transition-all duration-300">
+            <h3 className="text-xs font-black text-slate-300 uppercase tracking-widest font-mono mb-5 border-b border-white/10 pb-2">Risk & Drawdown</h3>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Active Exposure</span>
-                <span className="font-bold text-amber-500 font-mono">{filteredMetrics.totalLots.toFixed(2)} Lots</span>
+                <span className="text-lg font-black text-amber-500 font-mono">{filteredMetrics.totalLots.toFixed(2)} Lots</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Current Drawdown</span>
-                <span className="font-bold text-teal-400 font-mono">{filteredMetrics.currentDrawdown.toFixed(2)}%</span>
+                <span className="text-lg font-black text-teal-400 font-mono">{filteredMetrics.currentDrawdown.toFixed(2)}%</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Peak Max Drawdown</span>
-                <span className={`font-bold font-mono ${filteredMetrics.maxDrawdown > 5.0 ? 'text-amber-500' : 'text-[#00E676]'}`}>
+                <span className={`text-lg font-black font-mono ${filteredMetrics.maxDrawdown > 5.0 ? 'text-amber-500' : 'text-[#00E676]'}`}>
                   {filteredMetrics.maxDrawdown.toFixed(2)}%
                 </span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Best / Worst</span>
-                <span className="font-mono text-[10px] text-slate-300">
+                <span className="font-mono text-sm font-bold text-slate-300">
                   <span className="text-[#00E676]">{filteredMetrics.bestTrade > 0 ? '+' : ''}{Math.round(filteredMetrics.bestTrade)}</span>
-                  <span> / </span>
+                  <span className="mx-1">/</span>
                   <span className="text-[#FF1744]">{Math.round(filteredMetrics.worstTrade)}</span>
                 </span>
               </div>
@@ -901,28 +990,28 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           {/* SECTION 4: MOMENTUM & VELOCITY */}
-          <div className="bg-[#0A0D14]/90 border border-white/5 hover:border-[#face6f]/10 rounded-xl p-4 transition-all duration-200">
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono mb-4 border-b border-white/5 pb-1">Velocity & Streaks</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center text-xs">
-                <span className="text-slate-400 font-mono">Growth (D/W/M)</span>
-                <span className="font-bold text-white font-mono text-[10px]">
+          <div className="bg-[#0A0D14]/90 border border-white/10 hover:border-amber-500/30 shadow-lg rounded-xl p-5 transition-all duration-300">
+            <h3 className="text-xs font-black text-slate-300 uppercase tracking-widest font-mono mb-5 border-b border-white/10 pb-2">Velocity & Streaks</h3>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-slate-400 font-mono">Growth (D/M)</span>
+                <span className="text-base font-black text-white font-mono">
                   <span className={filteredMetrics.dailyGrowth >= 0 ? "text-[#00E676]" : "text-[#FF1744]"}>{filteredMetrics.dailyGrowth >= 0 ? '+' : ''}{filteredMetrics.dailyGrowth.toFixed(1)}%</span>
-                  <span className="text-slate-600">/</span>
+                  <span className="text-slate-600 mx-1">/</span>
                   <span className={filteredMetrics.weeklyGrowth >= 0 ? "text-[#00E676]" : "text-[#FF1744]"}>{filteredMetrics.weeklyGrowth >= 0 ? '+' : ''}{filteredMetrics.weeklyGrowth.toFixed(1)}%</span>
                 </span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Max Win Streak</span>
-                <span className="font-bold text-[#00E676] font-mono">{filteredMetrics.winStreak} wins</span>
+                <span className="text-lg font-black text-[#00E676] font-mono">{filteredMetrics.winStreak} wins</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Max Loss Streak</span>
-                <span className="font-bold text-[#FF1744] font-mono">{filteredMetrics.lossStreak} losses</span>
+                <span className="text-lg font-black text-[#FF1744] font-mono">{filteredMetrics.lossStreak} losses</span>
               </div>
-              <div className="flex justify-between items-center text-xs">
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400 font-mono">Avg Trade Duration</span>
-                <span className="font-bold text-[#B388FF] font-mono">{filteredMetrics.avgDurationText}</span>
+                <span className="text-lg font-black text-[#B388FF] font-mono">{filteredMetrics.avgDurationText}</span>
               </div>
             </div>
           </div>

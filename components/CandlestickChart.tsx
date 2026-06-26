@@ -131,23 +131,159 @@ export default function CandlestickChart({
 
   const rightPadding = 65;
   const mainW = Math.max(0, width - rightPadding);
-  
-  // Calculate spatial layout
-  const baseCandleW = Math.max(mainW / chartData.length, 4);
-  const candleW = baseCandleW;
-  const totalW = chartData.length * candleW;
-  
-  // Align right edge organically (no panning allowed)
-  const currentPan = mainW - totalW - 20;
 
-  // Calculate rendering constraints dynamically based on visible data bounds to ensure the candlesticks are beautifully centered and well-positioned
+  // Visible number of candles representing the ZOOM LEVEL (MT5 style)
+  const [visibleCount, setVisibleCount] = useState<number>(65);
+
+  const clampedVisibleCount = useMemo(() => {
+    if (!chartData.length) return 65;
+    return Math.max(10, Math.min(180, Math.min(chartData.length, visibleCount)));
+  }, [chartData.length, visibleCount]);
+
+  // MT5-style price scaling and vertical offset state variables to allow users to drag/zoom/squeeze the price y-axis
+  const [priceScale, setPriceScale] = useState<number>(1.0);
+  const [vOffset, setVOffset] = useState<number>(0);
+
+  // Index of the rightmost visible candle in chartData.
+  // When null, we focus on the end of the history (scrolled to the right)
+  const [storedEndIndex, setStoredEndIndex] = useState<number | null>(null);
+
+  const endIndex = useMemo(() => {
+    if (!chartData.length) return 0;
+    const defaultEnd = chartData.length;
+    if (storedEndIndex === null) return defaultEnd;
+    // MT5-style scroll restriction:
+    // Allow scrolling into empty space on the front (future, up to +75% of visible count)
+    // Avoid scrolling into empty space in the past (startIndex >= 0, so endIndex >= clampedVisibleCount)
+    const maxEnd = chartData.length + Math.round(clampedVisibleCount * 0.75);
+    const minEnd = clampedVisibleCount;
+    return Math.max(minEnd, Math.min(maxEnd, storedEndIndex));
+  }, [chartData.length, storedEndIndex, clampedVisibleCount]);
+
+  const startIndex = useMemo(() => {
+    return Math.max(0, endIndex - clampedVisibleCount);
+  }, [endIndex, clampedVisibleCount]);
+
+  // Actual candle width dynamically derived so the visible segment stretches perfectly across mainW
+  const candleW = useMemo(() => {
+    if (clampedVisibleCount <= 0 || mainW <= 0) return 6;
+    return mainW / clampedVisibleCount;
+  }, [clampedVisibleCount, mainW]);
+
+  // Direct physical coordinate calculator
+  const getX = useCallback((i: number) => {
+    return (i - startIndex) * candleW + candleW / 2;
+  }, [startIndex, candleW]);
+
+  // Drag interaction states (manipulating ending index and vertical price pan/scaling)
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ 
+    x: number; 
+    y: number; 
+    endIndex: number; 
+    vOffset: number; 
+    priceScale: number; 
+    mode: 'none' | 'pan' | 'y-scale' 
+  } | null>(null);
+
+  // Gesture Touch zoom states
+  const touchStartDistRef = useRef<number | null>(null);
+  const touchStartVisibleCountRef = useRef<number | null>(null);
+
+  const handleDragStart = (clientX: number, clientY: number) => {
+    setIsDragging(true);
+    const isYScale = clientX >= mainW;
+    const mode = isYScale ? 'y-scale' : 'pan';
+    dragStartRef.current = {
+      x: clientX,
+      y: clientY,
+      endIndex: endIndex,
+      vOffset: vOffset,
+      priceScale: priceScale,
+      mode: mode
+    };
+  };
+
+  const handleDragMove = (clientX: number, clientY: number) => {
+    if (!isDragging || !dragStartRef.current || !chartData.length) return;
+    const start = dragStartRef.current;
+
+    if (start.mode === 'y-scale') {
+      // MT5 y-axis drag scale: compress or stretch the vertical price range
+      const dy = clientY - start.y;
+      const scaleMultiplier = Math.exp(-dy / 180);
+      const targetScale = Math.max(0.05, Math.min(20, start.priceScale * scaleMultiplier));
+      setPriceScale(targetScale);
+    } else {
+      // General chart dragging: supports BOTH horizontal timeline scrolling and vertical price offset panning
+      const dx = clientX - start.x;
+      const dy = clientY - start.y;
+
+      // 1. Horizontal Index Shift
+      const indexShift = -Math.round(dx / candleW);
+      const targetEndIndex = start.endIndex + indexShift;
+      const maxEnd = chartData.length + Math.round(clampedVisibleCount * 0.75);
+      const minEnd = clampedVisibleCount;
+      const clampedEndIndex = Math.max(minEnd, Math.min(maxEnd, targetEndIndex));
+      setStoredEndIndex(clampedEndIndex);
+
+      // 2. Vertical Price Panning (drag candle space up and down smoothly)
+      // Estimate active viewport price range to accurately match pixels to real price unit shifts
+      const lows = visibleCandles.length ? visibleCandles.map(d => d.low) : chartData.map(d => d.low);
+      const highs = visibleCandles.length ? visibleCandles.map(d => d.high) : chartData.map(d => d.high);
+      const minVal = lows.length ? Math.min(...lows.filter(v => v !== undefined && !isNaN(v))) : 1;
+      const maxVal = highs.length ? Math.max(...highs.filter(v => v !== undefined && !isNaN(v))) : 2;
+      const baseRange = (maxVal - minVal) || 0.1;
+      const currentRange = (baseRange * 1.30) / priceScale; // incorporates vertical padding
+      
+      const dPrice = (dy / effectiveHeight) * currentRange;
+      setVOffset(start.vOffset + dPrice);
+    }
+  };
+
+  const handleDragEnd = () => {
+    setIsDragging(false);
+    dragStartRef.current = null;
+  };
+
+  // Zoom dispatch functions
+  const handleZoom = useCallback((direction: 'in' | 'out') => {
+    setVisibleCount(prev => {
+      const step = Math.max(3, Math.round(prev * 0.15));
+      const target = direction === 'in' ? prev - step : prev + step;
+      return Math.max(10, Math.min(180, target));
+    });
+  }, []);
+
+  // Sync / Reset view on symbol/history length variations
+  useEffect(() => {
+    setStoredEndIndex(null);
+    setPriceScale(1.0);
+    setVOffset(0);
+  }, [chartData.length]);
+
+  // Mouse Wheel zooming with native event listener to bypass passive scroll trap
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    
+    const handleNativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const direction = e.deltaY < 0 ? 'in' : 'out';
+      handleZoom(direction);
+    };
+    
+    el.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', handleNativeWheel);
+    };
+  }, [handleZoom]);
+
+  // Slice visible candles block with zero gap and 100% exact boundary scaling
   const visibleCandles = useMemo(() => {
     if (!chartData.length) return [];
-    return chartData.filter((_, i) => {
-      const x = currentPan + i * candleW + candleW / 2;
-      return x >= -candleW && x <= mainW + candleW;
-    });
-  }, [chartData, currentPan, candleW, mainW]);
+    return chartData.slice(startIndex, endIndex);
+  }, [chartData, startIndex, endIndex]);
 
   const { minP, maxP, range } = useMemo(() => {
     if (!chartData.length) return { minP: 0, maxP: 1, range: 1 };
@@ -162,31 +298,23 @@ export default function CandlestickChart({
     let diff = (maxVal - minVal) || 0.1;
     
     // Setup strategic padding so candles are beautifully vertically centered & roomy
-    let minP_calc = minVal - diff * 0.15;
-    let maxP_calc = maxVal + diff * 0.15;
+    let minP_base = minVal - diff * 0.15;
+    let maxP_base = maxVal + diff * 0.15;
     
-    // Keep active setups nicely positioned and bounded on screen
-    if (activeSetup) {
-      const entry = activeSetup.entry;
-      if (entry < minP_calc) minP_calc = entry - diff * 0.1;
-      if (entry > maxP_calc) maxP_calc = entry + diff * 0.1;
-      
-      const maxAllowedStretch = diff * 2.5;
-      if (activeSetup.stopLoss) {
-        minP_calc = Math.max(minP_calc - maxAllowedStretch, activeSetup.stopLoss);
-      }
-      if (activeSetup.takeProfit) {
-        maxP_calc = Math.min(maxP_calc + maxAllowedStretch, activeSetup.takeProfit);
-      }
-    }
+    const baseRange = maxP_base - minP_base;
+    const midP = (maxP_base + minP_base) / 2;
     
-    const range_calc = (maxP_calc - minP_calc) || 1;
-    return { minP: minP_calc, maxP: maxP_calc, range: range_calc };
-  }, [chartData, visibleCandles, activeSetup]);
+    // Apply manual price scale and vertical panning offset (MT5 Style)
+    // Decreasing scale flattens/compresses ("minimizes"), increasing stretches.
+    const finalMinP = midP - (baseRange / 2) / priceScale + vOffset;
+    const finalMaxP = midP + (baseRange / 2) / priceScale + vOffset;
+    const finalRange = finalMaxP - finalMinP;
+    
+    return { minP: finalMinP, maxP: finalMaxP, range: finalRange };
+  }, [chartData, visibleCandles, priceScale, vOffset]);
 
   // Axis Coordinate Helpers
   const getY = useCallback((p: number) => effectiveHeight - ((p - minP) / range) * effectiveHeight, [minP, range, effectiveHeight]);
-  const getX = useCallback((i: number) => currentPan + i * candleW + candleW / 2, [currentPan, candleW]);
   const getPrice = useCallback((y: number) => maxP - (y / effectiveHeight) * range, [maxP, range, effectiveHeight]);
 
   const handleMove = (e: React.MouseEvent) => {
@@ -218,18 +346,69 @@ export default function CandlestickChart({
   return (
     <div 
       ref={containerRef} 
+      className="select-none touch-none"
       style={{ 
           height: '100%', 
           width: '100%', 
           position: 'relative', 
           overflow: 'hidden', 
           backgroundColor: 'transparent',
-          cursor: 'crosshair', 
+          cursor: isDragging ? 'grabbing' : 'crosshair', 
           borderRadius: '12px', 
           border: '1px solid #1e293b'
       }}
-      onMouseLeave={() => setMouse(null)} 
-      onMouseMove={handleMove} 
+      onDoubleClick={() => {
+        // Quick double-click reset to restore default MT5 auto-fit visual framing
+        setPriceScale(1.0);
+        setVOffset(0);
+        setStoredEndIndex(null);
+      }}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return; // Only left-click drag
+        handleDragStart(e.clientX, e.clientY);
+      }}
+      onMouseMove={(e) => {
+        handleMove(e);
+        handleDragMove(e.clientX, e.clientY);
+      }}
+      onMouseUp={() => handleDragEnd()}
+      onMouseLeave={() => {
+        setMouse(null);
+        handleDragEnd();
+      }}
+      onTouchStart={(e) => {
+        if (e.cancelable) e.preventDefault();
+        if (e.touches.length === 1) {
+          handleDragStart(e.touches[0].clientX, e.touches[0].clientY);
+        } else if (e.touches.length === 2) {
+          const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          touchStartDistRef.current = dist;
+          touchStartVisibleCountRef.current = clampedVisibleCount;
+        }
+      }}
+      onTouchMove={(e) => {
+        if (e.cancelable) e.preventDefault();
+        if (e.touches.length === 1) {
+          handleDragMove(e.touches[0].clientX, e.touches[0].clientY);
+        } else if (e.touches.length === 2 && touchStartDistRef.current && touchStartVisibleCountRef.current) {
+          const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          const ratio = dist / touchStartDistRef.current;
+          const targetCount = Math.round(touchStartVisibleCountRef.current / ratio);
+          const newCount = Math.max(10, Math.min(180, targetCount));
+          setVisibleCount(newCount);
+        }
+      }}
+      onTouchEnd={() => {
+        handleDragEnd();
+        touchStartDistRef.current = null;
+        touchStartVisibleCountRef.current = null;
+      }}
     >
       {bgImageUrl && (
         <img 
@@ -242,6 +421,17 @@ export default function CandlestickChart({
       )}
       {bgImageUrl && <div className="absolute inset-0 bg-slate-950/70" /> /* overlay to dim background */}
       <svg width={width} height={effectiveHeight} style={{ position: 'absolute', top: 0, left: 0, userSelect: 'none' }}>
+        <defs>
+          <marker id="arrow-green" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L5,3 Z" fill="#22c55e" />
+          </marker>
+          <marker id="arrow-red" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L5,3 Z" fill="#ef4444" />
+          </marker>
+          <marker id="arrow-blue" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L5,3 Z" fill="#3b82f6" />
+          </marker>
+        </defs>
         
         {/* Background Grid */}
         {[0.2, 0.4, 0.6, 0.8].map(ratio => {
@@ -255,70 +445,53 @@ export default function CandlestickChart({
           );
         })}
 
-        {/* ANALYSIS LAYER: Heatmap & Zones */}
+        {/* ANALYSIS LAYER: Pristine, Elegant & Non-Cluttering Overlay Indicators */}
         {showAnalysis && marketAnalysis && (
           <g>
-            {/* Heatmap Bins */}
-            {marketAnalysis.bins.map((weight, i) => {
-              if (weight <= 0) return null;
-              const binH = effectiveHeight / marketAnalysis.bins.length;
-              const y = effectiveHeight - (i + 1) * binH;
-              const alpha = Math.min(0.4, weight / 10);
-              return (
-                <rect 
-                  key={`bin-${i}`}
-                  x={0}
-                  y={y}
-                  width={mainW}
-                  height={binH}
-                  fill="#6366f1"
-                  opacity={alpha * 0.4}
-                />
-              );
-            })}
-            
-            {/* Zones */}
+            {/* Zones - Placed dynamically as thin clean markers on the right edge to avoid overrunning candles */}
             {marketAnalysis.zones.map((z, i) => {
               const yLow = getY(z.low);
               const yHigh = getY(z.high);
+              const yMid = (yLow + yHigh) / 2;
               let color = z.isSupport ? '#10b981' : '#f43f5e';
-              if (z.isConsolidation) color = '#94a3b8'; // gray for consolidation
+              if (z.isConsolidation) color = '#94a3b8';
 
+              const indicatorStartX = mainW * 0.75;
               return (
-                <g key={`zone-${i}`} opacity={0.8}>
-                   <rect 
-                    x={0}
-                    y={Math.min(yLow, yHigh)}
-                    width={mainW}
-                    height={Math.max(3, Math.abs(yLow - yHigh))}
-                    fill={color}
-                    opacity={z.isConsolidation ? 0.25 : 0.15 * (z.strength || 1)}
+                <g key={`zone-${i}`} opacity={0.35}>
+                  <line 
+                    x1={indicatorStartX} 
+                    x2={mainW} 
+                    y1={yMid} 
+                    y2={yMid} 
+                    stroke={color} 
+                    strokeWidth={1}
+                    strokeDasharray="4 4"
                   />
                   {!z.isConsolidation && (
-                    <line 
-                      x1={0} x2={mainW} 
-                      y1={z.isSupport ? Math.min(yLow, yHigh) : Math.max(yLow, yHigh)} 
-                      y2={z.isSupport ? Math.min(yLow, yHigh) : Math.max(yLow, yHigh)} 
-                      stroke={color} 
-                      strokeWidth={1.5}
-                      opacity={0.6}
-                    />
-                  )}
-                  {z.isConsolidation && (
-                    <text x={12} y={Math.min(yLow, yHigh) - 6} fill="#94a3b8" fontSize="9" fontWeight="black" className="uppercase tracking-widest">Consolidation Range</text>
+                    <text 
+                      x={indicatorStartX + 6} 
+                      y={yMid - 4} 
+                      fill={color} 
+                      fontSize="7" 
+                      fontWeight="bold" 
+                      className="font-mono uppercase tracking-wider select-none"
+                    >
+                      {z.isSupport ? 'SUPP' : 'RESIST'}
+                    </text>
                   )}
                 </g>
               );
             })}
 
-            {/* Recent Detections */}
+            {/* Recent Detections - Small sleek reference dots with high contrast */}
             {marketAnalysis.detections.map((d: any, i: number) => {
                const x = matchTimeX(d.time);
                const y = getY(d.price);
                const color = getPatternColor(d.pattern, d.polarity);
                return (
                  <g key={`det-${i}`}>
-                   <circle cx={x} cy={y} r={4} fill={color} stroke="#0f172a" strokeWidth={1} />
+                   <circle cx={x} cy={y} r={3} fill={color} stroke="#090d16" strokeWidth={1} opacity={0.7} />
                  </g>
                );
             })}
@@ -374,7 +547,7 @@ export default function CandlestickChart({
         })}
 
         {/* ACTIVE STRATEGY SETUP LAYER (TRADINGVIEW RISK/REWARD STYLE) */}
-        {activeSetup && (
+        {showAnalysis && activeSetup && (
           <g>
             {(() => {
               const yEntry = getY(activeSetup.entry);
@@ -382,92 +555,267 @@ export default function CandlestickChart({
               const yTP = getY(activeSetup.takeProfit);
               
               const isBuy = activeSetup.direction === 'BUY';
-              const rewardColor = '#10b981';
-              const riskColor = '#f43f5e';
+              
+              const formatPrice = (val: number) => {
+                const n = Number(val);
+                if (isNaN(n)) return '0.00';
+                if (n < 10) return n.toFixed(5);
+                if (n < 10000) return n.toFixed(2);
+                return Math.round(n).toString();
+              };
+              
+              const entryColor = '#3b82f6'; // Blue
+              const slColor = '#ef4444'; // Red
+              const tpColor = isBuy ? '#10b981' : '#ef4444'; // BUY: Green. SELL: Red
+              const structColor = '#64748b'; // Gray
+              const srColor = '#eab308'; // Yellow Support/Resistance
+              const liqColor = '#ffffff'; // White Liquidity
               
               const yRiskTop = Math.min(yEntry, ySL);
               const riskH = Math.abs(yEntry - ySL);
               const yRewardTop = Math.min(yEntry, yTP);
               const rewardH = Math.abs(yEntry - yTP);
               
+              const strategyNameUpper = (activeSetup.strategyName || '').toUpperCase();
+              let strategyType: 'ORDER_BLOCK' | 'LIQUIDITY_SWEEP' | 'FVG' | 'RANGE_REVERSAL' = 'ORDER_BLOCK';
+              
+              if (strategyNameUpper.includes('LIQUIDITY') || strategyNameUpper.includes('SWEEP') || strategyNameUpper.includes('ENGULFING') || strategyNameUpper.includes('MICRO-SCAN')) {
+                strategyType = 'LIQUIDITY_SWEEP';
+              } else if (strategyNameUpper.includes('FAIR VALUE') || strategyNameUpper.includes('FVG') || strategyNameUpper.includes('GAP')) {
+                strategyType = 'FVG';
+              } else if (strategyNameUpper.includes('RANGE') || strategyNameUpper.includes('REVERSAL') || strategyNameUpper.includes('FIBONACCI') || strategyNameUpper.includes('GAUGES')) {
+                strategyType = 'RANGE_REVERSAL';
+              } else {
+                strategyType = 'ORDER_BLOCK';
+              }
+              
+              const blockStartIdx = Math.max(0, chartData.length - 12);
+              const blockEndIdx = chartData.length - 1;
+              const xStart = getX(blockStartIdx);
+              const xEnd = getX(blockEndIdx);
+              const blockWidth = Math.max(10, xEnd - xStart);
+
+              // TradingView risk/reward box limits: extends from the entry candle to the absolute right of the chart workspace (mainW)
+              const xBoxStart = getX(Math.max(0, chartData.length - 15));
+              const boxWidth = Math.max(10, mainW - xBoxStart);
+
               return (
                 <g>
-                  {/* Reward Area Box */}
+                  {/* SL Zone (Risk) */}
                   <rect 
-                    x={0} 
-                    y={yRewardTop} 
-                    width={mainW} 
-                    height={rewardH} 
-                    fill={rewardColor} 
-                    opacity={0.08} 
+                    x={xBoxStart} 
+                    y={yRiskTop} 
+                    width={boxWidth} 
+                    height={riskH} 
+                    fill="#ef4444" 
+                    opacity={0.06} 
                   />
                   
-                  {/* Risk Area Box */}
+                  {/* TP Zone (Reward) */}
                   <rect 
-                    x={0} 
-                    y={yRiskTop} 
-                    width={mainW} 
-                    height={riskH} 
-                    fill={riskColor} 
-                    opacity={0.08} 
+                    x={xBoxStart} 
+                    y={yRewardTop} 
+                    width={boxWidth} 
+                    height={rewardH} 
+                    fill={isBuy ? "#10b981" : "#ef4444"} 
+                    opacity={0.06} 
                   />
 
-                  {/* Liquidity Pools */}
-                  {activeSetup.liquidityAreas?.map((liq: any, idx: number) => {
-                    const yLiq = getY(liq.price);
+                  {/* 1. ORDER BLOCK BREAKOUT SPECIFIC DRAWINGS */}
+                  {strategyType === 'ORDER_BLOCK' && (
+                    <g>
+                      {/* Order Block demand/supply rectangle */}
+                      {isBuy ? (
+                        <g>
+                          <rect 
+                            x={xStart} 
+                            y={yEntry} 
+                            width={blockWidth} 
+                            height={Math.abs(ySL - yEntry) * 0.7} 
+                            fill={structColor} 
+                            fillOpacity={0.15} 
+                            stroke={structColor} 
+                            strokeWidth={1} 
+                            strokeDasharray="3 3"
+                          />
+                          <text x={Math.max(8, xStart + 8)} y={yEntry + 15} fill={structColor} fontSize="8" fontWeight="bold" className="font-mono uppercase tracking-wider">ORDER BLOCK (BULLISH DEMAND ZONE)</text>
+                        </g>
+                      ) : (
+                        <g>
+                          <rect 
+                            x={xStart} 
+                            y={yEntry - Math.abs(yEntry - ySL) * 0.7} 
+                            width={blockWidth} 
+                            height={Math.abs(yEntry - ySL) * 0.7} 
+                            fill={structColor} 
+                            fillOpacity={0.15} 
+                            stroke={structColor} 
+                            strokeWidth={1} 
+                            strokeDasharray="3 3"
+                          />
+                          <text x={Math.max(8, xStart + 8)} y={yEntry - Math.abs(yEntry - ySL) * 0.7 + 15} fill={structColor} fontSize="8" fontWeight="bold" className="font-mono uppercase tracking-wider">ORDER BLOCK (BEARISH SUPPLY ZONE)</text>
+                        </g>
+                      )}
+
+                      {/* BOS (Break Of Structure) Line */}
+                      {(() => {
+                        const bosY = isBuy ? yEntry - (yEntry - yTP) * 0.3 : yEntry + (yTP - yEntry) * 0.3;
+                        const bosXStart = getX(Math.max(0, chartData.length - 10));
+                        const bosXEnd = getX(chartData.length - 1);
+                        return (
+                          <g>
+                            <line x1={bosXStart} x2={bosXEnd} y1={bosY} y2={bosY} stroke={structColor} strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />
+                            <circle cx={bosXStart} cy={bosY} r={3} fill={structColor} />
+                            <text x={Math.max(8, bosXStart + 8)} y={bosY - 4} fill={structColor} fontSize="8" fontWeight="black" className="font-sans tracking-widest uppercase">BOS [CONFIRMED STRUCTURE BREAK]</text>
+                          </g>
+                        );
+                      })()}
+                    </g>
+                  )}
+
+                  {/* 2. LIQUIDITY SWEEP REVERSAL SPECIFIC DRAWINGS */}
+                  {strategyType === 'LIQUIDITY_SWEEP' && (
+                    <g>
+                      {/* Swipe level marker line with White coloring */}
+                      {(() => {
+                        const sweepY = isBuy ? ySL + Math.abs(yEntry - ySL) * 0.1 : ySL - Math.abs(yEntry - ySL) * 0.1;
+                        const sweepXStart = getX(Math.max(0, chartData.length - 12));
+                        const sweepXEnd = getX(chartData.length - 1);
+                        const sweepCenterX = sweepXStart + Math.abs(sweepXEnd - sweepXStart) * 0.4;
+                        return (
+                          <g>
+                            <line x1={sweepXStart} x2={sweepXEnd} y1={sweepY} y2={sweepY} stroke={liqColor} strokeWidth={1.2} strokeDasharray="2 4" />
+                            <circle cx={sweepCenterX} cy={sweepY} r={5} stroke={liqColor} strokeWidth={1.5} fill="none" className="animate-pulse" />
+                            <text x={Math.max(8, sweepXStart + 8)} y={sweepY - 5} fill={liqColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest uppercase">LIQUIDITY SWEEP (EQL/EQH HUNT COMPLETE) ✘</text>
+                            
+                            {/* Rejection Arrow */}
+                            <path 
+                              d={isBuy ? `M ${sweepCenterX} ${sweepY} L ${sweepCenterX} ${sweepY - 25}` : `M ${sweepCenterX} ${sweepY} L ${sweepCenterX} ${sweepY + 25}`} 
+                              stroke={isBuy ? "#22c55e" : "#ef4444"} 
+                              strokeWidth={1.5} 
+                              markerEnd={isBuy ? "url(#arrow-green)" : "url(#arrow-red)"} 
+                            />
+                            <text x={Math.max(8, sweepCenterX + 8)} y={isBuy ? sweepY - 12 : sweepY + 16} fill={isBuy ? "#22c55e" : "#ef4444"} fontSize="8" fontWeight="black" className="font-sans uppercase">REJECTION</text>
+                          </g>
+                        );
+                      })()}
+                    </g>
+                  )}
+
+                  {/* 3. FAIR VALUE GAP CONTINUATION SPECIFIC DRAWINGS */}
+                  {strategyType === 'FVG' && (
+                    <g>
+                      {/* FVG imbalance box */}
+                      {(() => {
+                        const fvgYTop = isBuy ? yEntry + Math.abs(yEntry - ySL) * 0.15 : yEntry - Math.abs(yEntry - ySL) * 0.7;
+                        const fvgH = Math.abs(yEntry - ySL) * 0.55;
+                        const fvgXStart = getX(Math.max(0, chartData.length - 10));
+                        const fvgXEnd = getX(chartData.length - 3);
+                        const fvgWidth = Math.max(10, fvgXEnd - fvgXStart);
+                        return (
+                          <g>
+                            <rect 
+                              x={fvgXStart} 
+                              y={fvgYTop} 
+                              width={fvgWidth} 
+                              height={fvgH} 
+                              fill="#818cf8" 
+                              fillOpacity={0.1} 
+                              stroke="#818cf8" 
+                              strokeWidth={1} 
+                              strokeDasharray="4 4"
+                            />
+                            <text x={Math.max(8, fvgXStart + 8)} y={fvgYTop + fvgH / 2 + 3} fill="#818cf8" fontSize="8" fontWeight="black" className="font-sans tracking-widest uppercase">FAIR VALUE GAP (FVG IMBALANCE ZONE)</text>
+                          </g>
+                        );
+                      })()}
+                    </g>
+                  )}
+
+                  {/* 4. RANGE REVERSAL SPECIFIC DRAWINGS */}
+                  {strategyType === 'RANGE_REVERSAL' && (
+                    <g>
+                      {/* Range High yellow boundary */}
+                      {(() => {
+                        const rhY = isBuy ? yEntry - Math.abs(yEntry - yTP) * 0.6 : yEntry - Math.abs(yEntry - ySL) * 0.6;
+                        const rXStart = getX(Math.max(0, chartData.length - 16));
+                        const rXEnd = getX(chartData.length - 1);
+                        return (
+                          <g>
+                            <line x1={rXStart} x2={rXEnd} y1={rhY} y2={rhY} stroke={srColor} strokeWidth={1} />
+                            <text x={Math.max(8, rXStart + 8)} y={rhY - 4} fill={srColor} fontSize="8" fontWeight="black" className="font-sans tracking-widest uppercase">RANGE HIGH BOUNDARY (STRONG CEILING)</text>
+                          </g>
+                        );
+                      })()}
+
+                      {/* Range Low yellow boundary */}
+                      {(() => {
+                        const rlY = isBuy ? yEntry + Math.abs(yEntry - ySL) * 0.6 : yEntry + Math.abs(yEntry - yTP) * 0.6;
+                        const rXStart = getX(Math.max(0, chartData.length - 16));
+                        const rXEnd = getX(chartData.length - 1);
+                        return (
+                          <g>
+                            <line x1={rXStart} x2={rXEnd} y1={rlY} y2={rlY} stroke={srColor} strokeWidth={1} />
+                            <text x={Math.max(8, rXStart + 8)} y={rlY + 10} fill={srColor} fontSize="8" fontWeight="black" className="font-sans tracking-widest uppercase">RANGE LOW BOUNDARY (STRONG FLOOR)</text>
+                          </g>
+                        );
+                      })()}
+                    </g>
+                  )}
+
+                  {/* Direction Arrow path */}
+                  {(() => {
+                    const arrowStartX = getX(Math.max(0, chartData.length - 10));
+                    const arrowEndX = getX(chartData.length - 2);
+                    const arrowStartY = yEntry;
+                    const arrowEndY = isBuy ? yTP + Math.abs(yEntry - yTP) * 0.35 : yTP - Math.abs(yEntry - yTP) * 0.35;
+                    const arrowCtrlX = (arrowStartX + arrowEndX) / 2 + 15;
+                    
                     return (
-                      <g key={`liq-${idx}`}>
-                        <line x1={0} x2={mainW} y1={yLiq} y2={yLiq} stroke="#818cf8" strokeWidth={1} strokeDasharray="2 4" opacity={0.6} />
-                        <text x={12} y={yLiq - 4} fill="#818cf8" fontSize="8" fontWeight="bold" opacity={0.6} className="uppercase tracking-widest font-mono">{liq.label}</text>
+                      <g>
+                        <path 
+                          d={`M ${arrowStartX} ${arrowStartY} Q ${arrowCtrlX} ${(arrowStartY + arrowEndY)/2} ${arrowEndX} ${arrowEndY}`} 
+                          stroke={isBuy ? "#22c55e" : "#ef4444"} 
+                          strokeWidth={2} 
+                          fill="none" 
+                          strokeDasharray="4 2" 
+                          markerEnd={isBuy ? "url(#arrow-green)" : "url(#arrow-red)"} 
+                        />
                       </g>
                     );
-                  })}
+                  })()}
 
-                  {/* S&R Pools */}
-                  {activeSetup.support && (
-                    <g>
-                      <line x1={0} x2={mainW} y1={getY(activeSetup.support)} y2={getY(activeSetup.support)} stroke="#10b981" strokeWidth={1.2} strokeDasharray="4 4" opacity={0.4} />
-                      <text x={12} y={getY(activeSetup.support) + 10} fill="#10b981" fontSize="8" fontWeight="bold" opacity={0.4} className="uppercase tracking-widest font-mono">Setup Support Area</text>
-                    </g>
-                  )}
-                  {activeSetup.resistance && (
-                    <g>
-                      <line x1={0} x2={mainW} y1={getY(activeSetup.resistance)} y2={getY(activeSetup.resistance)} stroke="#f43f5e" strokeWidth={1.2} strokeDasharray="4 4" opacity={0.4} />
-                      <text x={12} y={getY(activeSetup.resistance) - 4} fill="#f43f5e" fontSize="8" fontWeight="bold" opacity={0.4} className="uppercase tracking-widest font-mono">Setup Resistance Area</text>
-                    </g>
-                  )}
+                  {/* Horizontal Guide Lines */}
+                  <line x1={xBoxStart} x2={mainW} y1={yTP} y2={yTP} stroke={tpColor} strokeWidth={1.2} strokeDasharray="3 3" opacity={0.8} />
+                  <line x1={xBoxStart} x2={mainW} y1={ySL} y2={ySL} stroke={slColor} strokeWidth={1.2} strokeDasharray="3 3" opacity={0.8} />
+                  <line x1={xBoxStart} x2={mainW} y1={yEntry} y2={yEntry} stroke={entryColor} strokeWidth={1.5} />
 
-                  {/* Take Profit Target Level */}
-                  <line x1={0} x2={mainW} y1={yTP} y2={yTP} stroke={rewardColor} strokeWidth={1.5} strokeDasharray="4 2" />
-                  <rect x={10} y={yTP - 10} width={130} height={20} fill="#02040a" stroke={rewardColor} strokeWidth={1} rx={4} />
-                  <text x={16} y={yTP + 3} fill={rewardColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
-                    TP Target: {activeSetup.takeProfit.toFixed(5)}
+                  {/* Minimal, high-contrast text labels aligned snug to the extreme left container edge, completely off active candlesticks */}
+                  <text x={8} y={yTP - 4} textAnchor="start" fill={tpColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
+                    TAKE PROFIT TARGET
+                  </text>
+                  <text x={8} y={ySL - 4} textAnchor="start" fill={slColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
+                    STOP LOSS PROTECT
+                  </text>
+                  <text x={8} y={yEntry - 4} textAnchor="start" fill={entryColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
+                    {activeSetup.direction} ENTRY TRIGGER
                   </text>
 
-                  {/* Stop Loss Protect Level */}
-                  <line x1={0} x2={mainW} y1={ySL} y2={ySL} stroke={riskColor} strokeWidth={1.5} strokeDasharray="4 2" />
-                  <rect x={10} y={ySL - 10} width={130} height={20} fill="#02040a" stroke={riskColor} strokeWidth={1} rx={4} />
-                  <text x={16} y={ySL + 3} fill={riskColor} fontSize="9" fontWeight="bold" fontFamily="monospace">
-                    SL Target: {activeSetup.stopLoss.toFixed(5)}
+                  {/* TradingView-Style Price Scale Tag Pills rendered on the right-hand price axis bar (completely off active candle workspace) */}
+                  <rect x={mainW + 2} y={yTP - 8} width={rightPadding - 4} height={16} fill={isBuy ? "#10b981" : "#ef4444"} rx={3} />
+                  <text x={mainW + rightPadding / 2} y={yTP + 3} textAnchor="middle" fill="#090d16" fontSize="8" fontWeight="black" fontFamily="monospace">
+                    TP {formatPrice(activeSetup.takeProfit)}
                   </text>
 
-                  {/* Entry Trigger Level */}
-                  <line x1={0} x2={mainW} y1={yEntry} y2={yEntry} stroke="#fbbf24" strokeWidth={2} strokeDasharray="3 3" />
-                  <rect x={10} y={yEntry - 12} width={190} height={24} fill="#02040a" stroke="#fbbf24" strokeWidth={1.2} rx={4} />
-                  <text x={18} y={yEntry + 3} fill="#fbbf24" fontSize="10" fontWeight="bold" fontFamily="monospace">
-                    {activeSetup.direction} ENTRY: {activeSetup.entry.toFixed(5)}
+                  <rect x={mainW + 2} y={ySL - 8} width={rightPadding - 4} height={16} fill="#ef4444" rx={3} />
+                  <text x={mainW + rightPadding / 2} y={ySL + 3} textAnchor="middle" fill="#ffffff" fontSize="8" fontWeight="black" fontFamily="monospace">
+                    SL {formatPrice(activeSetup.stopLoss)}
                   </text>
 
-                  {/* Strategic Setup Badge HUD Overlay (Top-Right of Chart) */}
-                  <g transform={`translate(${Math.max(10, mainW - 310)}, 15)`} opacity={0.95}>
-                    <rect x={0} y={0} width={300} height={42} fill="#0b1329" stroke="#fbbf24" strokeWidth={1} rx={8} />
-                    <text x={12} y={16} fill="#fbbf24" fontSize="10" fontWeight="black" className="uppercase tracking-widest font-sans">
-                      {activeSetup.strategyName} {activeSetup.horizon ? `| ${activeSetup.horizon.toUpperCase()}` : ''}
-                    </text>
-                    <text x={12} y={32} fill="#fff" fontSize="9" fontWeight="bold" className="font-mono">
-                      Dir: <tspan fill={isBuy ? '#10b981' : '#f43f5e'}>{activeSetup.direction}</tspan> | Conf: {activeSetup.confidence}% | Session: {activeSetup.sessionName}
-                    </text>
-                  </g>
+                  <rect x={mainW + 2} y={yEntry - 8} width={rightPadding - 4} height={16} fill="#3b82f6" rx={3} />
+                  <text x={mainW + rightPadding / 2} y={yEntry + 3} textAnchor="middle" fill="#ffffff" fontSize="8" fontWeight="black" fontFamily="monospace">
+                    ENT {formatPrice(activeSetup.entry)}
+                  </text>
                 </g>
               );
             })()}
@@ -520,13 +868,62 @@ export default function CandlestickChart({
         <line x1={mainW} x2={mainW} y1={0} y2={effectiveHeight} stroke="#1e293b" />
       </svg>
       
-      {/* Pattern Summary Overlay */}
-      {showAnalysis && marketAnalysis && (
-        <div className="absolute top-4 left-4 p-3 pointer-events-none select-none text-xs flex flex-col gap-2 drop-shadow-xl font-mono">
-          <div className="font-semibold text-slate-100 flex gap-2 items-center drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
-            <span>ACTIVE PATTERNS ({marketAnalysis.detections.length})</span>
+      {/* TradingView-Style Compact Strategy Card overlay (<10% of workspace, stacked elegantly below the "Show Analysis" button) */}
+      {showAnalysis && activeSetup && (
+        <div className="hidden sm:block absolute top-16 right-4 z-20 w-48 bg-slate-900/95 border border-white/5 rounded-2xl p-3 shadow-2xl backdrop-blur-md select-none font-sans text-[10px]">
+          <div className="flex items-center justify-between gap-1 border-b border-white/5 pb-1.5 mb-1.5">
+            <span className="font-extrabold text-[#face6f] truncate uppercase tracking-wide leading-none">
+              {activeSetup.strategyName.replace(/\[RANKED #1\]/gi, '').split('[')[0].trim()}
+            </span>
+            <span className={`px-1 rounded text-[8px] font-black uppercase tracking-wider ${
+              activeSetup.direction === 'BUY' 
+                ? 'bg-emerald-500/10 text-emerald-400' 
+                : 'bg-rose-500/10 text-rose-400'
+            }`}>
+              {activeSetup.direction}
+            </span>
           </div>
-          <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
+          <div className="space-y-1 font-mono text-[9px] text-slate-400">
+            <div className="flex justify-between">
+              <span>CONFIDENCE:</span>
+              <span className="font-bold text-slate-100">{activeSetup.confidence}%</span>
+            </div>
+            <div className="flex justify-between">
+              <span>SESSION:</span>
+              <span className="font-bold text-slate-300 truncate max-w-[90px] text-right uppercase text-[8px]">{activeSetup.sessionName}</span>
+            </div>
+            <div className="h-[1px] bg-white/5 my-1" />
+            <div className="flex justify-between">
+              <span>ENTRY RATE:</span>
+              <span className="font-bold text-[#fbbf24]">{activeSetup.entry.toFixed(5)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>PROTECT SL:</span>
+              <span className="font-bold text-rose-500">{activeSetup.stopLoss.toFixed(5)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>TARGET TP:</span>
+              <span className="font-bold text-emerald-400">{activeSetup.takeProfit.toFixed(5)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Pattern Summary Overlay - Fully Responsive Collapsing badge layout */}
+      {showAnalysis && marketAnalysis && (
+        <div className="absolute top-4 left-4 p-2 sm:p-3 pointer-events-none select-none text-[10px] sm:text-xs flex flex-col gap-1.5 drop-shadow-xl font-mono">
+          <div className="font-extrabold text-slate-100 flex gap-1.5 items-center drop-shadow-[0_1.5px_1.5px_rgba(0,0,0,0.95)]">
+            <span className="tracking-wide">AI CHG DETECTS:</span>
+            <span className="px-1.5 py-0.5 rounded text-[8px] sm:text-[9px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              +{marketAnalysis.detections.filter((d: any) => d.polarity > 0).length} BULL
+            </span>
+            <span className="px-1.5 py-0.5 rounded text-[8px] sm:text-[9px] font-black bg-rose-500/10 text-rose-400 border border-rose-500/20">
+              -{marketAnalysis.detections.filter((d: any) => d.polarity < 0).length} BEAR
+            </span>
+          </div>
+          
+          {/* Detailed Lists only display on larger/desktop viewports */}
+          <div className="hidden sm:flex flex-col sm:flex-row gap-4 sm:gap-6 mt-1 border-t border-white/5 pt-1.5 col-span-2">
             <div className="flex flex-col gap-1">
               <span className="text-emerald-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
                 BULLISH ({marketAnalysis.detections.filter((d: any) => d.polarity > 0).length})
@@ -573,6 +970,28 @@ export default function CandlestickChart({
           </div>
         </div>
       )}
+
+      {/* Sleek Floating MT5-style Zoom Buttons */}
+      <div 
+        className="absolute bottom-4 right-[85px] flex gap-1.5 z-30 select-none pointer-events-auto"
+        onMouseDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+      >
+        <button 
+          onClick={() => handleZoom('out')}
+          className="flex items-center justify-center w-7 h-7 bg-[#0b1329]/95 hover:bg-slate-800 border border-white/10 active:scale-95 text-slate-300 hover:text-white rounded-lg backdrop-blur-md transition-all shadow-lg cursor-pointer"
+          title="Zoom Out (More candles)"
+        >
+          <Minus className="w-4 h-4 text-slate-400" />
+        </button>
+        <button 
+          onClick={() => handleZoom('in')}
+          className="flex items-center justify-center w-7 h-7 bg-[#0b1329]/95 hover:bg-slate-800 border border-white/10 active:scale-95 text-slate-300 hover:text-white rounded-lg backdrop-blur-md transition-all shadow-lg cursor-pointer"
+          title="Zoom In (Fewer candles)"
+        >
+          <Plus className="w-4 h-4 text-slate-400" />
+        </button>
+      </div>
     </div>
   );
 }

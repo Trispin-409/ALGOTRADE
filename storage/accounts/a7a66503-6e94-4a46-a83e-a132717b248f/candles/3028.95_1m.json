@@ -1,0 +1,19 @@
+[
+  {
+    "symbol": "XAUUSD-STD",
+    "timeframe": "15m",
+    "time": "2026-06-26T11:15:00.000Z",
+    "brokerTime": "2026-06-26 14:15:00.000",
+    "endTime": "2026-06-26T11:29:59.999Z",
+    "endBrokerTime": "2026-06-26 14:29:59.999",
+    "lastUpdateTime": "2026-06-26T11:21:46.700Z",
+    "lastUpdateBrokerTime": "2026-06-26 14:21:46.700",
+    "state": "intermediate",
+    "open": 4047.29,
+    "close": 4051.66,
+    "high": 4053.83,
+    "low": 4046.16,
+    "tickVolume": 3044,
+    "spread": 0.2300000000000182
+  }
+]

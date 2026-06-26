@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, Key, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut, Copy, Activity, TrendingUp } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, Key, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut, Copy, Activity, TrendingUp, BrainCircuit } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
@@ -47,6 +47,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
 
   const baseMenuItems = [
     { id: 'dashboard', label: 'Metrics', icon: Activity },
+    { id: 'command-center', label: 'Command Center', icon: BrainCircuit },
     { id: 'data', label: 'Market', icon: TrendingUp },
     ...(hasChatradeAccess ? [{ id: 'chatrade', label: 'Chatrade AI', icon: Cpu }] : []),
     { id: 'accounts', label: 'Accounts', icon: Users },

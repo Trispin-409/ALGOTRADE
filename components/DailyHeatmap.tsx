@@ -119,13 +119,17 @@ export default function DailyHeatmap({ trades = [], currency = 'USD' }: DailyHea
       .domain([0, maxPnl])
       .range(['#4c0519', '#e11d48']);
 
-    const cells = svg.selectAll('.day-cell')
+    const cellGroups = svg.selectAll('.day-group')
       .data(heatmapData)
       .enter()
+      .append('g')
+      .attr('class', 'day-group')
+      .attr('transform', (d, i) => `translate(${(i % cols) * (cellWidth + cellSpacing)}, ${Math.floor(i / cols) * (cellHeight + cellSpacing)})`)
+      .style('cursor', 'pointer');
+
+    const cells = cellGroups
       .append('rect')
       .attr('class', 'day-cell')
-      .attr('x', (d, i) => (i % cols) * (cellWidth + cellSpacing))
-      .attr('y', (d, i) => Math.floor(i / cols) * (cellHeight + cellSpacing))
       .attr('width', cellWidth)
       .attr('height', cellHeight)
       .attr('rx', 4)
@@ -136,8 +140,22 @@ export default function DailyHeatmap({ trades = [], currency = 'USD' }: DailyHea
       })
       .attr('stroke', d => d.count > 0 ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.03)')
       .attr('stroke-width', 1)
-      .style('cursor', 'pointer')
       .style('opacity', 0); // Start with 0 opacity for transition
+
+    const tooltips = cellGroups
+      .append('text')
+      .attr('class', 'day-text')
+      .attr('x', cellWidth / 2)
+      .attr('y', cellHeight / 2)
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'central')
+      .attr('fill', 'white')
+      .attr('font-size', '10px')
+      .attr('font-family', 'monospace')
+      .attr('font-weight', 'bold')
+      .style('pointer-events', 'none')
+      .style('opacity', 1)
+      .text(d => d.count > 0 ? `${d.pnl >= 0 ? '+' : ''}${Math.round(d.pnl)}` : '');
 
     // Add entry fade-in transition
     cells.transition()
@@ -146,8 +164,8 @@ export default function DailyHeatmap({ trades = [], currency = 'USD' }: DailyHea
       .style('opacity', 1);
 
     // Dynamic hover effects and state management
-    cells.on('mouseover', function (event, d: any) {
-      d3.select(this)
+    cellGroups.on('mouseover', function (event, d: any) {
+      d3.select(this).select('rect')
         .transition()
         .duration(100)
         .attr('stroke', 'rgba(250, 206, 111, 0.7)')
@@ -157,7 +175,7 @@ export default function DailyHeatmap({ trades = [], currency = 'USD' }: DailyHea
       setHoveredDay(d);
     })
     .on('mouseout', function (event, d: any) {
-      d3.select(this)
+      d3.select(this).select('rect')
         .transition()
         .duration(150)
         .attr('stroke', d.count > 0 ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.03)')

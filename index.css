@@ -171,3 +171,240 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.1);
 }
+
+/* --- LIGHT / WHITE MODE THEME OVERRIDES --- */
+html.light, html.light body {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+html.light {
+  /* Dynamic Palette Variables */
+  --bg-primary: #f1f5f9;
+  --bg-secondary: #ffffff;
+  --bg-panel: rgba(255, 255, 255, 1);
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --border-color: rgba(15, 23, 42, 0.08);
+
+  /* Target and transform every specific dark background-color using robust string-matching and CSS rules */
+  aside,
+  header,
+  footer,
+  nav,
+  [class*="bg-black"],
+  [class*="bg-[#050505]"],
+  [class*="bg-[#050608]"],
+  [class*="bg-[#060a12]"],
+  [class*="bg-[#070a0f]"],
+  [class*="bg-[#070b13]"],
+  [class*="bg-[#090e1a]"],
+  [class*="bg-[#0A0D14]"],
+  [class*="bg-[#0b101e]"],
+  [class*="bg-[#0b1329]"],
+  [class*="bg-[#0c1222]"],
+  [class*="bg-[#0c1224]"],
+  [class*="bg-[#0D131F]"],
+  [class*="bg-[#1C212A]"],
+  [class*="bg-[#0B0E14]"],
+  [class*="bg-slate-900"],
+  [class*="bg-slate-950"],
+  [class*="bg-neutral-900"],
+  [class*="bg-neutral-950"] {
+    background-color: #ffffff !important;
+    background-image: none !important;
+    color: #0f172a !important;
+    border-color: rgba(15, 23, 42, 0.08) !important;
+  }
+
+  /* Keep the page outer background soft grey for separation & minimalist bento-grid feel */
+  &, 
+  body,
+  .fixed.inset-0,
+  main,
+  [class*="bg-[#050608]"][class*="fixed"] {
+    background-color: #f1f5f9 !important;
+  }
+
+  /* Specific overlays and transparent background items */
+  .cyber-grid {
+    background-image: 
+      linear-gradient(to right, rgba(15, 23, 42, 0.025) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(15, 23, 42, 0.025) 1px, transparent 1px) !important;
+    background-color: transparent !important;
+  }
+
+  /* Specific chat bot message containers & rose boxes */
+  [class*="bg-[#110a0e]"] {
+    background-color: #fef2f2 !important; /* Soft rose */
+    border-color: rgba(239, 68, 68, 0.15) !important;
+    color: #991b1b !important;
+  }
+
+  /* Subtle hovering overlays */
+  [class*="hover:bg-white"],
+  [class*="hover:bg-white/5"]:hover,
+  [class*="hover:bg-white/10"]:hover {
+    background-color: rgba(15, 23, 42, 0.04) !important;
+  }
+  .hover\:bg-[#0c1224]:hover {
+    background-color: rgba(15, 23, 42, 0.03) !important;
+  }
+
+  /* Text color overrides for high-contrast accessibility */
+  .text-white, 
+  .text-slate-50, 
+  .text-slate-100, 
+  .text-slate-200, 
+  .text-slate-300,
+  span.text-slate-300,
+  p.text-slate-400,
+  h1, h2, h3, h4, h5, h6 {
+    color: #0f172a !important;
+  }
+  
+  .text-slate-400,
+  span.text-slate-400 {
+    color: #475569 !important;
+  }
+
+  .text-slate-500,
+  span.text-slate-500 {
+    color: #64748b !important;
+  }
+
+  .text-slate-600 {
+    color: #475569 !important;
+  }
+
+  /* Exclude elements with vibrant backgrounds from adopting black text */
+  [class*="bg-[var(--accent-color)]"] *,
+  [style*="background-color"] *,
+  [class*="bg-emerald-500"] *,
+  [class*="bg-rose-500"] *,
+  [class*="bg-rose-600"] *,
+  [class*="bg-[#25D366]"] *,
+  [class*="bg-amber-500"] *,
+  [class*="bg-indigo-600"] *,
+  [class*="bg-blue-600"] *,
+  [class*="bg-cyan-500"] *,
+  [class*="bg-red-500"] * {
+    color: #ffffff !important;
+  }
+
+  [class*="bg-[var(--accent-color)]"],
+  [style*="background-color"],
+  [class*="bg-emerald-500"],
+  [class*="bg-rose-600"],
+  [class*="bg-rose-500"],
+  [class*="bg-red-500"],
+  [class*="bg-[#25D366]"] {
+    color: #ffffff !important;
+  }
+
+  /* Red & Green indicators in Light Mode - darkened slightly for premium typography */
+  .text-\[\#00E676\],
+  .text-emerald-500,
+  .text-emerald-400,
+  .text-green-500,
+  .text-green-400,
+  .text-teal-400 {
+    color: #059669 !important; /* Extremely high readable contrast green */
+  }
+
+  .text-\[\#FF1744\],
+  .text-rose-500,
+  .text-rose-400,
+  .text-red-500,
+  .text-red-400 {
+    color: #dc2626 !important; /* Extremely high readable contrast red */
+  }
+
+  .text-amber-500,
+  .text-amber-400,
+  .text-yellow-500 {
+    color: #b45309 !important; /* Rich amber/gold */
+  }
+
+  /* Inputs, Selectors & Textareas */
+  input,
+  select,
+  textarea,
+  [class*="bg-slate-800/50"],
+  [class*="bg-slate-900/50"],
+  [class*="bg-black/30"],
+  [class*="bg-white/5"],
+  [class*="bg-white/10"],
+  [class*="bg-black/10"],
+  .font-mono.bg-black {
+    background-color: #f8fafc !important;
+    border-color: rgba(15, 23, 42, 0.08) !important;
+    color: #0f172a !important;
+  }
+
+  /* Borders / Dividers override */
+  .border-white\/5, 
+  .border-white\/10, 
+  .border-white\/15,
+  .border-white\/20, 
+  .border-slate-800, 
+  .border-slate-700,
+  .border-slate-600,
+  .border-amber-500\/10,
+  .border-[#d4af37]\/30,
+  .border-\[\#face6f\]\/20,
+  .border-\[\#face6f\]\/15,
+  .border-neutral-800 {
+    border-color: rgba(15, 23, 42, 0.08) !important;
+  }
+
+  /* Dropdowns, Modals & Absolute Popovers */
+  .absolute.z-50,
+  .absolute.z-[60],
+  [class*="absolute"][class*="z-50"],
+  .glowing-panel {
+    background-color: #ffffff !important;
+    border: 1px solid rgba(15, 23, 42, 0.08) !important;
+    box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08), 0 8px 10px -6px rgba(15, 23, 42, 0.08) !important;
+  }
+
+  /* Recharts custom styling adjustments */
+  .recharts-cartesian-axis-tick text {
+    fill: #475569 !important;
+    font-size: 10px;
+  }
+  .recharts-default-tooltip {
+    background-color: #ffffff !important;
+    border: 1px solid rgba(15, 23, 42, 0.08) !important;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05) !important;
+    color: #0f172a !important;
+  }
+  .recharts-legend-item-text {
+    color: #334155 !important;
+  }
+
+  /* Scrollbars customization */
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9 !important;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1 !important;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8 !important;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(15, 23, 42, 0.08) !important;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(15, 23, 42, 0.15) !important;
+  }
+
+  /* Select Option menus */
+  select option {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+  }
+}
+

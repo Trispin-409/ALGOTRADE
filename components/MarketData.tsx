@@ -131,6 +131,61 @@ const MarketData: React.FC<MarketDataProps> = ({
   const marketAnalysis = useStore(state => state.marketAnalysis);
   const activeSetup = useStore(state => state.activeSetup);
   const [showAnalysis, setShowAnalysis] = useState(true);
+  const [showNotification, setShowNotification] = useState(false);
+  const [isExecutingManual, setIsExecutingManual] = useState(false);
+
+  useEffect(() => {
+    if (activeSetup && activeSetup.isPendingConfirm) {
+      setShowNotification(true);
+      const timer = setTimeout(() => {
+        setShowNotification(false);
+      }, 5000); // 5 seconds dismiss
+      return () => clearTimeout(timer);
+    } else {
+      setShowNotification(false);
+    }
+  }, [activeSetup?.isPendingConfirm, activeSetup?.setupTimestamp, activeSetup?.entry]);
+
+  const confirmAndExecutePending = async () => {
+    if (!activeSetup || !selectedAccountId || !token) return;
+    setIsExecutingManual(true);
+    try {
+      const isBuy = activeSetup.direction === 'BUY';
+      const endpoint = isBuy ? '/api/trade/buy' : '/api/trade/sell';
+      
+      const payload = {
+        accountId: selectedAccountId,
+        symbol: activeSetup.symbol,
+        lotSize: Number(lotSizeInput) || lotSize || 0.1,
+        stopLoss: Number(activeSetup.stopLoss.toFixed(5)),
+        takeProfit: Number(activeSetup.takeProfit.toFixed(5)),
+        comment: `AI: ${activeSetup.strategyName}`
+      };
+      
+      // Update store to clear the confirmation requirement
+      useStore.getState().setActiveSetup({
+        ...activeSetup,
+        isPendingConfirm: false
+      });
+      setShowNotification(false);
+      
+      addLog(`[MANUAL SIGNAL CONFIRMED] Dispatching secure payload for ${activeSetup.symbol} via ${activeSetup.strategyName}`);
+      
+      await safeFetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      
+    } catch (err: any) {
+      console.error("Manual confirm failed", err);
+    } finally {
+      setIsExecutingManual(false);
+    }
+  };
 
   const [lotSizeInput, setLotSizeInput] = useState<string>(String(lotSize));
 
@@ -627,6 +682,77 @@ const MarketData: React.FC<MarketDataProps> = ({
       {/* FULL SCREEN CHART COMPONENT - Takes remaining available height */}
       <div className="flex-1 w-full bg-[#050608]/40 border border-white/5 rounded-3xl relative min-h-0 min-w-0 overflow-hidden shadow-2xl glowing-frame">
         
+        {/* TradingView-Style prominent SHOW ANALYSIS toggle */}
+        <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+          <button 
+            type="button"
+            onClick={() => setShowAnalysis(!showAnalysis)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full font-mono text-[9px] font-black uppercase tracking-widest border transition-all duration-300 pointer-events-auto backdrop-blur-md cursor-pointer ${
+              showAnalysis 
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 font-bold shadow-lg shadow-emerald-500/5' 
+                : 'bg-slate-900/60 border-white/5 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${showAnalysis ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+            SHOW ANALYSIS: {showAnalysis ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
+        {/* Dynamic Non-Blocking Manual Trade Confirmation Signal Toast */}
+        {showNotification && activeSetup && activeSetup.isPendingConfirm && (
+          <div className="absolute bottom-16 left-4 sm:bottom-4 sm:left-4 sm:right-auto z-40 w-[calc(100%-2rem)] sm:w-[320px] bg-slate-950/98 border border-[#fbbf24]/55 rounded-2xl p-4 shadow-2xl backdrop-blur-md animate-slide-in pointer-events-auto font-sans border-l-4 border-l-[#fbbf24]">
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="flex h-1.5 w-1.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
+                  </span>
+                  <span className="font-mono text-[8px] font-black text-[#fbbf24] uppercase tracking-widest leading-none">AI SIGNAL MATCHED</span>
+                </div>
+                <h4 className="text-[10px] font-black text-white uppercase tracking-wider mt-1 truncate">
+                  {activeSetup.strategyName.replace(/\[RANKED #1\]/gi, '').split('[')[0].trim()}
+                </h4>
+                <p className="text-[9px] text-slate-400 mt-0.5">
+                  {activeSetup.symbol} • Confidence: <span className="font-bold text-slate-100">{activeSetup.confidence}%</span>
+                </p>
+                <div className="flex gap-4 mt-2 font-mono text-[9px] text-slate-400 border-t border-white/5 pt-2">
+                  <div>
+                    <span className="block text-[7px] text-slate-500">DIRECTION</span>
+                    <span className={`font-extrabold ${activeSetup.direction === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>{activeSetup.direction}</span>
+                  </div>
+                  <div>
+                    <span className="block text-[7px] text-slate-500">ENTRY</span>
+                    <span className="font-extrabold text-[#fbbf24]">{activeSetup.entry.toFixed(5)}</span>
+                  </div>
+                  <div>
+                    <span className="block text-[7px] text-slate-500">TP TARGET</span>
+                    <span className="font-semibold text-emerald-400">{activeSetup.takeProfit.toFixed(5)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex gap-2 mt-3 block">
+              <button
+                type="button"
+                onClick={() => setShowNotification(false)}
+                className="w-1/3 py-1 rounded-lg border border-white/5 text-[9px] font-black uppercase text-slate-500 hover:text-slate-300 transition-colors cursor-pointer inline-block text-center mr-1"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                disabled={isExecutingManual}
+                onClick={confirmAndExecutePending}
+                className="w-[62%] py-1 rounded-lg bg-[#fbbf24] hover:bg-[#face6f] disabled:opacity-50 text-[9px] font-black uppercase text-slate-950 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer inline-block text-center"
+              >
+                {isExecutingManual ? 'Executing...' : 'EXECUTE'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Absolute dynamic background asset indicator */}
         <div className="absolute top-4 left-4 pointer-events-none opacity-5 z-0 select-none font-mono">
           <span className="text-5xl font-black text-white leading-none uppercase">{symbol}</span>

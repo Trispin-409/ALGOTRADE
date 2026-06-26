@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 interface AccountStore {
   connectionStatus: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE";
-  account: { balance: number; equity: number; currency: string } | null;
+  account: { balance: number; equity: number; margin?: number; freeMargin?: number; marginLevel?: number; currency: string } | null;
   candles: any[];
   activeStream: { symbol: string, timeframe: string } | null;
   isStreaming: boolean;
@@ -14,6 +14,7 @@ interface AccountStore {
     downColor: string;
     bgImageUrl: string;
     accentColor: string;
+    theme?: 'dark' | 'light';
   };
   strategySettings: {
     symbol: string;
@@ -36,9 +37,26 @@ interface AccountStore {
   } | null;
   currentUserEmail: string | null;
   activeSetup: any | null;
+  isAutoTrade: boolean;
+  autoTradeConfirmationOpen: boolean;
+  // Agent Monitoring State
+  agentStatus: { [key: string]: { status: string, latestInsight: string, confidence: number } };
+  agentLogs: { [key: string]: string[] };
+  activityFeed: string[];
+  
+  // Strategy & Market State
+  strategies: { name: string, confidence: number, status: 'MATCHED' | 'REJECTED' | 'WAITING', reason?: string }[];
+  marketSession: string;
+  timeframeAnalysis: { [tf: string]: { trend: string, structure?: string, momentum?: string, bias: string } };
+  newsImpact: { title: string, impact: 'HIGH' | 'MEDIUM' | 'LOW', bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL', score: number, articleCount?: number, sentimentScore?: number };
+  riskMetrics: any;
+  tradeSignal: any | null;
+  activeStepIndex: number;
+  pipelineLogs: string[];
+  debateDialogue: string[];
 
   setConnectionStatus: (status: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE") => void;
-  updateAccount: (payload: { balance?: number; equity?: number; currency?: string }) => void;
+  updateAccount: (payload: { balance?: number; equity?: number; margin?: number; freeMargin?: number; marginLevel?: number; currency?: string }) => void;
   setCandles: (candles: any[] | ((prev: any[]) => any[])) => void;
   addCandle: (candle: any) => void;
   setActiveStream: (stream: { symbol: string, timeframe: string } | null) => void;
@@ -48,7 +66,7 @@ interface AccountStore {
   setHistory: (history: any[]) => void;
   setStats: (stats: any | null) => void;
   setCurrentUserEmail: (email: string | null) => void;
-  setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string; accentColor?: string }) => void;
+  setChartSettings: (settings: { upColor?: string; downColor?: string; bgImageUrl?: string; accentColor?: string, theme?: 'dark' | 'light' }) => void;
   setStrategySettings: (settings: { 
     symbol?: string; 
     lotSize?: number; 
@@ -65,11 +83,27 @@ interface AccountStore {
   }) => void;
   setMarketAnalysis: (analysis: any | null) => void;
   setActiveSetup: (setup: any | null) => void;
+  
+  // Global Actions
+  setIsAutoTrade: (isAutoTrade: boolean) => void;
+  setAutoTradeConfirmationOpen: (open: boolean) => void;
+  setAgentStatus: (id: string, status: Partial<{ status: string, latestInsight: string, confidence: number }>) => void;
+  addAgentLog: (id: string, log: string) => void;
+  addActivity: (activity: string) => void;
+  setMarketSession: (session: string) => void;
+  setTimeframeAnalysis: (tf: string, analysis: { trend: string, structure?: string, momentum?: string, bias: string }) => void;
+  setNewsImpact: (impact: any) => void;
+  setRiskMetrics: (metrics: any) => void;
+  setTradeSignal: (signal: any) => void;
+  setStrategies: (strategies: any[]) => void;
+  setActiveStepIndex: (index: number) => void;
+  addPipelineLog: (log: string) => void;
+  setDebateDialogue: (dialogue: string[]) => void;
 }
 
 export const useStore = create<AccountStore>((set) => ({
   connectionStatus: "INIT",
-  account: null, // Start with null, DO NOT overwrite with 0 later unless provided
+  account: null,
   candles: [],
   activeStream: null,
   isStreaming: false,
@@ -79,21 +113,37 @@ export const useStore = create<AccountStore>((set) => ({
   marketAnalysis: null,
   currentUserEmail: null,
   activeSetup: null,
+  isAutoTrade: false,
+  autoTradeConfirmationOpen: false,
+  agentStatus: {},
+  agentLogs: {},
+  activityFeed: [],
+  strategies: [],
+  marketSession: 'New York',
+  timeframeAnalysis: {},
+  newsImpact: { title: 'No major news', impact: 'LOW', bias: 'NEUTRAL', score: 0 },
+  riskMetrics: { balance: 1000, risk: 0, drawdown: 0, health: 'Stable' },
+  tradeSignal: null,
+  activeStepIndex: 0,
+  pipelineLogs: [],
+  debateDialogue: [],
   chartSettings: (() => {
     try {
       const saved = localStorage.getItem('chartSettings');
-      return saved ? JSON.parse(saved) : {
+      return saved ? { theme: 'dark', ...JSON.parse(saved) } : {
         upColor: '#10b981',
         downColor: '#f43f5e',
         bgImageUrl: '/bot-logo.png?v=5',
         accentColor: '#face6f',
+        theme: 'dark',
       };
     } catch {
       return { 
         upColor: '#10b981', 
         downColor: '#f43f5e', 
         bgImageUrl: '/icon-512.png?v=5',
-        accentColor: '#face6f' 
+        accentColor: '#face6f',
+        theme: 'dark'
       };
     }
   })(),
@@ -133,26 +183,32 @@ export const useStore = create<AccountStore>((set) => ({
   
   updateAccount: (payload) => set((state) => {
     const currentAccount = state.account;
-    
-    // Check if new data provides meaningful values (including 0 if explicitly provided, but avoid null/undefined)
     const hasNewBalance = payload.balance !== undefined && payload.balance !== null;
     const hasNewEquity = payload.equity !== undefined && payload.equity !== null;
+    const hasNewMargin = payload.margin !== undefined && payload.margin !== null;
+    const hasNewFreeMargin = payload.freeMargin !== undefined && payload.freeMargin !== null;
+    const hasNewMarginLevel = payload.marginLevel !== undefined && payload.marginLevel !== null;
     
-    console.log(`[STORE] Updating Account:`, { payload, currentAccount, hasNewBalance, hasNewEquity });
-
-    // New state construction
     const newAccount = {
       balance: hasNewBalance ? payload.balance! : (currentAccount?.balance ?? null),
       equity: hasNewEquity ? payload.equity! : (currentAccount?.equity ?? null),
+      margin: hasNewMargin ? payload.margin! : (currentAccount?.margin ?? null),
+      freeMargin: hasNewFreeMargin ? payload.freeMargin! : (currentAccount?.freeMargin ?? null),
+      marginLevel: hasNewMarginLevel ? payload.marginLevel! : (currentAccount?.marginLevel ?? null),
       currency: payload.currency || currentAccount?.currency || "USD",
     };
+    
+    // Check if anything actually changed
+    const balanceChanged = hasNewBalance && payload.balance !== currentAccount?.balance;
+    const equityChanged = hasNewEquity && payload.equity !== currentAccount?.equity;
+    const marginChanged = hasNewMargin && payload.margin !== currentAccount?.margin;
+    const freeMarginChanged = hasNewFreeMargin && payload.freeMargin !== currentAccount?.freeMargin;
+    const marginLevelChanged = hasNewMarginLevel && payload.marginLevel !== currentAccount?.marginLevel;
+    const currencyChanged = payload.currency !== undefined && payload.currency !== currentAccount?.currency;
 
-    // If both new balance/equity are null/missing and we already have a full balance, just keep old
-    if (currentAccount && !hasNewBalance && !hasNewEquity && currentAccount.balance !== null) {
-      console.warn("[STORE] Preserving existing balance as new payload is incomplete");
+    if (currentAccount && !balanceChanged && !equityChanged && !marginChanged && !freeMarginChanged && !marginLevelChanged && !currencyChanged) {
       return state;
     }
-
     return { account: newAccount };
   }),
 
@@ -161,7 +217,6 @@ export const useStore = create<AccountStore>((set) => ({
   })),
   
   addCandle: (candle) => set((state) => {
-    // Only update LAST candle or push if new
     const newCandles = [...state.candles];
     if (newCandles.length > 0 && newCandles[newCandles.length - 1].time === candle.time) {
       newCandles[newCandles.length - 1] = candle;
@@ -173,7 +228,6 @@ export const useStore = create<AccountStore>((set) => ({
 
   setActiveStream: (stream) => set({ activeStream: stream }),
   setIsStreaming: (isStreaming) => set({ isStreaming }),
-
   clearStreamIntent: () => set({ isStreaming: false, activeStream: null }),
   setPositions: (positions) => set({ positions }),
   setHistory: (history) => set({ history }),
@@ -183,8 +237,6 @@ export const useStore = create<AccountStore>((set) => ({
     if (!email) {
       return { currentUserEmail: null };
     }
-
-    // Load email-isolated chartSettings
     let chartSettings = state.chartSettings;
     try {
       const saved = localStorage.getItem(`chartSettings:${email}`);
@@ -200,8 +252,6 @@ export const useStore = create<AccountStore>((set) => ({
     } catch (e) {
       console.warn("Error reading chart settings for email", e);
     }
-
-    // Load email-isolated strategySettings
     let strategySettings = state.strategySettings;
     try {
       const saved = localStorage.getItem(`strategySettings:${email}`);
@@ -217,7 +267,6 @@ export const useStore = create<AccountStore>((set) => ({
     } catch (e) {
       console.warn("Error reading strategy settings for email", e);
     }
-
     return { 
       currentUserEmail: email,
       chartSettings,
@@ -245,43 +294,25 @@ export const useStore = create<AccountStore>((set) => ({
         ? { ...state.strategySettings.riskConfig, ...settings.riskConfig }
         : state.strategySettings.riskConfig
     };
-    
-    // Auto-calculate everything when Risk Config changes
     if (newSettings.riskConfig && !newSettings.riskConfig.usePreferredLotSize) {
       const { fundedAmount, riskPercentage, stopLossPips, currency } = newSettings.riskConfig;
-      
-      // Default to 1% if it's 0 or unset (to ensure meaningful auto-calc)
       const activeRiskPercent = riskPercentage || 1;
       if (!riskPercentage) newSettings.riskConfig.riskPercentage = 1;
-
-      // Exchange rate adjustment (rough estimation for ZAR)
       const exchangeRate = currency === 'ZAR' ? 18.5 : 1.0;
-      
-      // 1. Calculate Risk Amount
       const riskAmount = (fundedAmount * activeRiskPercent) / 100;
-      
-      // 2. Calculate Lot Size: (Risk Amount in USD) / (SL Pips * $10 per pip for standard lot)
-      // We convert riskAmount to USD first for the lot formula
       const riskAmountUSD = riskAmount / exchangeRate;
       const calculatedLot = riskAmountUSD / (stopLossPips * 10); 
       newSettings.lotSize = Math.max(0.01, Math.round(calculatedLot * 100) / 100);
-      
-      // 3. Calculate Max Trades (Standard scaling: 1 trade per $200 USD balance)
       const fundedAmountUSD = fundedAmount / exchangeRate;
       newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200)); 
     } else if (newSettings.riskConfig?.usePreferredLotSize) {
       newSettings.lotSize = newSettings.riskConfig.preferredLotSize;
-      
-      // Even with manual lots, we can suggest max trades based on common margin requirements
       const exchangeRate = newSettings.riskConfig.currency === 'ZAR' ? 18.5 : 1.0;
       const fundedAmountUSD = newSettings.riskConfig.fundedAmount / exchangeRate;
       newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200));
     }
-
-    // Validation
     if (newSettings.lotSize !== undefined) newSettings.lotSize = Math.max(0.01, newSettings.lotSize);
     if (newSettings.maxTrades !== undefined) newSettings.maxTrades = Math.max(1, newSettings.maxTrades);
-
     try {
       localStorage.setItem('strategySettings', JSON.stringify(newSettings));
       if (state.currentUserEmail) {
@@ -294,4 +325,122 @@ export const useStore = create<AccountStore>((set) => ({
   }),
   setMarketAnalysis: (analysis) => set({ marketAnalysis: analysis }),
   setActiveSetup: (setup) => set({ activeSetup: setup }),
+  setIsAutoTrade: (isAutoTrade) => set({ isAutoTrade }),
+  setAutoTradeConfirmationOpen: (open) => set({ autoTradeConfirmationOpen: open }),
+  setAgentStatus: (id, status) => set((state) => ({
+      agentStatus: { ...state.agentStatus, [id]: { ...state.agentStatus[id], ...status } }
+  })),
+  addAgentLog: (id, log) => set((state) => ({
+      agentLogs: { ...state.agentLogs, [id]: [log, ...(state.agentLogs[id] || [])].slice(0, 10) }
+  })),
+  addActivity: (activity) => set((state) => ({
+      activityFeed: [activity, ...state.activityFeed].slice(0, 50)
+  })),
+  setMarketSession: (session) => set({ marketSession: session }),
+  setTimeframeAnalysis: (tf, analysis) => set((state) => ({ timeframeAnalysis: { ...state.timeframeAnalysis, [tf]: analysis } })),
+  setNewsImpact: (impact) => set({ newsImpact: impact }),
+  setRiskMetrics: (metrics) => set({ riskMetrics: metrics }),
+  setTradeSignal: (signal) => set({ tradeSignal: signal }),
+  setStrategies: (strategies) => set({ strategies }),
+  setActiveStepIndex: (index) => set({ activeStepIndex: index }),
+  addPipelineLog: (log) => set((state) => ({ pipelineLogs: [log, ...state.pipelineLogs].slice(0, 100) })),
+  setDebateDialogue: (dialogue) => set({ debateDialogue: dialogue }),
 }));
+
+export interface SessionDetails {
+  utcTime: string;
+  sydneyActive: boolean;
+  tokyoActive: boolean;
+  londonActive: boolean;
+  newYorkActive: boolean;
+  currentSession: string;
+  killZone: string;
+  amdPhase: "Accumulation" | "Manipulation" | "Distribution" | "Reversal";
+  economicReleaseWindow: boolean;
+}
+
+export function calculateTradingSession(now: Date = new Date()): SessionDetails {
+  const utcHours = now.getUTCHours();
+  const utcMinutes = now.getUTCMinutes();
+  const decimalHour = utcHours + utcMinutes / 60;
+
+  const month = now.getUTCMonth();
+  const date = now.getUTCDate();
+  const day = now.getUTCDay();
+
+  let isDst = false;
+  if (month > 2 && month < 10) {
+    isDst = true;
+  } else if (month === 2) {
+    const prevSunday = date - day;
+    isDst = prevSunday >= 8;
+  } else if (month === 10) {
+    const prevSunday = date - day;
+    isDst = prevSunday < 1;
+  }
+
+  const londonStart = isDst ? 7 : 8;
+  const londonEnd = isDst ? 16 : 17;
+  const nyStart = isDst ? 12 : 13;
+  const nyEnd = isDst ? 21 : 22;
+  const tokyoStart = 0;
+  const tokyoEnd = 9;
+  const sydneyStart = 22;
+  const sydneyEnd = 7;
+
+  const sydneyActive = decimalHour >= sydneyStart || decimalHour < sydneyEnd;
+  const tokyoActive = decimalHour >= tokyoStart && decimalHour < tokyoEnd;
+  const londonActive = decimalHour >= londonStart && decimalHour < londonEnd;
+  const newYorkActive = decimalHour >= nyStart && decimalHour < nyEnd;
+
+  let currentSession = "Asian Consolidation";
+  if (londonActive && newYorkActive) {
+    currentSession = "London/NY Overlap";
+  } else if (londonActive) {
+    currentSession = "London Session";
+  } else if (newYorkActive) {
+    currentSession = "New York Session";
+  } else if (tokyoActive) {
+    currentSession = "Tokyo Session";
+  } else if (sydneyActive) {
+    currentSession = "Sydney Session";
+  }
+
+  let killZone = "None";
+  if (decimalHour >= 0 && decimalHour < 4) {
+    killZone = "Asian Kill Zone";
+  } else if (decimalHour >= (londonStart - 1) && decimalHour < (londonStart + 2)) {
+    killZone = "London Open Kill Zone";
+  } else if (decimalHour >= (nyStart - 1) && decimalHour < (nyStart + 2)) {
+    killZone = "New York Open Kill Zone";
+  } else if (decimalHour >= (londonEnd - 1) && decimalHour < (londonEnd + 1)) {
+    killZone = "London Close Kill Zone";
+  }
+
+  let amdPhase: "Accumulation" | "Manipulation" | "Distribution" | "Reversal" = "Accumulation";
+  if (decimalHour >= 0 && decimalHour < 8) {
+    amdPhase = "Accumulation";
+  } else if (decimalHour >= 8 && decimalHour < 12) {
+    amdPhase = "Manipulation";
+  } else if (decimalHour >= 12 && decimalHour < 21) {
+    amdPhase = "Distribution";
+  } else {
+    amdPhase = "Reversal";
+  }
+
+  const economicReleaseWindow = decimalHour >= 12 && decimalHour < 14.5;
+  const utcTimeString = now.toISOString().replace("T", " ").substring(0, 19) + " UTC";
+
+  return {
+    utcTime: utcTimeString,
+    sydneyActive,
+    tokyoActive,
+    londonActive,
+    newYorkActive,
+    currentSession,
+    killZone,
+    amdPhase,
+    economicReleaseWindow
+  };
+}
+
