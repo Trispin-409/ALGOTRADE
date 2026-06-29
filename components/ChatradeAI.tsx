@@ -365,7 +365,7 @@ export default function ChatradeAI({
   const setIsAutoTrade = useStore(state => state.setIsAutoTrade);
   const autoTradeConfirmationOpen = useStore(state => state.autoTradeConfirmationOpen);
   const setAutoTradeConfirmationOpen = useStore(state => state.setAutoTradeConfirmationOpen);
-  const autoTradeMode = isAutoTrade;
+  const autoTradeMode = isAutoTrade || isAlgoTradeRunning;
 
   const toggleAutoTradeMode = () => {
     if (!autoTradeMode) {
@@ -1562,19 +1562,19 @@ export default function ChatradeAI({
       const activePositionForSymbol = globalPositions.find((p: any) => p.symbol === symbol);
       const isSymbolActive = !!activePositionForSymbol;
       
-      // Autonomous mode active position constraint: Do not search for new trades while one is active.
-      if (autoTradeMode && globalPositions.length > 0) {
-        const activePos = globalPositions[0];
+      // Autonomous mode active position constraint: Do not search for new trades while one is active on this symbol.
+      if (autoTradeMode && isSymbolActive) {
+        const activePos = activePositionForSymbol;
         setAgentDebates(prev => ({
           ...prev,
           highestRanked: "N/A (Active Trade Enforced)",
           consensusScore: 100,
           candidatesCount: 0,
           marketState: "Executing",
-          marketStructure: { status: 'completed', message: `Structure Locked. Active position on ${activePos.symbol} is running.` },
-          liquidity: { status: 'completed', message: `Trailing protections active. Entry: ${activePos.openPrice}. Current: ${activePos.currentPrice || activePos.openPrice}` },
-          news: { status: 'completed', message: `Calendar monitors active for ${activePos.symbol} risk windows.` },
-          risk: { status: 'completed', message: `Profit protection rules verified. Stop Loss set at ${activePos.stopLoss || 'N/A'}.` },
+          marketStructure: { status: 'completed', message: `Structure Locked. Active position on ${symbol} is running.` },
+          liquidity: { status: 'completed', message: `Trailing protections active. Entry: ${activePos?.openPrice || 'N/A'}. Current: ${activePos?.currentPrice || activePos?.openPrice || 'N/A'}` },
+          news: { status: 'completed', message: `Calendar monitors active for ${symbol} risk windows.` },
+          risk: { status: 'completed', message: `Profit protection rules verified. Stop Loss set at ${activePos?.stopLoss || 'N/A'}.` },
           consensus: { status: 'completed', message: `Consensus: Active trade managed. Search halted to prevent overlap.`, outcome: 'WAIT' }
         }));
         return;
@@ -2450,19 +2450,44 @@ export default function ChatradeAI({
         }, 0);
       })();
 
+      // Retrieve Session Balance Cache
+      let originalBalance = activeAcc?.balance || 0;
+      let cachedBalances: { [accountId: string]: { originalBalance: number } } = {};
+      try {
+        const saved = localStorage.getItem('chatrade_account_balances_cache');
+        if (saved) {
+          cachedBalances = JSON.parse(saved);
+          if (selectedAccountId && cachedBalances[selectedAccountId]) {
+            originalBalance = cachedBalances[selectedAccountId].originalBalance;
+          }
+        }
+      } catch (e) {
+        console.error("Failed to parse cached balances:", e);
+      }
+
+      const activeBalance = activeAcc?.balance || 0;
+      const activeEquity = activeAcc?.equity || 0;
+      const realizedLossToday = originalBalance - activeBalance;
+      const unrealizedLoss = activeBalance - activeEquity;
+      const totalSessionLoss = originalBalance - activeEquity;
+
       const marketContext = {
         currentSymbol: internalSymbol,
         currentTimeframe: selectedTimeframe,
         isAutoTrade: isAlgoTradeRunning,
         candles: useStore.getState().candles || [],
         account: {
-          balance: activeAcc?.balance || 0,
-          equity: activeAcc?.equity || 0,
+          balance: activeBalance,
+          equity: activeEquity,
           margin: computedMarginVal,
           freeMargin: activeAcc?.freeMargin || 0,
           marginLevel: activeAcc?.marginLevel || 100,
           recentDrawdown: activeAcc?.recentDrawdown || 0,
-          recentWinRate: activeAcc?.recentWinRate || 65
+          recentWinRate: activeAcc?.recentWinRate || 65,
+          originalBalance,
+          realizedLossToday,
+          unrealizedLoss,
+          totalSessionLoss
         },
         openTrades: globalPositions,
         marketAnalysis: useStore.getState().marketAnalysis || {}

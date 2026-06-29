@@ -786,33 +786,63 @@ export default function CandlestickChart({
                   })()}
 
                   {/* Horizontal Guide Lines */}
-                  <line x1={xBoxStart} x2={mainW} y1={yTP} y2={yTP} stroke={tpColor} strokeWidth={1.2} strokeDasharray="3 3" opacity={0.8} />
-                  <line x1={xBoxStart} x2={mainW} y1={ySL} y2={ySL} stroke={slColor} strokeWidth={1.2} strokeDasharray="3 3" opacity={0.8} />
-                  <line x1={xBoxStart} x2={mainW} y1={yEntry} y2={yEntry} stroke={entryColor} strokeWidth={1.5} />
+                  {/* Clean blue entry line */}
+                  <line x1={xBoxStart} x2={mainW} y1={yEntry} y2={yEntry} stroke={entryColor} strokeWidth={1.2} />
 
-                  {/* Minimal, high-contrast text labels aligned snug to the extreme left container edge, completely off active candlesticks */}
-                  <text x={8} y={yTP - 4} textAnchor="start" fill={tpColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
-                    TAKE PROFIT TARGET
-                  </text>
+                  {/* Dynamic TP1, TP2, TP3 targets within Take Profit zone */}
+                  {(() => {
+                    const diff = activeSetup.takeProfit - activeSetup.entry;
+                    const tp1Price = activeSetup.entry + diff * 0.33;
+                    const tp2Price = activeSetup.entry + diff * 0.66;
+                    const tp3Price = activeSetup.takeProfit;
+
+                    const yTP1 = getY(tp1Price);
+                    const yTP2 = getY(tp2Price);
+
+                    return (
+                      <g>
+                        {/* Dynamic TP targets guide lines */}
+                        <line x1={xBoxStart} x2={mainW} y1={yTP} y2={yTP} stroke="#10b981" strokeWidth={0.8} strokeDasharray="2 3" opacity={0.6} />
+                        <line x1={xBoxStart} x2={mainW} y1={yTP1} y2={yTP1} stroke="#10b981" strokeWidth={0.6} strokeDasharray="2 4" opacity={0.4} />
+                        <line x1={xBoxStart} x2={mainW} y1={yTP2} y2={yTP2} stroke="#10b981" strokeWidth={0.6} strokeDasharray="2 4" opacity={0.4} />
+
+                        {/* TP1, TP2, TP3 label positioning */}
+                        <text x={8} y={yTP1 - 4} textAnchor="start" fill="#10b981" fontSize="7" fontWeight="bold" className="font-mono tracking-wider opacity-60 uppercase select-none pointer-events-none">
+                          TP1 {formatPrice(tp1Price)}
+                        </text>
+                        <text x={8} y={yTP2 - 4} textAnchor="start" fill="#10b981" fontSize="7" fontWeight="bold" className="font-mono tracking-wider opacity-60 uppercase select-none pointer-events-none">
+                          TP2 {formatPrice(tp2Price)}
+                        </text>
+                        <text x={8} y={yTP - 4} textAnchor="start" fill="#10b981" fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
+                          TP3 (FINAL TARGET)
+                        </text>
+                      </g>
+                    );
+                  })()}
+
+                  {/* Stop Loss label - thin guiding boundary only, no thick solid lines */}
+                  <line x1={xBoxStart} x2={mainW} y1={ySL} y2={ySL} stroke={slColor} strokeWidth={0.5} strokeDasharray="3 6" opacity={0.4} />
                   <text x={8} y={ySL - 4} textAnchor="start" fill={slColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
-                    STOP LOSS PROTECT
-                  </text>
-                  <text x={8} y={yEntry - 4} textAnchor="start" fill={entryColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
-                    {activeSetup.direction} ENTRY TRIGGER
+                    STOP LOSS (RISK AREA BOUNDARY)
                   </text>
 
-                  {/* TradingView-Style Price Scale Tag Pills rendered on the right-hand price axis bar (completely off active candle workspace) */}
-                  <rect x={mainW + 2} y={yTP - 8} width={rightPadding - 4} height={16} fill={isBuy ? "#10b981" : "#ef4444"} rx={3} />
+                  {/* Blue entry trigger label */}
+                  <text x={8} y={yEntry - 4} textAnchor="start" fill={entryColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-95 uppercase select-none pointer-events-none">
+                    {activeSetup.direction} ENTRY
+                  </text>
+
+                  {/* TradingView-Style Price Scale Tag Pills rendered on the right-hand price axis bar */}
+                  <rect x={mainW + 2} y={yTP - 8} width={rightPadding - 4} height={16} fill={isBuy ? "#10b981" : "#ef4444"} rx={2} />
                   <text x={mainW + rightPadding / 2} y={yTP + 3} textAnchor="middle" fill="#090d16" fontSize="8" fontWeight="black" fontFamily="monospace">
                     TP {formatPrice(activeSetup.takeProfit)}
                   </text>
 
-                  <rect x={mainW + 2} y={ySL - 8} width={rightPadding - 4} height={16} fill="#ef4444" rx={3} />
+                  <rect x={mainW + 2} y={ySL - 8} width={rightPadding - 4} height={16} fill="#ef4444" rx={2} />
                   <text x={mainW + rightPadding / 2} y={ySL + 3} textAnchor="middle" fill="#ffffff" fontSize="8" fontWeight="black" fontFamily="monospace">
                     SL {formatPrice(activeSetup.stopLoss)}
                   </text>
 
-                  <rect x={mainW + 2} y={yEntry - 8} width={rightPadding - 4} height={16} fill="#3b82f6" rx={3} />
+                  <rect x={mainW + 2} y={yEntry - 8} width={rightPadding - 4} height={16} fill="#3b82f6" rx={2} />
                   <text x={mainW + rightPadding / 2} y={yEntry + 3} textAnchor="middle" fill="#ffffff" fontSize="8" fontWeight="black" fontFamily="monospace">
                     ENT {formatPrice(activeSetup.entry)}
                   </text>
@@ -868,49 +898,20 @@ export default function CandlestickChart({
         <line x1={mainW} x2={mainW} y1={0} y2={effectiveHeight} stroke="#1e293b" />
       </svg>
       
-      {/* TradingView-Style Compact Strategy Card overlay (<10% of workspace, stacked elegantly below the "Show Analysis" button) */}
+      {/* Strategy Header in top-left corner - Very small, minimal, professional */}
       {showAnalysis && activeSetup && (
-        <div className="hidden sm:block absolute top-16 right-4 z-20 w-48 bg-slate-900/95 border border-white/5 rounded-2xl p-3 shadow-2xl backdrop-blur-md select-none font-sans text-[10px]">
-          <div className="flex items-center justify-between gap-1 border-b border-white/5 pb-1.5 mb-1.5">
-            <span className="font-extrabold text-[#face6f] truncate uppercase tracking-wide leading-none">
-              {activeSetup.strategyName.replace(/\[RANKED #1\]/gi, '').split('[')[0].trim()}
-            </span>
-            <span className={`px-1 rounded text-[8px] font-black uppercase tracking-wider ${
-              activeSetup.direction === 'BUY' 
-                ? 'bg-emerald-500/10 text-emerald-400' 
-                : 'bg-rose-500/10 text-rose-400'
-            }`}>
-              {activeSetup.direction}
-            </span>
+        <div className="absolute top-4 left-4 z-20 bg-slate-950/95 border border-white/5 rounded p-2 shadow-2xl backdrop-blur-sm select-none font-sans text-[8px] sm:text-[9px] text-slate-400 flex flex-col gap-0.5 pointer-events-none">
+          <div className="font-black text-slate-100 text-[9px] sm:text-[10px] uppercase tracking-wider mb-0.5">
+            {activeSetup.strategyName.replace(/\[RANKED #1\]/gi, '').split('[')[0].trim()}
           </div>
-          <div className="space-y-1 font-mono text-[9px] text-slate-400">
-            <div className="flex justify-between">
-              <span>CONFIDENCE:</span>
-              <span className="font-bold text-slate-100">{activeSetup.confidence}%</span>
-            </div>
-            <div className="flex justify-between">
-              <span>SESSION:</span>
-              <span className="font-bold text-slate-300 truncate max-w-[90px] text-right uppercase text-[8px]">{activeSetup.sessionName}</span>
-            </div>
-            <div className="h-[1px] bg-white/5 my-1" />
-            <div className="flex justify-between">
-              <span>ENTRY RATE:</span>
-              <span className="font-bold text-[#fbbf24]">{activeSetup.entry.toFixed(5)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>PROTECT SL:</span>
-              <span className="font-bold text-rose-500">{activeSetup.stopLoss.toFixed(5)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>TARGET TP:</span>
-              <span className="font-bold text-emerald-400">{activeSetup.takeProfit.toFixed(5)}</span>
-            </div>
-          </div>
+          <div>Confidence: <span className="font-bold text-[#face6f]">{activeSetup.confidence}%</span></div>
+          <div>Session: <span className="font-bold text-slate-100 uppercase">{activeSetup.sessionName || 'London'}</span></div>
+          <div>Timeframe: <span className="font-bold text-slate-100 uppercase">H1 → M15 → M5</span></div>
         </div>
       )}
       
-      {/* Pattern Summary Overlay - Fully Responsive Collapsing badge layout */}
-      {showAnalysis && marketAnalysis && (
+      {/* Pattern Summary Overlay - Fully Responsive Collapsing badge layout - Hidden when active trade setup exists to prevent clutter */}
+      {showAnalysis && marketAnalysis && !activeSetup && (
         <div className="absolute top-4 left-4 p-2 sm:p-3 pointer-events-none select-none text-[10px] sm:text-xs flex flex-col gap-1.5 drop-shadow-xl font-mono">
           <div className="font-extrabold text-slate-100 flex gap-1.5 items-center drop-shadow-[0_1.5px_1.5px_rgba(0,0,0,0.95)]">
             <span className="tracking-wide">AI CHG DETECTS:</span>

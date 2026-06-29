@@ -425,7 +425,17 @@ const tradingLimiter = rateLimit({
   validate: false
 });
 
+const globalApiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: 200, // Limit each IP to 200 requests per windowMs
+  message: { error: "Too many requests. Please slow down." },
+  validate: false
+});
+
 app.use(cors());
+
+// Apply global API rate limiter to all API endpoints for security
+app.use("/api/", globalApiLimiter);
 
 // HEALTH CHECK (For Cloud Run / AIS Health Monitor)
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
@@ -3076,6 +3086,10 @@ app.post("/api/chatrade/chat", async (req, res) => {
   - Free Margin: $${account.freeMargin || 'N/A'}
   - Margin Level: ${account.marginLevel || '100'}%
   - Real-Time Account Floating Drawdown: ${account.recentDrawdown || '0.0'}%
+  - Baseline/Original Balance (at start of trade session): $${account.originalBalance || 'N/A'}
+  - Realized Profit/Loss Today (from original balance): $${account.realizedLossToday !== undefined ? (-Number(account.realizedLossToday)).toFixed(2) : '0.00'}
+  - Unrealized/Floating P&L: $${account.unrealizedLoss !== undefined ? (-Number(account.unrealizedLoss)).toFixed(2) : '0.00'}
+  - Total Session Profit/Loss (Realized + Floating): $${account.totalSessionLoss !== undefined ? (-Number(account.totalSessionLoss)).toFixed(2) : '0.00'}
 * Open Trading Positions:
 ${tradesSummary}
 * Real-Time Technical Indicators & Structure:
@@ -3086,9 +3100,15 @@ ${tradesSummary}
   - Discovered Chart Patterns: ${marketAnalysis.pattern || 'N/A'}
 * Recent Candlestick History (last 5 intervals):
   - ${candlesSummary}
+  - Note: Instruct the user about active/realized loss today or help them analyze risk based on these accurate session statistics.
 -----------------------------------------------------------
 `;
     }
+
+    const cacheOriginalBalance = marketContext?.account?.originalBalance;
+    const cacheRealizedLossToday = marketContext?.account?.realizedLossToday;
+    const cacheUnrealizedLoss = marketContext?.account?.unrealizedLoss;
+    const cacheTotalSessionLoss = marketContext?.account?.totalSessionLoss;
 
     const prompt = `You are Chatrade AI - Institutional trading mentor and conversational agentic decision engine.
 Style: Professional, calm, patient, analytical, disciplined, transparent. Never emotional, never overconfident. Always explain your reasoning, discuss probabilities, and justify any changes in recommendations based on real-time data.
@@ -3099,6 +3119,10 @@ Connected Account Live Data:
 - Free Margin: ${realContext ? realContext.currency + ' ' + realContext.freeMargin : 'No terminal connected'}
 - Current Drawdown State: ${realContext ? realContext.recentDrawdown.toFixed(1) + '%' : '0.0%'}
 - Recent Win Rate: ${realContext ? realContext.recentWinRate + '%' : '65%'}
+- Baseline/Original Balance (session start): $${cacheOriginalBalance !== undefined ? cacheOriginalBalance : 'N/A'}
+- Realized profit/loss today (from original balance): $${cacheRealizedLossToday !== undefined ? (-Number(cacheRealizedLossToday)).toFixed(2) : '0.00'}
+- Unrealized floating P&L: $${cacheUnrealizedLoss !== undefined ? (-Number(cacheUnrealizedLoss)).toFixed(2) : '0.00'}
+- Net Session P&L (Realized + Floating): $${cacheTotalSessionLoss !== undefined ? (-Number(cacheTotalSessionLoss)).toFixed(2) : '0.00'}
 
 ${marketContextText}
 
@@ -3195,7 +3219,7 @@ CRITICAL ECONOMIC CALENDAR & NEWS RULE:
           }
         }
         if (links.length > 0) {
-          replyText += `\n\n### 📡 Vertex AI Real-Time Search Radar Sources:\n` + links.slice(0, 5).join("\n");
+          replyText += `\n\n### 📡 Live Market Research Sources:\n` + links.slice(0, 5).join("\n");
         }
       }
       
@@ -5206,6 +5230,80 @@ app.post('/api/trade/sell', async (req, res) => {
   } catch (err: any) {
     logMessage(req.body?.accountId || null, 'ERROR', `Sell execution failed: ${err.message}`);
     console.error("[TRADE] SELL FAILED", err);
+    res.status(500).json({ error: sanitizeError(err) });
+  }
+});
+
+app.post('/api/trade/close', async (req, res) => {
+  console.log("CLOSE ROUTE HIT", req.body);
+
+  try {
+    const userId = await getUserIdFromRequest(req);
+    const { accountId, positionId } = req.body || {};
+    
+    if (!accountId) {
+      return res.status(400).json({ error: "Account ID is required" });
+    }
+    if (!positionId) {
+      return res.status(400).json({ error: "Position ID is required" });
+    }
+
+    const connection = await getRPCConnection(accountId);
+    
+    // Ensure synchronization before trade
+    await connection.waitSynchronized();
+
+    const result = await connection.closePosition(positionId);
+
+    logMessage(accountId, 'SUCCESS', `Closed position #${positionId} successfully`, result);
+    console.log("[TRADE] CLOSE SUCCESS", result);
+    res.json({ success: true, result });
+  } catch (err: any) {
+    const errMsg = err?.message || "";
+    if (errMsg.includes("Position not found") || errMsg.includes("not found")) {
+      logMessage(req.body?.accountId || null, 'INFO', `Close position: Position already closed or not found (#${req.body?.positionId})`);
+      console.log(`[TRADE] CLOSE INFO - Position #${req.body?.positionId} already closed or not found`);
+      return res.json({ success: false, error: "Position already closed or not found" });
+    }
+    logMessage(req.body?.accountId || null, 'ERROR', `Close position failed: ${err.message}`);
+    console.error("[TRADE] CLOSE FAILED", err);
+    res.status(500).json({ error: sanitizeError(err) });
+  }
+});
+
+app.post('/api/trade/modify', async (req, res) => {
+  console.log("MODIFY ROUTE HIT", req.body);
+
+  try {
+    const userId = await getUserIdFromRequest(req);
+    const { accountId, positionId, stopLoss, takeProfit } = req.body || {};
+    
+    if (!accountId) {
+      return res.status(400).json({ error: "Account ID is required" });
+    }
+    if (!positionId) {
+      return res.status(400).json({ error: "Position ID is required" });
+    }
+
+    const connection = await getRPCConnection(accountId);
+    
+    // Ensure synchronization before trade
+    await connection.waitSynchronized();
+
+    const result = await connection.modifyPosition(positionId, stopLoss ? Number(stopLoss) : undefined, takeProfit ? Number(takeProfit) : undefined);
+
+    logMessage(accountId, 'SUCCESS', `Modified position #${positionId} (SL: ${stopLoss}, TP: ${takeProfit}) successfully`, result);
+    console.log("[TRADE] MODIFY SUCCESS", result);
+    res.json({ success: true, result });
+  } catch (err: any) {
+    const errMsg = err?.message || "";
+    if (errMsg.includes("Position not found") || errMsg.includes("not found")) {
+      logMessage(req.body?.accountId || null, 'INFO', `Modify position: Position already closed or not found (#${req.body?.positionId})`);
+      console.log(`[TRADE] MODIFY INFO - Position #${req.body?.positionId} already closed or not found`);
+      return res.json({ success: false, error: "Position already closed or not found" });
+    }
+    logMessage(req.body?.accountId || null, 'ERROR', `Modify position failed: ${err.message}`);
+    console.error("[TRADE] MODIFY FAILED", err);
     res.status(500).json({ error: sanitizeError(err) });
   }
 });

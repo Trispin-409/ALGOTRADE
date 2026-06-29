@@ -1,0 +1,36 @@
+[
+  {
+    "symbol": "XAUUSD-STD",
+    "timeframe": "15m",
+    "time": "2026-06-29T12:15:00.000Z",
+    "brokerTime": "2026-06-29 15:15:00.000",
+    "endTime": "2026-06-29T12:29:59.999Z",
+    "endBrokerTime": "2026-06-29 15:29:59.999",
+    "lastUpdateTime": "2026-06-29T12:25:28.754Z",
+    "lastUpdateBrokerTime": "2026-06-29 15:25:28.754",
+    "state": "intermediate",
+    "open": 4047.55,
+    "close": 4040.96,
+    "high": 4049.64,
+    "low": 4037.91,
+    "tickVolume": 5266,
+    "spread": 0.2300000000000182
+  },
+  {
+    "symbol": "XAUUSD-STD",
+    "timeframe": "15m",
+    "time": "2026-06-29T12:30:00.000Z",
+    "brokerTime": "2026-06-29 15:30:00.000",
+    "endTime": "2026-06-29T12:44:59.999Z",
+    "endBrokerTime": "2026-06-29 15:44:59.999",
+    "lastUpdateTime": "2026-06-29T12:31:43.574Z",
+    "lastUpdateBrokerTime": "2026-06-29 15:31:43.574",
+    "state": "intermediate",
+    "open": 4038.35,
+    "close": 4041.49,
+    "high": 4041.94,
+    "low": 4037.6,
+    "tickVolume": 888,
+    "spread": 0.24000000000023647
+  }
+]

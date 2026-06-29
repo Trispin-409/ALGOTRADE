@@ -47,7 +47,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
 
   const baseMenuItems = [
     { id: 'dashboard', label: 'Metrics', icon: Activity },
-    { id: 'command-center', label: 'Command Center', icon: BrainCircuit },
+    ...(isOwner ? [{ id: 'command-center', label: 'Command Center', icon: BrainCircuit }] : []),
     { id: 'data', label: 'Market', icon: TrendingUp },
     ...(hasChatradeAccess ? [{ id: 'chatrade', label: 'Chatrade AI', icon: Cpu }] : []),
     { id: 'accounts', label: 'Accounts', icon: Users },

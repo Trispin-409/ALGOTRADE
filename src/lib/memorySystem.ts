@@ -10,10 +10,10 @@ export class ChatradeMemory {
     if (!adminSupabase) return null;
     const { data, error } = await adminSupabase
       .from('users')
-      .upsert({ id, email, name, created_at: new Date().toISOString() })
+      .upsert({ id, email, created_at: new Date().toISOString() })
       .select()
       .single();
-    if (error) console.error('[MEMORY] Create User Error:', error);
+    if (error) console.error('[MEMORY] Create User Error:', error.message || error);
     return data;
   }
 
@@ -121,7 +121,6 @@ export class ChatradeMemory {
           .insert({
             id: userId,
             email: email || `${userId.substring(0, 8)}@example.com`,
-            name: 'Trader',
             created_at: new Date().toISOString()
           });
       }
@@ -139,7 +138,7 @@ export class ChatradeMemory {
         context_type: contextType,
         created_at: new Date().toISOString()
       });
-    if (error) console.error('[MEMORY] Chat Save Error:', error);
+    if (error) console.error('[MEMORY] Chat Save Error:', error.message || error, JSON.stringify(error));
     return data;
   }
 

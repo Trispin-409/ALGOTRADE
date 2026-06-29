@@ -137,10 +137,6 @@ const MarketData: React.FC<MarketDataProps> = ({
   useEffect(() => {
     if (activeSetup && activeSetup.isPendingConfirm) {
       setShowNotification(true);
-      const timer = setTimeout(() => {
-        setShowNotification(false);
-      }, 5000); // 5 seconds dismiss
-      return () => clearTimeout(timer);
     } else {
       setShowNotification(false);
     }

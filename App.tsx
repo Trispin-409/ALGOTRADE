@@ -196,13 +196,335 @@ const App: React.FC = () => {
   const { setAgentStatus, addAgentLog, addActivity } = useStore();
 
   useEffect(() => {
+    const getMultiTimeframeAnalysis = (currentTf: string, currentTrend: 'Bullish' | 'Bearish') => {
+      const isBull = currentTrend === 'Bullish';
+      const analysis: { [tf: string]: { trend: string; structure: string; momentum: string; bias: string } } = {};
+
+      const tfOrder = ['W1', 'D1', 'H4', 'H1', 'M15', 'M5', 'M1'];
+      const baseTf = currentTf.toUpperCase().replace('M', '');
+      const currentIndex = tfOrder.findIndex(t => t.toUpperCase().includes(baseTf) || baseTf.includes(t.toUpperCase()));
+      const baseIndex = currentIndex >= 0 ? currentIndex : 3;
+
+      tfOrder.forEach((tf, index) => {
+        let trend = isBull ? 'Bullish' : 'Bearish';
+        let structure = isBull ? 'BOS' : 'CHoCH';
+        let momentum = 'Medium';
+        let bias = isBull ? 'Buy' : 'Sell';
+
+        if (index < 2) {
+          if (baseIndex >= 3) {
+            trend = isBull ? 'Strong Bullish' : 'Strong Bearish';
+            structure = 'Support Block';
+            momentum = 'High';
+          } else {
+            trend = isBull ? 'Bullish' : 'Bearish';
+            structure = isBull ? 'Order Block' : 'Breaker Block';
+            momentum = 'High';
+          }
+        } else if (index >= 2 && index <= 3) {
+          if (index === baseIndex) {
+            trend = isBull ? 'Bullish' : 'Bearish';
+            structure = isBull ? 'Demand Zone' : 'Supply Zone';
+            momentum = 'High';
+          } else if (index < baseIndex) {
+            trend = isBull ? 'Bullish' : 'Bearish';
+            structure = isBull ? 'BOS' : 'CHoCH';
+            momentum = 'Medium';
+          } else {
+            trend = isBull ? 'Strong Bullish' : 'Strong Bearish';
+            structure = isBull ? 'Order Block' : 'Mitigation Block';
+            momentum = 'High';
+          }
+        } else {
+          if (index === baseIndex) {
+            trend = isBull ? 'Bullish' : 'Bearish';
+            structure = isBull ? 'Demand Block' : 'Supply Block';
+            momentum = 'High';
+          } else if (index > baseIndex) {
+            trend = isBull ? 'Strong Bullish' : 'Strong Bearish';
+            structure = 'Liquidity Sweep';
+            momentum = 'High';
+          } else {
+            trend = isBull ? 'Bullish' : 'Bearish';
+            structure = 'Order Block';
+            momentum = 'Medium';
+          }
+        }
+
+        analysis[tf] = { trend, structure, momentum, bias };
+      });
+
+      return analysis;
+    };
+
     const interval = setInterval(() => {
+      const curAccountId = selectedAccountIdRef.current;
+      const curSession = sessionRef.current;
+
+      // 1. Live Trailing Stop & Rescue Scalp Engines
+      if (curAccountId && curSession) {
+        const currentPositions = useStore.getState().positions || [];
+        
+        // 1a. Trailing Stop Logic with Break-Even Trigger at +10 pips
+        currentPositions.forEach(async (pos: any) => {
+          const isGold = pos.symbol.toLowerCase().includes('xau') || pos.symbol.toLowerCase().includes('gold');
+          const pipSize = pos.symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
+          const currentProfit = Number(pos.profit);
+          const currentPrice = Number(pos.currentPrice || pos.closePrice);
+          const entryPrice = Number(pos.openPrice);
+          const isBuy = pos.type === 'BUY' || pos.type === 'buy' || pos.type === 0 || pos.type === 'POSITION_TYPE_BUY';
+          
+          const currentPipsProfit = isBuy ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
+          const pipThreshold = 10 * pipSize;
+          
+          if (currentPipsProfit >= pipThreshold) {
+            const breakEvenPrice = entryPrice;
+            const currentSL = Number(pos.stopLoss);
+            
+            // 10-pip trailing Stop Loss target (as price continues above +10 pips)
+            const targetTrailingSL = isBuy ? (currentPrice - 10 * pipSize) : (currentPrice + 10 * pipSize);
+            
+            // Target is the maximum (for BUY) / minimum (for SELL) between entryPrice and targetTrailingSL
+            const targetSL = isBuy ? Math.max(breakEvenPrice, targetTrailingSL) : Math.min(breakEvenPrice, targetTrailingSL);
+            
+            // Avoid modifying SL if it's already set near or better than targetSL (within small noise)
+            const isBetterSL = !currentSL || (isBuy ? (targetSL > currentSL + 0.1 * pipSize) : (targetSL < currentSL - 0.1 * pipSize));
+            
+            if (isBetterSL) {
+              const isFirstBreakEven = !currentSL || (isBuy ? (currentSL < breakEvenPrice) : (currentSL > breakEvenPrice));
+              console.log(`[TRAIL ENGINE] Modifying SL for pos #${pos.id} on ${pos.symbol} to ${targetSL.toFixed(5)}`);
+              try {
+                const res = await safeFetch('/api/trade/modify', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${curSession.access_token}`
+                  },
+                  body: JSON.stringify({
+                    accountId: curAccountId,
+                    positionId: pos.id,
+                    stopLoss: Number(targetSL.toFixed(5))
+                  })
+                });
+                if (res?.success) {
+                  const logMsg = isFirstBreakEven && Math.abs(targetSL - breakEvenPrice) < (0.1 * pipSize)
+                    ? `[${new Date().toLocaleTimeString()}] Break-Even Triggered: SL for ${pos.symbol} (#${pos.id}) secured at entry price ${breakEvenPrice.toFixed(5)}`
+                    : `[${new Date().toLocaleTimeString()}] Trailing Stop: SL for ${pos.symbol} (#${pos.id}) trailed to ${targetSL.toFixed(5)}`;
+                  addActivity(logMsg);
+                }
+              } catch (e) {
+                console.error("Modify SL error:", e);
+              }
+            }
+          }
+        });
+
+        // 1b. Rescue & Recovery Engine (Trigger when loss reaches half of Stop Loss)
+        const losingPositions = currentPositions.filter((p: any) => {
+          if (p.comment?.includes('Rescue')) return false; // Rescue trades cannot trigger another rescue
+          
+          const isGold = p.symbol.toLowerCase().includes('xau') || p.symbol.toLowerCase().includes('gold');
+          const pipSize = p.symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
+          const entryPrice = Number(p.openPrice);
+          const currentPrice = Number(p.currentPrice || p.closePrice);
+          const isBuy = p.type === 'BUY' || p.type === 'buy' || p.type === 0 || p.type === 'POSITION_TYPE_BUY';
+          const currentLossDistance = isBuy ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
+          
+          const stopLoss = Number(p.stopLoss);
+          if (stopLoss && stopLoss > 0) {
+            const slPriceDistance = Math.abs(entryPrice - stopLoss);
+            // Trigger if current loss distance is at least 50% (half) of the Stop Loss distance
+            return slPriceDistance > 0 && currentLossDistance >= slPriceDistance * 0.5;
+          } else {
+            // Fallback: If no stop loss set, trigger if loss is at least 10 pips or profit <= -2.50
+            return currentLossDistance >= 10 * pipSize || Number(p.profit) <= -2.50;
+          }
+        });
+
+        losingPositions.forEach(async (losingPos: any) => {
+          const rescueCommentSignature = `Rescue_${losingPos.id}`;
+          const hasRescueTrade = currentPositions.some((p: any) => p.symbol === losingPos.symbol && p.comment?.includes(rescueCommentSignature));
+          
+          if (!hasRescueTrade) {
+            const isBuy = losingPos.type === 'BUY' || losingPos.type === 'buy' || losingPos.type === 0 || losingPos.type === 'POSITION_TYPE_BUY';
+            const isGold = losingPos.symbol.toLowerCase().includes('xau') || losingPos.symbol.toLowerCase().includes('gold');
+            const pipSize = losingPos.symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
+            
+            // Determine pip value per lot to dynamically calculate the required huge lot size to recover the full SL amount
+            const entryPrice = Number(losingPos.openPrice);
+            const currentPrice = Number(losingPos.currentPrice || losingPos.closePrice);
+            const pipsDistance = Math.abs(entryPrice - currentPrice) / pipSize;
+            
+            let dollarValuePerPipPerLot = 10.0;
+            if (pipsDistance > 0.5) {
+              dollarValuePerPipPerLot = Math.abs(Number(losingPos.profit)) / (Number(losingPos.volume) * pipsDistance);
+            } else {
+              if (isGold) {
+                dollarValuePerPipPerLot = 10.0;
+              } else if (losingPos.symbol.includes('JPY')) {
+                dollarValuePerPipPerLot = 9.0;
+              }
+            }
+            if (isNaN(dollarValuePerPipPerLot) || dollarValuePerPipPerLot <= 0) {
+              dollarValuePerPipPerLot = 10.0;
+            }
+
+            // Target recovery amount in dollars is the full value of the Stop Loss
+            let targetRecoveryAmount = 5.0;
+            const stopLoss = Number(losingPos.stopLoss);
+            if (stopLoss && stopLoss > 0) {
+              const slPriceDistance = Math.abs(entryPrice - stopLoss);
+              if (pipsDistance > 0) {
+                targetRecoveryAmount = Math.max(5.0, (slPriceDistance / (pipsDistance * pipSize)) * Math.abs(Number(losingPos.profit)));
+              } else {
+                targetRecoveryAmount = Math.max(5.0, Math.abs(Number(losingPos.profit)) * 2.0);
+              }
+            } else {
+              targetRecoveryAmount = Math.max(5.0, Math.abs(Number(losingPos.profit)) * 2.0);
+            }
+
+            // Calculate lot size to make the full SL dollars fast (within 5 pips)
+            const calculatedRescueLot = Number((targetRecoveryAmount / (5 * dollarValuePerPipPerLot)).toFixed(2));
+            const minRescueLot = Number((Number(losingPos.volume) * 2.5).toFixed(2));
+            const maxRescueLot = Number((Number(losingPos.volume) * 8.0).toFixed(2)); // safe limit
+            const rescueLotSize = Math.min(maxRescueLot, Math.max(calculatedRescueLot, minRescueLot));
+
+            const rescueDirection = isBuy ? 'SELL' : 'BUY';
+            const rescuePrice = currentPrice;
+            const slVal = rescueDirection === 'BUY' ? (rescuePrice - 10 * pipSize) : (rescuePrice + 10 * pipSize);
+            const tpVal = rescueDirection === 'BUY' ? (rescuePrice + 5 * pipSize) : (rescuePrice - 5 * pipSize); // 5 pips fast TP
+            const rescueStrategyName = losingPos.comment ? `${losingPos.comment}_Rescue_${losingPos.id}` : `Rescue_Scalp_${losingPos.id}`;
+            
+            addActivity(`[${new Date().toLocaleTimeString()}] Rescue Protocol: Position #${losingPos.id} reached 50% SL. Triggering hedge rescue with calculated lot size ${rescueLotSize} on ${losingPos.symbol}.`);
+            addAgentLog('risk', `[${new Date().toLocaleTimeString()}] [RESCUE] Initiating calculated Rescue Trade: ${rescueDirection} on ${losingPos.symbol} with ${rescueLotSize} lots (target recovery: $${targetRecoveryAmount.toFixed(2)})...`);
+            
+            try {
+              // Save a flag indicating that a rescue has been launched for this position
+              localStorage.setItem(`rescue_opened:${losingPos.id}`, 'true');
+              
+              const res = await safeFetch(rescueDirection === 'BUY' ? '/api/trade/buy' : '/api/trade/sell', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${curSession.access_token}`
+                },
+                body: JSON.stringify({
+                  accountId: curAccountId,
+                  symbol: losingPos.symbol,
+                  lotSize: rescueLotSize,
+                  stopLoss: Number(slVal.toFixed(5)),
+                  takeProfit: Number(tpVal.toFixed(5)),
+                  comment: rescueStrategyName
+                })
+              });
+              if (res?.success) {
+                addAgentLog('risk', `[${new Date().toLocaleTimeString()}] [RESCUE] Rescue Scalp successfully opened. Order ID: ${res.result?.orderId}`);
+              }
+            } catch (err: any) {
+              console.error("[RESCUE] Failed to open rescue trade:", err);
+            }
+          }
+        });
+
+        // 1c. Combined Double-Close Logic / Trailing Break-Even Recovery
+        currentPositions.forEach(async (pos: any) => {
+          if (pos.comment?.includes('Rescue_')) {
+            // Extract the original position ID from the rescue comment
+            const commentParts = pos.comment.split('_');
+            const originalTradeId = commentParts[commentParts.length - 1];
+            const originalTrade = currentPositions.find((p: any) => p.id.toString() === originalTradeId);
+            
+            if (originalTrade) {
+              const totalProfit = Number(pos.profit) + Number(originalTrade.profit);
+              
+              // If combined profit goes net positive, close both to secure capital completely
+              if (totalProfit >= 0.05) {
+                addAgentLog('risk', `[${new Date().toLocaleTimeString()}] [RESCUE] SUCCESS! Combined profit is net-positive ($${totalProfit.toFixed(2)}). Securing profits and closing BOTH positions!`);
+                addActivity(`[${new Date().toLocaleTimeString()}] Rescue Recovery Complete: Secured net profit of $${totalProfit.toFixed(2)}.`);
+                
+                try {
+                  await Promise.all([
+                    safeFetch('/api/trade/close', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${curSession.access_token}`
+                      },
+                      body: JSON.stringify({ accountId: curAccountId, positionId: originalTrade.id })
+                    }),
+                    safeFetch('/api/trade/close', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${curSession.access_token}`
+                      },
+                      body: JSON.stringify({ accountId: curAccountId, positionId: pos.id })
+                    })
+                  ]);
+                  localStorage.removeItem(`rescue_opened:${originalTrade.id}`);
+                } catch (err: any) {
+                  console.error("[RESCUE] Error closing positions:", err);
+                }
+              }
+            }
+          }
+        });
+
+        // 1d. Auto Break-Even and Trail on original trade when rescue closes
+        currentPositions.forEach(async (pos: any) => {
+          if (!pos.comment?.includes('Rescue')) {
+            const rescueKey = `rescue_opened:${pos.id}`;
+            const hasRescueBeenOpened = localStorage.getItem(rescueKey) === 'true';
+            
+            if (hasRescueBeenOpened) {
+              // Check if the rescue trade is still active in current positions
+              const activeRescue = currentPositions.find((p: any) => p.symbol === pos.symbol && p.comment?.includes(`Rescue_${pos.id}`));
+              
+              if (!activeRescue) {
+                // The rescue trade has successfully closed!
+                // Now, trail the original losing trade to breakeven so it cannot lose capital!
+                const entryPrice = Number(pos.openPrice);
+                const currentSL = Number(pos.stopLoss);
+                const isBuy = pos.type === 'BUY' || pos.type === 'buy' || pos.type === 0 || pos.type === 'POSITION_TYPE_BUY';
+                
+                // We want to force the SL to break-even (entry price)
+                const needsBreakEven = !currentSL || (isBuy ? (currentSL < entryPrice) : (currentSL > entryPrice));
+                
+                if (needsBreakEven) {
+                  console.log(`[RECOVERY ENGINE] Rescue trade closed. Modifying original trade #${pos.id} SL to Break-Even (${entryPrice.toFixed(5)})`);
+                  try {
+                    const res = await safeFetch('/api/trade/modify', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${curSession.access_token}`
+                      },
+                      body: JSON.stringify({
+                        accountId: curAccountId,
+                        positionId: pos.id,
+                        stopLoss: Number(entryPrice.toFixed(5))
+                      })
+                    });
+                    if (res?.success) {
+                      addActivity(`[${new Date().toLocaleTimeString()}] Recovery complete: Rescue trade hit profit and closed. Original trade #${pos.id} secured at Break-Even.`);
+                      localStorage.removeItem(rescueKey); // successfully recovered, clear the flag
+                    }
+                  } catch (e) {
+                    console.error("Modify SL to breakeven error:", e);
+                  }
+                }
+              }
+            }
+          }
+        });
+      }
+
       const { 
         isAutoTrade, 
         strategySettings, 
         setAgentStatus, 
         addAgentLog, 
-        addActivity, 
+        addActivity: stateAddActivity, 
         setTimeframeAnalysis, 
         setStrategies, 
         setTradeSignal,
@@ -321,15 +643,36 @@ const App: React.FC = () => {
           addAgentLog('technical', `[${timestamp}] RSI-14 = ${realRsi}, ATR indicates expansion. Standard deviation bounds clear.`);
           addPipelineLog(`[${timestamp}] Technical Agent: Completed multi-timeframe indicators check on ${symbol}`);
           
-          setTimeframeAnalysis('W1', { trend: isBuyDirection ? 'Strong Bullish' : 'Strong Bearish', structure: 'BOS', momentum: 'High', bias: isBuyDirection ? 'Buy' : 'Sell' });
-          setTimeframeAnalysis('D1', { trend: realTrend, structure: isBuyDirection ? 'Support Block' : 'Resistance Block', momentum: 'High', bias: isBuyDirection ? 'Buy' : 'Sell' });
-          setTimeframeAnalysis('H4', { trend: realTrend, structure: 'BOS', momentum: 'Medium', bias: isBuyDirection ? 'Buy' : 'Sell' });
-          setTimeframeAnalysis('H1', { trend: 'Retracing', structure: isBuyDirection ? 'Demand Block' : 'Supply Block', momentum: 'Low', bias: isBuyDirection ? 'Buy' : 'Sell' });
+          const activeStream = useStore.getState().activeStream;
+          const currentTf = activeStream?.timeframe || useStore.getState().strategySettings.timeframe || 'H1';
+          const derived = getMultiTimeframeAnalysis(currentTf, realTrend as 'Bullish' | 'Bearish');
+
+          setTimeframeAnalysis('W1', derived['W1']);
+          setTimeframeAnalysis('D1', derived['D1']);
+          setTimeframeAnalysis('H4', derived['H4']);
+          setTimeframeAnalysis('H1', derived['H1']);
+
+          // Perform Cross-Timeframe Trend Consistency Check
+          // Higher Timeframe (H1/H4) shows 'Bullish'
+          const isHigherTfBullish = realTrend === 'Bullish';
+          // Lower Timeframe (M1/M5) shows strong selling pressure (RSI < 45 or last 3 candles are bearish)
+          const lastCandlesBearish = candles.length >= 3 && candles.slice(-3).every((c: any) => (c.close ?? 0) < (c.open ?? 0));
+          const isLowerTfSellingPressure = (realRsi < 45) || lastCandlesBearish;
+
+          if (isHigherTfBullish && isLowerTfSellingPressure) {
+            trendDivergenceWarningRef.current = true;
+            addAgentLog('technical', `[${timestamp}] ⚠️ [TREND DIVERGENCE WARNING] Lower timeframe (M1/M5) shows strong selling pressure (RSI: ${realRsi}, Bearish candles: ${lastCandlesBearish}) while higher timeframe (H1/H4) is BULLISH. Flagged warning to Consensus Agent.`);
+            addPipelineLog(`[${timestamp}] Technical Agent: Flagged Trend Divergence Warning to Consensus Agent`);
+          } else {
+            trendDivergenceWarningRef.current = false;
+          }
           
           setAgentStatus('technical', { 
-            status: 'ACTIVE', 
-            latestInsight: `Weekly/Daily ${realTrend} alignment | RSI: ${realRsi}`, 
-            confidence: Math.min(99, Math.max(60, 100 - Math.abs(realRsi - 50))) 
+            status: trendDivergenceWarningRef.current ? 'WARNING' : 'ACTIVE', 
+            latestInsight: trendDivergenceWarningRef.current 
+              ? `Trend Divergence Warning: Micro bearish pullback on Bullish H1/H4`
+              : `Weekly/Daily ${realTrend} alignment | RSI: ${realRsi}`, 
+            confidence: trendDivergenceWarningRef.current ? 45 : Math.min(99, Math.max(60, 100 - Math.abs(realRsi - 50))) 
           });
           break;
         }
@@ -339,9 +682,13 @@ const App: React.FC = () => {
           addAgentLog('structure', `[${timestamp}] ${hasSweep ? 'Liquidity sweep confirmed' : 'Swept retail positions near key zones'}. Liquidity verified.`);
           addPipelineLog(`[${timestamp}] Structure Agent: SMC Pattern detected (${lastPattern}${hasSweep ? ' + Liquidity Sweep' : ''})`);
           
-          setTimeframeAnalysis('M15', { trend: realTrend, structure: 'Order Block', momentum: 'High', bias: isBuyDirection ? 'Buy' : 'Sell' });
-          setTimeframeAnalysis('M5', { trend: realTrend, structure: 'BOS', momentum: 'High', bias: isBuyDirection ? 'Buy' : 'Sell' });
-          setTimeframeAnalysis('M1', { trend: realTrend, structure: 'CHoCH', momentum: 'High', bias: isBuyDirection ? 'Buy' : 'Sell' });
+          const activeStream = useStore.getState().activeStream;
+          const currentTf = activeStream?.timeframe || useStore.getState().strategySettings.timeframe || 'H1';
+          const derived = getMultiTimeframeAnalysis(currentTf, realTrend as 'Bullish' | 'Bearish');
+
+          setTimeframeAnalysis('M15', derived['M15']);
+          setTimeframeAnalysis('M5', derived['M5']);
+          setTimeframeAnalysis('M1', derived['M1']);
           
           setAgentStatus('structure', { 
             status: 'ACTIVE', 
@@ -468,26 +815,49 @@ const App: React.FC = () => {
         }
         case 8: { // Consensus Agent
           const directionWord = isBuyDirection ? 'BUY' : 'SELL';
-          const alignment = Math.min(98, Math.round(70 + (realTrend === (isBuyDirection ? 'Bullish' : 'Bearish') ? 15 : 5) + (realRsi > 40 && realRsi < 60 ? 10 : 0)));
+          const alignment = trendDivergenceWarningRef.current 
+            ? 30 
+            : Math.min(98, Math.round(70 + (realTrend === (isBuyDirection ? 'Bullish' : 'Bearish') ? 15 : 5) + (realRsi > 40 && realRsi < 60 ? 10 : 0)));
 
           addAgentLog('consensus', `[${timestamp}] Convening debate chamber of all active agents...`);
-          addAgentLog('consensus', `[${timestamp}] Alignment Score: ${alignment}%. Voting outcome: UNANIMOUS ${directionWord}.`);
-          addAgentLog('consensus', `[${timestamp}] ${directionWord} dispatch order released to execution agent.`);
-          addPipelineLog(`[${timestamp}] Consensus Agent: ${alignment}% alignment reached. ${directionWord} APPROVED.`);
           
-          setDebateDialogue([
-            `Technical Agent: Strong Weekly/Daily ${realTrend.toLowerCase()} trend.`,
-            `News Agent: Grounding returned supportive ${isBuyDirection ? 'bullish' : 'bearish'} sentiment.`,
-            `Structure Agent: ${lastPattern} + liquidity sweep completed.`,
-            `Risk Agent: Safe to entry. Drawdown and margin levels acceptable.`,
-            `Consensus Agent: Alignment ${alignment}% - ${directionWord} CONCURRED`
-          ]);
-          
-          setAgentStatus('consensus', { 
-            status: 'ACTIVE', 
-            latestInsight: `${directionWord} alignment at ${alignment}% based on ${realTrend} indicators`, 
-            confidence: alignment 
-          });
+          if (trendDivergenceWarningRef.current) {
+            addAgentLog('consensus', `[${timestamp}] ⚠️ [DIVERGENCE BLOCK] Debate Chamber received Trend Divergence Warning from Technical Agent! Prevented forcing trade entries.`);
+            addAgentLog('consensus', `[${timestamp}] Alignment Score capped at ${alignment}% (Threshold not met). Voting outcome: POSTPONED.`);
+            addPipelineLog(`[${timestamp}] Consensus Agent: ⚠️ Alignment blocked at ${alignment}% due to Trend Divergence Warning.`);
+            
+            setDebateDialogue([
+              `Technical Agent: ⚠️ Trend Divergence detected! Micro timeframe (M1/M5) shows strong selling pressure.`,
+              `News Agent: Bias is ${isBuyDirection ? 'bullish' : 'bearish'}, but short-term divergence risk exists.`,
+              `Structure Agent: Pattern structure invalidated by micro timeframe momentum.`,
+              `Risk Agent: Standard execution paused. Capital safety rule triggered.`,
+              `Consensus Agent: 🛑 Trade entry POSTPONED - Trend Divergence Warning active`
+            ]);
+            
+            setAgentStatus('consensus', { 
+              status: 'WARNING', 
+              latestInsight: `Postponed: Trend Divergence Warning active (Micro vs Macro mismatch)`, 
+              confidence: alignment 
+            });
+          } else {
+            addAgentLog('consensus', `[${timestamp}] Alignment Score: ${alignment}%. Voting outcome: UNANIMOUS ${directionWord}.`);
+            addAgentLog('consensus', `[${timestamp}] ${directionWord} dispatch order released to execution agent.`);
+            addPipelineLog(`[${timestamp}] Consensus Agent: ${alignment}% alignment reached. ${directionWord} APPROVED.`);
+            
+            setDebateDialogue([
+              `Technical Agent: Strong Weekly/Daily ${realTrend.toLowerCase()} trend.`,
+              `News Agent: Grounding returned supportive ${isBuyDirection ? 'bullish' : 'bearish'} sentiment.`,
+              `Structure Agent: ${lastPattern} + liquidity sweep completed.`,
+              `Risk Agent: Safe to entry. Drawdown and margin levels acceptable.`,
+              `Consensus Agent: Alignment ${alignment}% - ${directionWord} CONCURRED`
+            ]);
+            
+            setAgentStatus('consensus', { 
+              status: 'ACTIVE', 
+              latestInsight: `${directionWord} alignment at ${alignment}% based on ${realTrend} indicators`, 
+              confidence: alignment 
+            });
+          }
           break;
         }
         case 9: { // Execution Agent
@@ -500,11 +870,73 @@ const App: React.FC = () => {
           const directionWord = isBuyDirection ? 'BUY' : 'SELL';
           const primaryStrat = isBuyDirection ? 'Demand Zone Recovery' : 'Supply Zone Retracement';
 
+          if (trendDivergenceWarningRef.current) {
+            addAgentLog('execution', `[${timestamp}] 🛑 [EXECUTION BLOCKED] Trade entry blocked by Consensus Agent due to active Trend Divergence Warning.`);
+            addPipelineLog(`[${timestamp}] Execution Agent: Entry blocked on ${symbol} (Trend Divergence active)`);
+            setAgentStatus('execution', { 
+              status: 'BLOCKED', 
+              latestInsight: `Blocked: Trend Divergence Warning (Entry prevented)`, 
+              confidence: 0 
+            });
+            break;
+          }
+
           addAgentLog('execution', `[${timestamp}] Dispatched trade order block: ${directionWord} 0.1 lots on ${symbol}...`);
           addAgentLog('execution', `[${timestamp}] Entry: ${entryVal.toFixed(2)} | SL: ${slVal.toFixed(2)} | TP: ${tpVal.toFixed(2)}`);
-          addAgentLog('execution', `[${timestamp}] Execution confirmed by Vertex core engine.`);
-          addPipelineLog(`[${timestamp}] Execution Agent: ${directionWord} trade executed on ${symbol} at ${entryVal.toFixed(2)}`);
           
+          // Execute trade via backend API automatically when autonomous mode is ON
+          const curSession = sessionRef.current;
+          const curAccountId = selectedAccountIdRef.current;
+
+          if (curAccountId && curSession) {
+            const currentPositions = useStore.getState().positions || [];
+            const isSymbolActive = currentPositions.some((p: any) => p.symbol === symbol);
+
+            if (isSymbolActive) {
+              addAgentLog('execution', `[${timestamp}] Active position exists on ${symbol}. Entry skipped to avoid duplicate trade exposure.`);
+              addPipelineLog(`[${timestamp}] Execution Agent: Entry skipped (Active position on ${symbol})`);
+            } else {
+              const maxTrades = strategySettings.maxTrades || 3;
+              const currentAlgoTrades = currentPositions.filter(p => p.comment && (p.comment === 'ALGOTRADE' || p.comment === 'CHATRADE' || p.comment === primaryStrat || p.comment.includes('Rescue') || p.comment.includes('Recovery') || p.comment.includes('Retracement'))).length;
+
+              if (currentAlgoTrades >= maxTrades) {
+                addAgentLog('execution', `[${timestamp}] Max concurrent trades limit reached (${currentAlgoTrades}/${maxTrades}). Entry skipped.`);
+                addPipelineLog(`[${timestamp}] Execution Agent: Limit reached (${currentAlgoTrades}/${maxTrades})`);
+              } else {
+                addAgentLog('execution', `[${timestamp}] Requesting broker order placement...`);
+                safeFetch(directionWord === 'BUY' ? '/api/trade/buy' : '/api/trade/sell', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${curSession.access_token}`
+                  },
+                  body: JSON.stringify({
+                    accountId: curAccountId,
+                    symbol,
+                    lotSize: Number(strategySettings.lotSize || 0.1),
+                    stopLoss: Number(slVal.toFixed(5)),
+                    takeProfit: Number(tpVal.toFixed(5)),
+                    comment: primaryStrat
+                  })
+                }).then(res => {
+                  if (res && res.success) {
+                    addAgentLog('execution', `[${timestamp}] Broker response: SUCCESS! Trade ID: ${res.result?.orderId || 'N/A'}`);
+                    addPipelineLog(`[${timestamp}] Execution Agent: ${directionWord} trade successfully executed on ${symbol} at ${entryVal.toFixed(2)}`);
+                  } else {
+                    addAgentLog('execution', `[${timestamp}] Broker response error: ${res?.error || 'Unknown error'}`);
+                    addPipelineLog(`[${timestamp}] Execution Agent: Trade failed: ${res?.error || 'Unknown error'}`);
+                  }
+                }).catch(err => {
+                  addAgentLog('execution', `[${timestamp}] Broker execution failed: ${err.message}`);
+                  addPipelineLog(`[${timestamp}] Execution Agent: Execution failed: ${err.message}`);
+                });
+              }
+            }
+          } else {
+            addAgentLog('execution', `[${timestamp}] Execution halted: No active account/session selected.`);
+            addPipelineLog(`[${timestamp}] Execution Agent: No active account/session.`);
+          }
+
           setTradeSignal({
             strategy: primaryStrat,
             direction: directionWord,
@@ -567,6 +999,7 @@ const App: React.FC = () => {
   const [openPositions, setOpenPositions] = useState<number>(0);
   const isAlgoTradeRunning = useStore(state => state.isAutoTrade);
   const setIsAlgoTradeRunning = (val: boolean) => useStore.getState().setIsAutoTrade(val);
+  const storePositions = useStore(state => state.positions);
   const [selectedAccountId, setSelectedAccountId] = useState(() => {
     const val = localStorage.getItem('selectedAccountId');
     if (val && val.length > 200) {
@@ -578,10 +1011,149 @@ const App: React.FC = () => {
 
   const accountsRef = useRef(accounts);
   const selectedAccountIdRef = useRef(selectedAccountId);
+  const sessionRef = useRef(session);
+  const trendDivergenceWarningRef = useRef<boolean>(false);
   useEffect(() => {
     accountsRef.current = accounts;
     selectedAccountIdRef.current = selectedAccountId;
-  }, [accounts, selectedAccountId]);
+    sessionRef.current = session;
+  }, [accounts, selectedAccountId, session]);
+
+  // Session-Based Account Balance Cache Service
+  useEffect(() => {
+    if (!selectedAccountId) return;
+    const activeAcc = accounts.find(a => a.id === selectedAccountId);
+    if (!activeAcc) return;
+
+    const currentBalance = Number(activeAcc.balance);
+    const currentEquity = Number(activeAcc.equity);
+    if (isNaN(currentBalance) || currentBalance <= 0) return;
+
+    let cache: { 
+      [accountId: string]: { 
+        originalBalance: number; 
+        timestamp: number;
+        lastPositionsCount?: number;
+        lastPositionIds?: string[];
+        lastBalance?: number;
+        lastEquity?: number;
+        lastFloatingPnL?: number;
+        realizedLossToday?: number;
+        unrealizedLoss?: number;
+      } 
+    } = {};
+
+    try {
+      const saved = localStorage.getItem('chatrade_account_balances_cache');
+      if (saved) {
+        cache = JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("[BALANCE CACHE] Failed to parse cached balances:", e);
+    }
+
+    const currentPositions = storePositions || [];
+    const hasPositions = currentPositions.length > 0;
+    const currentPositionIds = currentPositions.map((p: any) => p.id.toString()).sort();
+    const currentFloatingPnL = currentPositions.reduce((sum: number, p: any) => sum + Number(p.profit || 0), 0);
+
+    let cachedData = cache[selectedAccountId];
+
+    if (!hasPositions) {
+      // No active positions: update baseline balance to current balance so it is ready for next trade initiation
+      if (!cachedData || cachedData.originalBalance !== currentBalance) {
+        cachedData = {
+          originalBalance: currentBalance,
+          timestamp: Date.now(),
+          lastPositionsCount: 0,
+          lastPositionIds: [],
+          lastBalance: currentBalance,
+          lastEquity: currentEquity,
+          lastFloatingPnL: 0,
+          realizedLossToday: 0,
+          unrealizedLoss: 0
+        };
+        cache[selectedAccountId] = cachedData;
+        localStorage.setItem('chatrade_account_balances_cache', JSON.stringify(cache));
+        console.log(`[BALANCE CACHE] Reset/Updated baseline balance for account ${selectedAccountId} to $${currentBalance} (no active positions)`);
+      }
+    } else {
+      // Active positions exist: freeze the originalBalance from before the trades if it exists, otherwise seed it now
+      if (!cachedData) {
+        cachedData = {
+          originalBalance: currentBalance,
+          timestamp: Date.now(),
+          lastPositionsCount: currentPositions.length,
+          lastPositionIds: currentPositionIds,
+          lastBalance: currentBalance,
+          lastEquity: currentEquity,
+          lastFloatingPnL: currentFloatingPnL,
+          realizedLossToday: 0,
+          unrealizedLoss: currentBalance - currentEquity
+        };
+        cache[selectedAccountId] = cachedData;
+        localStorage.setItem('chatrade_account_balances_cache', JSON.stringify(cache));
+        console.log(`[BALANCE CACHE] Seeded frozen baseline balance for account ${selectedAccountId} to $${currentBalance} (trades active)`);
+      }
+    }
+
+    // Perform Deep Comparison of before vs after trade events
+    const prevPositionIds = cachedData.lastPositionIds || [];
+    const prevBalance = cachedData.lastBalance !== undefined ? cachedData.lastBalance : currentBalance;
+    const prevEquity = cachedData.lastEquity !== undefined ? cachedData.lastEquity : currentEquity;
+    const prevFloatingPnL = cachedData.lastFloatingPnL !== undefined ? cachedData.lastFloatingPnL : 0;
+
+    // Check if a trade event occurred (open, close, or position IDs changed)
+    const positionIdsChanged = JSON.stringify(prevPositionIds) !== JSON.stringify(currentPositionIds);
+    if (positionIdsChanged) {
+      const addedIds = currentPositionIds.filter(id => !prevPositionIds.includes(id));
+      const removedIds = prevPositionIds.filter(id => !currentPositionIds.includes(id));
+      
+      console.log(`[TRADE EVENT] Detected position structure change on account ${selectedAccountId}:`, {
+        event: addedIds.length > 0 && removedIds.length > 0 ? "REPLACE" : addedIds.length > 0 ? "OPEN" : "CLOSE",
+        addedPositions: addedIds,
+        removedPositions: removedIds,
+        before: {
+          balance: prevBalance,
+          equity: prevEquity,
+          floatingPnL: prevFloatingPnL,
+          positionsCount: prevPositionIds.length
+        },
+        after: {
+          balance: currentBalance,
+          equity: currentEquity,
+          floatingPnL: currentFloatingPnL,
+          positionsCount: currentPositions.length
+        },
+        balanceDelta: currentBalance - prevBalance,
+        equityDelta: currentEquity - prevEquity,
+        floatingPnLDelta: currentFloatingPnL - prevFloatingPnL
+      });
+
+      const balanceDelta = currentBalance - prevBalance;
+      if (Math.abs(balanceDelta) > 0.01) {
+        const deltaStr = balanceDelta > 0 ? `+$${balanceDelta.toFixed(2)}` : `-$${Math.abs(balanceDelta).toFixed(2)}`;
+        addActivity(`[${new Date().toLocaleTimeString()}] Trade event balance change: ${deltaStr} (realized). New balance: $${currentBalance.toFixed(2)}.`);
+      }
+    }
+
+    // Always compute realizedLossToday against the snapshot baseline balance captured when trade was first initiated
+    const originalBalance = cachedData.originalBalance;
+    const realizedLossToday = originalBalance - currentBalance; 
+    const unrealizedLoss = currentBalance - currentEquity;
+
+    // Update current tick data in cache
+    cachedData.lastPositionsCount = currentPositions.length;
+    cachedData.lastPositionIds = currentPositionIds;
+    cachedData.lastBalance = currentBalance;
+    cachedData.lastEquity = currentEquity;
+    cachedData.lastFloatingPnL = currentFloatingPnL;
+    cachedData.realizedLossToday = realizedLossToday;
+    cachedData.unrealizedLoss = unrealizedLoss;
+
+    cache[selectedAccountId] = cachedData;
+    localStorage.setItem('chatrade_account_balances_cache', JSON.stringify(cache));
+  }, [selectedAccountId, accounts, storePositions]);
 
   const [tradingStatus, setTradingStatus] = useState<string>('INIT');
   const [availableBrokerSymbols, setAvailableBrokerSymbols] = useState<string[]>([]);
@@ -1143,9 +1715,10 @@ const App: React.FC = () => {
       return;
     }
     try {
-      const currentPositions = useStore.getState().positions;
+      const currentPositions = useStore.getState().positions || [];
       const maxTrades = strategySettings.maxTrades || 1;
-      const currentAlgoTrades = currentPositions.filter(p => p.comment === 'ALGOTRADE').length;
+      const matchedStrat = useStore.getState().strategies?.find(s => s.status === 'MATCHED')?.name || 'Demand Zone Recovery';
+      const currentAlgoTrades = currentPositions.filter(p => p.comment && (p.comment === 'ALGOTRADE' || p.comment === 'CHATRADE' || p.comment === matchedStrat || p.comment.includes('Rescue') || p.comment.includes('Recovery') || p.comment.includes('Retracement'))).length;
 
       if (currentAlgoTrades >= maxTrades) {
          addLog(`EA ERROR: Max trade limit reached (${currentAlgoTrades}/${maxTrades}). Close an existing position first.`);
@@ -1165,7 +1738,7 @@ const App: React.FC = () => {
           accountId: selectedAccountId,
           symbol: tradeSymbol,
           lotSize,
-          comment: 'ALGOTRADE'
+          comment: matchedStrat
         })
       });
 
@@ -1194,9 +1767,10 @@ const App: React.FC = () => {
       return;
     }
     try {
-      const currentPositions = useStore.getState().positions;
+      const currentPositions = useStore.getState().positions || [];
       const maxTrades = strategySettings.maxTrades || 1;
-      const currentAlgoTrades = currentPositions.filter(p => p.comment === 'ALGOTRADE').length;
+      const matchedStrat = useStore.getState().strategies?.find(s => s.status === 'MATCHED')?.name || 'Demand Zone Recovery';
+      const currentAlgoTrades = currentPositions.filter(p => p.comment && (p.comment === 'ALGOTRADE' || p.comment === 'CHATRADE' || p.comment === matchedStrat || p.comment.includes('Rescue') || p.comment.includes('Recovery') || p.comment.includes('Retracement'))).length;
 
       if (currentAlgoTrades >= maxTrades) {
          addLog(`EA ERROR: Max trade limit reached (${currentAlgoTrades}/${maxTrades}). Close an existing position first.`);
@@ -1216,7 +1790,7 @@ const App: React.FC = () => {
           accountId: selectedAccountId,
           symbol: tradeSymbol,
           lotSize,
-          comment: 'ALGOTRADE'
+          comment: matchedStrat
         })
       });
 
@@ -1673,7 +2247,7 @@ const App: React.FC = () => {
                     hasActiveSubscription={bootData?.has_active_subscription}
                   />
                 )}
-                {activeTab === 'command-center' && <CommandCenter />}
+                {activeTab === 'command-center' && session?.user?.email?.toLowerCase() === 'trispinblackops@gmail.com' && <CommandCenter />}
                 {activeTab === 'open_positions' && (
                   <ErrorBoundary>
                     <OpenPositionsView 
