@@ -1,0 +1,19 @@
+[
+  {
+    "symbol": "BTCUSD",
+    "timeframe": "15m",
+    "time": "2026-08-01T11:30:00.000Z",
+    "brokerTime": "2026-08-01 14:30:00.000",
+    "endTime": "2026-08-01T11:44:59.999Z",
+    "endBrokerTime": "2026-08-01 14:44:59.999",
+    "lastUpdateTime": "2026-08-01T11:33:03.689Z",
+    "lastUpdateBrokerTime": "2026-08-01 14:33:03.689",
+    "state": "intermediate",
+    "open": 63070.52,
+    "close": 63072.66,
+    "high": 63084.03,
+    "low": 63070.52,
+    "tickVolume": 103,
+    "spread": 17.109999999993306
+  }
+]

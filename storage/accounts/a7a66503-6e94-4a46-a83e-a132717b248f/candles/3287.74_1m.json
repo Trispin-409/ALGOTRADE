@@ -1,0 +1,53 @@
+[
+  {
+    "symbol": "BTCUSD",
+    "timeframe": "15m",
+    "time": "2026-08-01T10:30:00.000Z",
+    "brokerTime": "2026-08-01 13:30:00.000",
+    "endTime": "2026-08-01T10:44:59.999Z",
+    "endBrokerTime": "2026-08-01 13:44:59.999",
+    "lastUpdateTime": "2026-08-01T10:43:16.011Z",
+    "lastUpdateBrokerTime": "2026-08-01 13:43:16.011",
+    "state": "intermediate",
+    "open": 63035.52,
+    "close": 63045.81,
+    "high": 63050.25,
+    "low": 63013.35,
+    "tickVolume": 550,
+    "spread": 16.970000000001164
+  },
+  {
+    "symbol": "BTCUSD",
+    "timeframe": "15m",
+    "time": "2026-08-01T10:45:00.000Z",
+    "brokerTime": "2026-08-01 13:45:00.000",
+    "endTime": "2026-08-01T10:59:59.999Z",
+    "endBrokerTime": "2026-08-01 13:59:59.999",
+    "lastUpdateTime": "2026-08-01T10:59:59.186Z",
+    "lastUpdateBrokerTime": "2026-08-01 13:59:59.186",
+    "state": "intermediate",
+    "open": 63055.73,
+    "close": 63047.64,
+    "high": 63059.42,
+    "low": 63031.01,
+    "tickVolume": 569,
+    "spread": 17.06999999999971
+  },
+  {
+    "symbol": "BTCUSD",
+    "timeframe": "15m",
+    "time": "2026-08-01T11:15:00.000Z",
+    "brokerTime": "2026-08-01 14:15:00.000",
+    "endTime": "2026-08-01T11:29:59.999Z",
+    "endBrokerTime": "2026-08-01 14:29:59.999",
+    "lastUpdateTime": "2026-08-01T11:16:18.511Z",
+    "lastUpdateBrokerTime": "2026-08-01 14:16:18.511",
+    "state": "intermediate",
+    "open": 63049.32,
+    "close": 63047.14,
+    "high": 63051.95,
+    "low": 63047.06,
+    "tickVolume": 39,
+    "spread": 16.94000000000233
+  }
+]

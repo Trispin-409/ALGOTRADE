@@ -122,3 +122,15 @@ CREATE TABLE IF NOT EXISTS market_cache (
     technical_snapshot JSONB,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- 10. DAILY PERFORMANCE METRICS
+CREATE TABLE IF NOT EXISTS daily_performance (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id),
+    date DATE NOT NULL,
+    total_profit DECIMAL NOT NULL,
+    trades_count INT NOT NULL,
+    win_rate DECIMAL,
+    peak_drawdown DECIMAL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);

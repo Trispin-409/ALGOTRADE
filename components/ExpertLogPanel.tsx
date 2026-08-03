@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Activity, Copy, Check } from 'lucide-react';
+import { 
+  X, Activity, Copy, Check, Cpu, Shield, 
+  RefreshCw, CheckCircle2, XCircle 
+} from 'lucide-react';
 import { connectionManager } from '../src/lib/ConnectionManager';
+import { useStore } from '../src/store';
 
 interface ExpertLogPanelProps {
   executionMode?: 'EA' | 'STRATEGY';
@@ -9,11 +13,13 @@ interface ExpertLogPanelProps {
 export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 'EA' }) => {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<'SYSTEM' | 'STRATEGY'>('STRATEGY');
+  const [activeTab, setActiveTab] = useState<'SYSTEM' | 'STRATEGY' | 'AI_DECISION'>('STRATEGY');
   const [logs, setLogs] = useState<any[]>(() => {
     const saved = localStorage.getItem('ea_journal');
     return saved ? JSON.parse(saved) : [];
   });
+
+  const lastDecision = useStore(state => state.lastDecisionIndicators);
 
   // Sync activeTab to executionMode if mode changes
   useEffect(() => {
@@ -22,7 +28,7 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
 
   const filteredLogs = logs.filter(log => {
       if (activeTab === 'STRATEGY') {
-          return log.source === 'NODE_STRATEGY';
+          return log.source === 'AI_STRATEGY' || log.source === 'NODE_STRATEGY';
       } else {
           return log.source === 'SYSTEM';
       }
@@ -77,7 +83,7 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
   }, [logs]);
 
   useEffect(() => {
-    // Listen for TRADING_JOURNAL
+    // Listen for TRADING_JOURNAL and AI_DECISION_UPDATE
     const unsub = connectionManager.subscribe((data) => {
       if (data.type === 'TRADING_JOURNAL') {
         setLogs(prev => {
@@ -90,6 +96,10 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
           const uniqueLogs = Array.from(new Map(allLogs.map(item => [item.timestamp + item.message, item])).values());
           return uniqueLogs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()).slice(-500);
         });
+      } else if (data.type === 'AI_DECISION_UPDATE') {
+        if (data.decision) {
+          useStore.getState().setLastDecisionIndicators(data.decision);
+        }
       }
     });
     return unsub;
@@ -140,7 +150,8 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
   const getSourceBadge = (source: string) => {
       switch(source) {
           case 'EA_CLOUD': return <span className="px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-[4px] mr-2 text-[7px] font-black uppercase">Terminal</span>;
-          case 'NODE_STRATEGY': return <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-[4px] mr-2 text-[7px] font-black uppercase">Algo Engine</span>;
+          case 'AI_STRATEGY':
+          case 'NODE_STRATEGY': return <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-[4px] mr-2 text-[7px] font-black uppercase">AI Strategy Engine</span>;
           case 'SYSTEM': return <span className="px-1.5 py-0.5 bg-slate-500/10 text-slate-400 border border-slate-500/20 rounded-[4px] mr-2 text-[7px] font-black uppercase">System</span>;
           default: return null;
       }
@@ -201,50 +212,166 @@ export const ExpertLogPanel: React.FC<ExpertLogPanelProps> = ({ executionMode = 
 
           {/* TAB SWITCHER */}
           <div className="flex p-1 bg-black/40 border-b border-white/5 shrink-0">
-            {(['SYSTEM', 'STRATEGY'] as const).map(tab => (
+            {(['SYSTEM', 'STRATEGY', 'AI_DECISION'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 className={`flex-1 py-1.5 px-2 text-[9px] font-black uppercase tracking-tighter transition-all border ${activeTab === tab ? 'text-white border-white/20' : 'text-slate-500 border-transparent hover:text-slate-400'}`}
                 style={activeTab === tab ? { backgroundColor: 'var(--accent-color)' } : {}}
               >
-                {tab}
+                {tab === 'AI_DECISION' ? 'Why AI Decided' : tab}
               </button>
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] sm:text-xs">
-            {filteredLogs.length === 0 ? (
-              <div className="text-slate-500 text-center mt-10">
-                <div className="flex items-center justify-center gap-2">
-                  {activeTab === 'STRATEGY' ? 
-                    <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></div> Core Strategy Engine Listening...</> : 
-                    <><div className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></div> System Telemetry Standby</>
-                  }
+          {activeTab === 'AI_DECISION' ? (
+            <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] sm:text-[11px] space-y-3 custom-scrollbar">
+              {!lastDecision ? (
+                <div className="text-slate-500 text-center py-10 space-y-2">
+                  <div className="flex items-center justify-center gap-2">
+                    <RefreshCw className="w-4 h-4 text-amber-500 animate-spin" />
+                    <span className="font-bold text-[10px] uppercase tracking-wider text-amber-400">Pre-Flight Engine Active</span>
+                  </div>
+                  <p className="text-[9px] text-slate-400 max-w-[280px] mx-auto leading-relaxed">
+                    Awaiting live candlestick scan sequence. Deterministic indicator metrics (RSI, ATR, SMC Structure) will render here synchronously upon the next engine decision tick.
+                  </p>
                 </div>
-                <p className="mt-2 opacity-50 uppercase text-[8px] font-bold">No logs for {activeTab} yet</p>
-              </div>
-            ) : (
-              filteredLogs.map((log, i) => (
-                <div key={i} className="mb-2 leading-relaxed break-words flex items-start">
-                  <span className="text-slate-500 mr-2 shrink-0">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}]</span>
-                  <div className="flex-1">
-                    <div className="flex items-center flex-wrap">
-                      {getSourceBadge(log.source)}
-                      <span className={`${getLevelColor(log.level)} mr-2 font-bold`}>[{(log.level || "INFO").padEnd(9)}]</span>
+              ) : (
+                <div className="space-y-3">
+                  {/* Status Banner */}
+                  <div className={`p-3 rounded-lg border flex justify-between items-center ${
+                    lastDecision.outcome === 'MATCHED'
+                      ? 'bg-emerald-950/25 border-emerald-500/20 text-emerald-400'
+                      : 'bg-rose-950/20 border-rose-500/20 text-rose-400'
+                  }`}>
+                    <div className="space-y-0.5">
+                      <div className="text-[9px] uppercase tracking-wider font-black text-slate-400">Decision Outcome</div>
+                      <div className="text-xs font-black uppercase flex items-center gap-1.5">
+                        {lastDecision.outcome === 'MATCHED' ? (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                            ORDER DISPATCHED ({lastDecision.direction})
+                          </>
+                        ) : (
+                          <>
+                            <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                            ENTRY BLOCKED (STANDBY)
+                          </>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-slate-300">{log.message}</span>
-                    {log.metadata && Object.keys(log.metadata).length > 0 && (
-                      <span className="text-slate-500 ml-1 block mt-0.5 text-[9px] overflow-hidden truncate">
-                        {JSON.stringify(log.metadata)}
-                      </span>
-                    )}
+                    <div className="text-right">
+                      <div className="text-[9px] uppercase tracking-wider font-black text-slate-400">Confidence Rating</div>
+                      <div className="text-xs font-black">{lastDecision.confidence}%</div>
+                    </div>
+                  </div>
+
+                  {/* Objective Metrics Grid */}
+                  <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 space-y-2">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-1.5">
+                      <h4 className="text-[8.5px] font-black uppercase text-slate-300 flex items-center gap-1">
+                        <Cpu className="w-3 h-3 text-[#d4af37]" /> Core Technical Confluences
+                      </h4>
+                      <span className="text-[7.5px] text-slate-500 uppercase">Synchronous telemetry</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[9px]">
+                      {[
+                        { 
+                          name: "RSI-14 Index", 
+                          value: lastDecision.rsi !== null ? `${Number(lastDecision.rsi).toFixed(1)} (${Number(lastDecision.rsi) > 70 ? 'Overbought' : Number(lastDecision.rsi) < 30 ? 'Oversold' : 'Neutral / Stable'})` : 'N/A'
+                        },
+                        { 
+                          name: "ATR-14 Volatility", 
+                          value: lastDecision.atr !== null ? `${lastDecision.atr.toFixed(5)}` : 'N/A'
+                        },
+                        { 
+                          name: "H1 Weekly Trend", 
+                          value: lastDecision.trend || 'N/A'
+                        },
+                        { 
+                          name: "Market Structure", 
+                          value: lastDecision.marketStructure || 'N/A'
+                        },
+                        { 
+                          name: "Fair Value Gap (FVG)", 
+                          value: lastDecision.fvg || 'Standby / Scan'
+                        },
+                        { 
+                          name: "Liquidity Sweep Scan", 
+                          value: lastDecision.liquiditySweep || 'Standby / Scan'
+                        },
+                        { 
+                          name: "Session Window", 
+                          value: lastDecision.session || 'N/A'
+                        },
+                        { 
+                          name: "News Bias Rating", 
+                          value: lastDecision.newsBias || 'NEUTRAL'
+                        },
+                        { 
+                          name: "Risk Rating Exposure", 
+                          value: lastDecision.riskRating || 'Low Exposure'
+                        },
+                        { 
+                          name: "Win Probability", 
+                          value: lastDecision.winProbability > 0 ? `${lastDecision.winProbability}%` : '0% (Below Filter)'
+                        }
+                      ].map((m, idx) => (
+                        <div key={idx} className="bg-black/30 p-1.5 rounded border border-white/[0.02] flex flex-col gap-0.5">
+                          <span className="text-slate-500 text-[7.5px] uppercase font-black">{m.name}</span>
+                          <span className="text-slate-200 font-bold font-mono">{m.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* AI Cognitive Explainability Card */}
+                  <div className="bg-[#d4af37]/5 p-2.5 rounded-lg border border-[#d4af37]/10 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-[9px] font-black text-[#d4af37] uppercase">
+                      <Shield className="w-3.5 h-3.5" /> Institutional Explainability Log
+                    </div>
+                    <p className="text-[8.5px] text-slate-300 leading-relaxed font-mono">
+                      <span className="text-[#d4af37] font-bold">COGNITIVE SUMMARY:</span> {lastDecision.reason}
+                    </p>
                   </div>
                 </div>
-              ))
-            )}
-            <div ref={logsEndRef} />
-          </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto p-3 font-mono text-[10px] sm:text-xs">
+              {filteredLogs.length === 0 ? (
+                <div className="text-slate-500 text-center mt-10">
+                  <div className="flex items-center justify-center gap-2">
+                    {activeTab === 'STRATEGY' ? 
+                      <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></div> Core Strategy Engine Listening...</> : 
+                      <><div className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse"></div> System Telemetry Standby</>
+                    }
+                  </div>
+                  <p className="mt-2 opacity-50 uppercase text-[8px] font-bold">No logs for {activeTab} yet</p>
+                </div>
+              ) : (
+                filteredLogs.map((log, i) => (
+                  <div key={i} className="mb-2 leading-relaxed break-words flex items-start">
+                    <span className="text-slate-500 mr-2 shrink-0">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}]</span>
+                    <div className="flex-1">
+                      <div className="flex items-center flex-wrap">
+                        {getSourceBadge(log.source)}
+                        <span className={`${getLevelColor(log.level)} mr-2 font-bold`}>[{(log.level || "INFO").padEnd(9)}]</span>
+                      </div>
+                      <span className="text-slate-300">{log.message}</span>
+                      {log.metadata && Object.keys(log.metadata).length > 0 && (
+                        <span className="text-slate-500 ml-1 block mt-0.5 text-[9px] overflow-hidden truncate">
+                          {JSON.stringify(log.metadata)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          )}
         </div>
       )}
     </>

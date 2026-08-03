@@ -12,20 +12,32 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react(), tailwindcss()],
       build: {
+        outDir: 'dist',
+        assetsDir: 'assets',
+        sourcemap: false,
         chunkSizeWarningLimit: 1000,
+        reportCompressedSize: false,
         rollupOptions: {
           output: {
-            manualChunks: {
-              vendor: ['react','react-dom'],
-              supabase: ['@supabase/supabase-js'],
-              charts: ['recharts']
+            manualChunks(id) {
+              if (id.includes('node_modules')) {
+                if (id.includes('recharts') || id.includes('d3') || id.includes('react-resize-detector')) {
+                  return 'vendor-charts';
+                }
+                if (id.includes('lucide-react')) {
+                  return 'vendor-lucide';
+                }
+                if (id.includes('motion') || id.includes('@motion')) {
+                  return 'vendor-motion';
+                }
+                if (id.includes('supabase') || id.includes('@supabase') || id.includes('axios')) {
+                  return 'vendor-core';
+                }
+                return 'vendor-others';
+              }
             }
           }
         }
-      },
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
       },
       resolve: {
         alias: {

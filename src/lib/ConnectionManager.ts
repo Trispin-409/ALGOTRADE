@@ -91,7 +91,6 @@ class ConnectionManager {
       
       const newKey = `${accountId}:${symbol}:${timeframe}`;
       if (this.activeStreamKey === newKey) return;
-      if (this.streamRegistry.has(newKey)) return;
 
       if (this.activeStreamKey && this.desiredStream) {
           this.send(accountId, { 
@@ -105,6 +104,11 @@ class ConnectionManager {
       this.desiredStream = { symbol, timeframe };
       this.activeStreamKey = newKey;
       console.log(`[STREAM_AUTHORITY] Intent set: ${symbol} (${timeframe}) for ${accountId}`);
+      
+      if (this.streamRegistry.has(newKey)) {
+          console.log(`[STREAM_AUTHORITY] Stream ${newKey} is already registered. Switching active focus.`);
+          return;
+      }
       
       this.orchestrateStream(accountId, symbol, timeframe, (m) => console.log(m))
           .catch(err => console.error(`[STREAM_AUTHORITY] Automated engagement failed:`, err));
@@ -190,12 +194,17 @@ class ConnectionManager {
         this.tokens.set(accountId, token);
       }
 
-      if (ConnectionManager.ACTIVE_LIFECYCLES.has(accountId)) return;
+      this.selectedAccountId = accountId;
+
+      if (ConnectionManager.ACTIVE_LIFECYCLES.has(accountId)) {
+          console.log(`[LIFECYCLE] Account ${accountId} already booted. Switching active focus...`);
+          this.evaluatePhase();
+          return;
+      }
       ConnectionManager.ACTIVE_LIFECYCLES.add(accountId);
       
       console.log(`[LIFECYCLE] 🧱 HARD LOCK: Booting Global Lifecycle for ${accountId}...`);
       
-      this.selectedAccountId = accountId;
       this.connectAccount(accountId, baseUrl);
   }
 
@@ -300,15 +309,7 @@ class ConnectionManager {
       const data = await safeFetch(`/api/account/${accountId}/status`, { headers });
       if (data) {
           if (data.state !== 'DEPLOYED' || data.connectionStatus !== 'CONNECTED') {
-              console.warn(`[RECONNECT_GUARD] Account ${accountId} is not active (${data.state}, ${data.connectionStatus}). Cancelling connection loop.`);
-              this.connections.delete(accountId); // Ensure socket is registered absent
-              this.notifyStatus(accountId, false);
-              
-              // Transition to init to show offline or similar
-              if (accountId === this.selectedAccountId) {
-                this.transitionTo(TradingPhase.INIT);
-              }
-              return;
+              console.warn(`[RECONNECT_GUARD] Account ${accountId} is not fully active (${data.state}, ${data.connectionStatus}). Proceeding with connection to stream initialization states...`);
           }
       }
     } catch(e) {
@@ -349,6 +350,11 @@ class ConnectionManager {
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         
+        if (data.accountId && data.accountId !== accountId) {
+            this.listeners.forEach(cb => cb(data));
+            return;
+        }
+
         if (data.type === 'status:update') {
             const isReady = data.status === 'CONNECTED' || data.status === 'READY' || data.status === 'SYNCHRONIZED' || data.status === 'SYNCING' || data.status === 'CONNECTED_TO_SERVER';
             this.brokerConnectedState.set(accountId, isReady);

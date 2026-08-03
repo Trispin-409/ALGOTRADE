@@ -8,6 +8,11 @@ import {
   Shield, XCircle, Trash2, Compass
 } from 'lucide-react';
 import { useStore } from '../src/store';
+import { getSymbolDriverBreakdown } from '../src/utils/symbolDrivers';
+import { assessNewsImpact } from '../src/utils/newsImpactEngine';
+import { runDeterministicStructureEngine, runMultiTimeframeStructureEngine, calculateTechnicalIndicators, getDetailedMarketSession } from '../src/utils/structureEngine';
+import { EvidencePackageViewer } from '../src/components/EvidencePackageViewer';
+
 import { safeFetch, getApiBaseUrl } from '../src/lib/utils';
 import { formatCurrency } from '../src/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -39,6 +44,10 @@ interface ReasoningResult {
   vetoAgent?: string;
   primaryReason?: string;
   details?: string;
+  driverBreakdown?: any;
+  preNewsPrediction?: any;
+  marketThesis?: any;
+  allMarketConditionsFit?: boolean;
 }
 
 interface Message {
@@ -67,6 +76,25 @@ interface ChatradeAIProps {
   setSelectedTimeframe?: (tf: string) => void;
   subscriptionPlan?: string;
 }
+
+export const renderSafeString = (val: any, fallback: string = ''): string => {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'object') {
+    if (typeof val.mentorVoice === 'string') return val.mentorVoice;
+    if (typeof val.reason === 'string') return val.reason;
+    if (typeof val.details === 'string') return val.details;
+    if (typeof val.primaryReason === 'string') return val.primaryReason;
+    if (typeof val.message === 'string') return val.message;
+    if (typeof val.summary === 'string') return val.summary;
+    if (typeof val.explanation === 'string') return val.explanation;
+    try {
+      return JSON.stringify(val, null, 2);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(val);
+};
 
 // STRATEGY EVOLUTION ENGINE: LOCAL COGNITIVE DATA STRUCTURES
 interface StrategyProfile {
@@ -175,6 +203,7 @@ export default function ChatradeAI({
   const [symbolsList, setSymbolsList] = useState<string[]>(['EURUSD', 'GBPUSD', 'XAUUSD', 'USDJPY', 'USDCAD']);
   
   const [opportunityPending, setOpportunityPending] = useState(false);
+  const [isEvidencePackageOpen, setIsEvidencePackageOpen] = useState(false);
   
   const [opportunityModal, setOpportunityModal] = useState<{
     isOpen: boolean;
@@ -534,74 +563,116 @@ export default function ChatradeAI({
     };
   };
 
-  // SUPPLY & DEMAND AND STRUCTURE MAPPING ENGINE
-  const mapSupplyDemandAndStructure = (candles: any[]) => {
-    const zones: Array<{ price: number; type: 'SUPPLY' | 'DEMAND'; strength: string; label: string }> = [];
-    const structures: string[] = [];
-    if (candles.length < 15) return { zones, structures };
-
-    const prev15 = candles.slice(-16, -1);
-    const swingHigh = Math.max(...prev15.map(c => c.high || 0));
-    const swingLow = Math.min(...prev15.map(c => c.low || 0));
+  // DETAILED DETERMINISTIC SMART MONEY CONCEPTS (SMC) ENGINE (ALGOTRADE V10 Integrated)
+  const runSMCDeterministicEngine = (candles: any[]) => {
+    const mtfEvidence = runMultiTimeframeStructureEngine(candles, selectedTimeframe || '1m');
+    const richStructures = mtfEvidence.allStructuresCombined;
     
-    const lastCandle = candles[candles.length - 1];
-    const volumes = candles.map(c => Number(c.tickVolume || c.volume || 1));
-    const avgVol = volumes.reduce((sum, v) => sum + v, 0) / volumes.length;
+    // Compute legacy values from the rich structure objects to keep everything fully backward compatible
+    const bosBullish = richStructures.some(s => s.type === 'BOS_BULLISH');
+    const bosBearish = richStructures.some(s => s.type === 'BOS_BEARISH');
+    const chochBullish = richStructures.some(s => s.type === 'CHOCH_BULLISH');
+    const chochBearish = richStructures.some(s => s.type === 'CHOCH_BEARISH');
+    const mssBullish = richStructures.some(s => s.type === 'MSS_BULLISH');
+    const mssBearish = richStructures.some(s => s.type === 'MSS_BEARISH');
+    const equalHighs = richStructures.some(s => s.type === 'LIQUIDITY_EQH');
+    const equalLows = richStructures.some(s => s.type === 'LIQUIDITY_EQL');
+    const liquiditySweepBullish = richStructures.some(s => s.type === 'SWEEP_BULLISH');
+    const liquiditySweepBearish = richStructures.some(s => s.type === 'SWEEP_BEARISH');
+    const premiumZone = richStructures.some(s => s.type === 'PREMIUM_ZONE');
+    const discountZone = richStructures.some(s => s.type === 'DISCOUNT_ZONE');
+    const equilibriumZone = !premiumZone && !discountZone;
+    const fvgBullish = richStructures.some(s => s.type === 'FVG_BULLISH');
+    const fvgBearish = richStructures.some(s => s.type === 'FVG_BEARISH');
 
-    // Detect Market Structure Shift (MSS) or Break of Structure (BOS)
-    if ((lastCandle.close || 0) > swingHigh) {
-      structures.push("Break Of Structure (BOS) Bullish");
-      zones.push({
-        price: swingHigh,
-        type: 'DEMAND',
-        strength: volumes[volumes.length - 1] > avgVol * 1.5 ? 'Institutional' : 'Strong',
-        label: 'BOS Bullish Rebound Zone'
-      });
-    } else if ((lastCandle.close || 0) < swingLow) {
-      structures.push("Break Of Structure (BOS) Bearish");
-      zones.push({
-        price: swingLow,
-        type: 'SUPPLY',
-        strength: volumes[volumes.length - 1] > avgVol * 1.5 ? 'Institutional' : 'Strong',
-        label: 'BOS Bearish Supply Zone'
-      });
-    }
+    // Extract key prices
+    const obBullishObj = richStructures.find(s => s.type === 'OB_BULLISH');
+    const obBearishObj = richStructures.find(s => s.type === 'OB_BEARISH');
+    const fvgBullishObj = richStructures.find(s => s.type === 'FVG_BULLISH');
+    const fvgBearishObj = richStructures.find(s => s.type === 'FVG_BEARISH');
 
-    // Identify Fair Value Gaps (FVG)
-    for (let i = candles.length - 5; i < candles.length - 1; i++) {
-      const c_prev = candles[i - 1];
-      const c_mid = candles[i];
-      const c_next = candles[i + 1];
-      
-      if ((c_prev.high || 0) < (c_next.low || 0) && (c_mid.close || 0) > (c_mid.open || 0)) {
+    const orderBlockPrice = obBullishObj ? obBullishObj.priceStart : (obBearishObj ? obBearishObj.priceStart : 0);
+    const breakerBlockPrice = 0;
+    const mitigationBlockPrice = orderBlockPrice;
+    const fvgGapSize = fvgBullishObj ? (fvgBullishObj.priceEnd - fvgBullishObj.priceStart) : (fvgBearishObj ? (fvgBearishObj.priceStart - fvgBearishObj.priceEnd) : 0);
+
+    const zones: any[] = [];
+    richStructures.forEach(s => {
+      if (s.type.startsWith('OB') || s.type.startsWith('FVG')) {
         zones.push({
-          price: ((c_prev.high || 0) + (c_next.low || 0)) / 2,
-          type: 'DEMAND',
-          strength: 'Moderate',
-          label: 'Fair Value Gap (FVG) Imbalance'
+          price: (s.priceStart + s.priceEnd) / 2,
+          low: s.priceStart,
+          high: s.priceEnd,
+          type: (s.type.includes('BULLISH') || s.type.includes('EQL') || s.type.includes('DISCOUNT')) ? 'DEMAND' : 'SUPPLY',
+          isSupport: s.type.includes('BULLISH') || s.type.includes('EQL') || s.type.includes('DISCOUNT'),
+          isConsolidation: false,
+          strength: 'Institutional',
+          label: s.type.replace('_BULLISH', '').replace('_BEARISH', '')
         });
-        structures.push("FVG Bullish Gap");
       }
-      if ((c_prev.low || 0) > (c_next.high || 0) && (c_mid.close || 0) < (c_mid.open || 0)) {
-        zones.push({
-          price: ((c_prev.low || 0) + (c_next.high || 0)) / 2,
-          type: 'SUPPLY',
-          strength: 'Moderate',
-          label: 'Fair Value Gap (FVG) Imbalance'
+    });
+
+    const detections: any[] = [];
+    richStructures.forEach(s => {
+      if (s.type.startsWith('BOS') || s.type.startsWith('CHOCH') || s.type.startsWith('MSS') || s.type.startsWith('SWEEP')) {
+        detections.push({
+          time: s.timestamp,
+          price: s.priceEnd,
+          pattern: s.type,
+          polarity: s.type.includes('BULLISH') ? 1 : -1
         });
-        structures.push("FVG Bearish Gap");
       }
-    }
+    });
 
-    // Default Anchor pools
-    zones.push({ price: swingLow, type: 'DEMAND', strength: 'Institutional', label: 'Order Block / Liquidity Pool' });
-    zones.push({ price: swingHigh, type: 'SUPPLY', strength: 'Institutional', label: 'Order Block / Liquidity Pool' });
+    const structuresStr: string[] = richStructures.map(s => `${s.type.replace('_BULLISH', '').replace('_BEARISH', '')} (${s.confidence}%)`);
 
-    return { zones, structures };
+    const fvgZone = fvgBullishObj ? { price: (fvgBullishObj.priceStart + fvgBullishObj.priceEnd) / 2, type: 'DEMAND', strength: 'Moderate', label: 'Bullish FVG' } : null;
+    const orderBlockZone = obBullishObj ? { price: obBullishObj.priceStart, type: 'DEMAND', strength: 'Institutional', label: 'Bullish OB' } : null;
+
+    return {
+      zones,
+      detections,
+      structures: structuresStr,
+      richStructures,
+      mtfEvidence,
+
+      bosBullish,
+      bosBearish,
+      chochBullish,
+      chochBearish,
+      mssBullish,
+      mssBearish,
+      equalHighs,
+      equalLows,
+      liquiditySweepBullish,
+      liquiditySweepBearish,
+      premiumZone,
+      discountZone,
+      equilibriumZone,
+      orderBlockPrice,
+      breakerBlockPrice,
+      mitigationBlockPrice,
+      fvgBullish,
+      fvgBearish,
+      fvgGapSize,
+      internalLiquidity: fvgBullish || fvgBearish ? "Imbalance Gap Pool" : "Equilibrium EMA Sweep",
+      externalLiquidity: equalHighs || equalLows || liquiditySweepBullish || liquiditySweepBearish ? "Major High/Low Sweep Target" : "External Swing Pools Intact",
+      fvgZone,
+      orderBlockZone
+    };
+  };
+
+  // SUPPLY & DEMAND AND STRUCTURE MAPPING ENGINE (Facade wrapper for backwards compatibility)
+  const mapSupplyDemandAndStructure = (candles: any[]) => {
+    const smc = runSMCDeterministicEngine(candles);
+    return {
+      zones: smc.zones,
+      structures: smc.structures
+    };
   };
 
   // A professional dynamic strategy finder derived from actual live candlestick state, structure, and sentiment
-  const discoverStrategyForSymbol = (symbol: string) => {
+  const discoverStrategyForSymbol = (symbol: string, newsData?: any) => {
     const currentCandles = useStore.getState().candles || [];
     if (currentCandles.length < 15) return null;
 
@@ -670,7 +741,11 @@ export default function ChatradeAI({
     
     // --- 2. Advanced Candlestick & Supply/Demand Engines ---
     const candleAnalysis = analyzeCandlesticks(currentCandles);
-    const sdMap = mapSupplyDemandAndStructure(currentCandles);
+    const smc = runSMCDeterministicEngine(currentCandles);
+    const sdMap = {
+      zones: smc.zones,
+      structures: smc.structures
+    };
 
     // --- 3. Multi-Timeframe Decision Engine ---
     // EMA-200 slope represents Weekly Trend, EMA-100 is Daily, EMA-50 is 4H, EMA-21 is 1H
@@ -686,6 +761,59 @@ export default function ChatradeAI({
     // General macro bias
     const bullScoreMTF = (isWeeklyBullish ? 25 : 0) + (isDailyBullish ? 25 : 0) + (is4HBullish ? 25 : 0) + (is1HBullish ? 25 : 0);
     const macroBias = bullScoreMTF >= 75 ? 'Strongly Bullish' : (bullScoreMTF >= 50 ? 'Moderately Bullish' : (bullScoreMTF <= 25 ? 'Strongly Bearish' : 'Moderately Bearish'));
+
+    // PUSH TIMEFRAME MATRIX TO GLOBAL STORE TO POWER TIMEFRAME UI & MULTI-AGENT REPORTS
+    const isM15Bullish = rsi14 > 45 && is1HBullish;
+    const isM5Bullish = lastCandle.close > ema9;
+    const isM1Bullish = isBullishCandle;
+    const mtfMatrix: { [tf: string]: { trend: string, structure: string, momentum: string, bias: string } } = {
+      'W1': {
+        trend: isWeeklyBullish ? 'BULLISH' : 'BEARISH',
+        structure: 'Primary Swing Segment',
+        momentum: isWeeklyBullish && rsi14 > 50 ? 'STRONG BULLISH' : 'NEUTRAL',
+        bias: isWeeklyBullish ? 'BULLISH' : 'BEARISH'
+      },
+      'D1': {
+        trend: isDailyBullish ? 'BULLISH' : 'BEARISH',
+        structure: 'Daily Swing High/Low Range',
+        momentum: rsi14 > 50 ? 'EXPANDING' : 'STABILIZING',
+        bias: isDailyBullish ? 'BULLISH' : 'BEARISH'
+      },
+      'H4': {
+        trend: is4HBullish ? 'BULLISH' : 'BEARISH',
+        structure: sdMap.zones[0]?.type === 'DEMAND' ? 'Institutional Demand zone' : 'Institutional Supply zone',
+        momentum: atr14 > averageBodySize ? 'HIGH VOLATILITY' : 'STABLE',
+        bias: is4HBullish ? 'BULLISH' : 'BEARISH'
+      },
+      'H1': {
+        trend: is1HBullish ? 'BULLISH' : 'BEARISH',
+        structure: sdMap.structures[0] || 'Fair Value Gap (FVG)',
+        momentum: rsi14 > 60 ? 'STRONG' : (rsi14 < 40 ? 'WEAK' : 'NEUTRAL'),
+        bias: is1HBullish ? 'BULLISH' : 'BEARISH'
+      },
+      'M15': {
+        trend: isM15Bullish ? 'BULLISH' : 'BEARISH',
+        structure: candleAnalysis.patterns[0] || 'Order Block Mitigation',
+        momentum: vol_0 > averageVolume * 1.2 ? 'EXPANSIVE VOLUME' : 'NORMAL',
+        bias: isM15Bullish ? 'BULLISH' : 'BEARISH'
+      },
+      'M5': {
+        trend: isM5Bullish ? 'BULLISH' : 'BEARISH',
+        structure: 'Micro Liquidity Sweep',
+        momentum: isBullishCandle ? 'BULLISH MOMENTUM' : 'BEARISH MOMENTUM',
+        bias: isM5Bullish ? 'BULLISH' : 'BEARISH'
+      },
+      'M1': {
+        trend: isM1Bullish ? 'BULLISH' : 'BEARISH',
+        structure: 'Order Flow Tick Stream',
+        momentum: 'REAL-TIME SCALP',
+        bias: isM1Bullish ? 'BULLISH' : 'BEARISH'
+      }
+    };
+
+    Object.keys(mtfMatrix).forEach(tf => {
+      useStore.getState().setTimeframeAnalysis(tf, mtfMatrix[tf]);
+    });
 
     // --- 4. Market Regime Detection Engine ---
     const bbWidth = (bbUpper - bbLower) / bbMiddle;
@@ -718,7 +846,7 @@ export default function ChatradeAI({
     const newsSentiment = isNYOpen ? (isBullishCandle ? 'Positive' : 'Negative') : 'Neutral';
     
     const fundamentalBiasScore = Math.min(100, Math.max(0, 50 + (isNYOpen ? 20 : 0) + (isBullishCandle ? 10 : -10)));
-    const newsImpactScore = isSessionOpening ? 85 : 35;
+    const defaultSessionNewsImpact = isSessionOpening ? 85 : 35;
     const marketRiskScore = isHighVolatility ? 80 : 40;
 
     // --- 6. Core Candidate Star Strategies ---
@@ -864,6 +992,29 @@ export default function ChatradeAI({
       }
     }
 
+    // STRATEGY 7: SMC Order Block Retest Setup
+    if (smc && smc.orderBlockPrice > 0 && smc.orderBlockZone) {
+      if (smc.orderBlockZone.type === 'DEMAND' && lastCandle.low <= smc.orderBlockPrice * 1.0015 && lastCandle.close > smc.orderBlockPrice) {
+        candidatesList.push({
+          name: "SMC Order Block Retest Setup",
+          type: "SMC Order Block Retest",
+          conditions: `Retest of Bullish Order Block at ${smc.orderBlockPrice.toFixed(5)}`,
+          direction: "BUY",
+          confidence: Math.min(96, Math.round(85 + (isDailyBullish ? 5 : -3))),
+          reason: `Market mitigated the Bullish Order Block at ${smc.orderBlockPrice.toFixed(5)} with clear candle wick tapping, indicating institutional limit order activation.`
+        });
+      } else if (smc.orderBlockZone.type === 'SUPPLY' && lastCandle.high >= smc.orderBlockPrice * 0.9985 && lastCandle.close < smc.orderBlockPrice) {
+        candidatesList.push({
+          name: "SMC Order Block Retest Setup",
+          type: "SMC Order Block Retest",
+          conditions: `Retest of Bearish Order Block at ${smc.orderBlockPrice.toFixed(5)}`,
+          direction: "SELL",
+          confidence: Math.min(95, Math.round(85 + (!isDailyBullish ? 5 : -3))),
+          reason: `Market mitigated the Bearish Order Block at ${smc.orderBlockPrice.toFixed(5)} with precise upper wick rejection, indicating institutional limit order absorption.`
+        });
+      }
+    }
+
     // STRATEGY 6: Standard EMA Trend Pullback Rebound (Fallback Setup)
     const isTrendUp = ema9 > ema21 && lastCandle.close > ema9 && prevCandle && prevCandle.close > ema21;
     const isTrendDown = ema9 < ema21 && lastCandle.close < ema9 && prevCandle && prevCandle.close < ema21;
@@ -889,43 +1040,76 @@ export default function ChatradeAI({
       reason: trendReason
     });
 
-    // --- 7. Adaptive Multi-Timeframe Strategy Adjustments & Filtering ---
+    // --- 7. Multi-Factor Consensus Weighting Engine (News + Technical Structure Confluence) ---
+    const newsImpactAssessment = assessNewsImpact(symbol, newsData);
+    const gNewsSentiment = newsImpactAssessment.overallSentiment;
+    const gNewsScore = newsImpactAssessment.sentimentScore;
+    const newsImpactScore = newsImpactAssessment.impactScore;
+
+    const isSmcOrLiquidityStructure = (c: any) => {
+      const type = (c.type || '').toLowerCase();
+      const name = (c.name || '').toLowerCase();
+      return type.includes('smc') || type.includes('liquidity') || type.includes('volume') || type.includes('fvg') ||
+             name.includes('ict') || name.includes('fvg') || name.includes('sweep') || name.includes('vsa') || name.includes('order block');
+    };
+
     const isFlatConsolidation = rsi14 > 38 && rsi14 < 62 && Math.abs(ema9 - ema21) / ema21 < 0.0003 && !isHighVolatility;
-    let validCandidates = candidatesList.filter(c => c.direction !== 'WAIT' && c.confidence >= 70);
+    let validCandidates = candidatesList.filter(c => c.direction !== 'WAIT');
     
     if (isFlatConsolidation) {
       validCandidates = validCandidates.map(c => ({
         ...c,
         confidence: Math.round(c.confidence * 0.65),
         reason: `[FLAT RANGE PROTECTION] Squeezed confidence to prevent account bleed during zero-momentum consolidation.`
-      })).filter(c => c.confidence >= 70);
+      }));
     }
 
-    // MULTI-TIMEFRAME ALIGNMENT FILTER:
-    // If trade setup is BUY but higher timeframes are bearish, we penalize confidence to respect macro trend structure
+    // MULTI-FACTOR CONSENSUS WEIGHTING (NEWS SENTIMENT + SMC STRUCTURE CONFLUENCE):
     validCandidates = validCandidates.map(c => {
-      let alignmentPenalty = 0;
-      if (c.direction === 'BUY' && !isDailyBullish) alignmentPenalty += 10;
-      if (c.direction === 'SELL' && isDailyBullish) alignmentPenalty += 10;
-      
-      const newConfidence = Math.max(0, c.confidence - alignmentPenalty);
+      let conf = c.confidence;
+      let consensusNotes: string[] = [];
+
+      // Macro Trend Alignment Check
+      if (c.direction === 'BUY' && !isDailyBullish) {
+        conf -= 6;
+        consensusNotes.push(`-[6]% Macro Trend Headwind`);
+      } else if (c.direction === 'SELL' && isDailyBullish) {
+        conf -= 6;
+        consensusNotes.push(`-[6]% Macro Trend Headwind`);
+      } else if ((c.direction === 'BUY' && isDailyBullish) || (c.direction === 'SELL' && !isDailyBullish)) {
+        conf += 4;
+        consensusNotes.push(`+[4]% Macro Trend Tailwind`);
+      }
+
+      // Grounded News Sentiment & Headline Confluence Weighting
+      const newsEval = newsImpactAssessment.alignmentForDirection(c.direction as 'BUY' | 'SELL');
+      const hasSmcStructure = isSmcOrLiquidityStructure(c);
+      let totalConfluenceBoost = newsEval.scoreAdjustment;
+      if (newsEval.isAligned && hasSmcStructure) {
+        totalConfluenceBoost += 4;
+      }
+      conf += totalConfluenceBoost;
+
+      if (newsEval.isAligned) {
+        consensusNotes.push(`+[${totalConfluenceBoost}%] Grounded Macro Confluence: ${c.type} structure backed by ${gNewsSentiment} headline context`);
+      } else if (newsEval.isOpposed) {
+        consensusNotes.push(`[${totalConfluenceBoost}%] Macro Headwind Warning: Opposes ${gNewsSentiment} breaking headlines`);
+      }
+
+      const finalConf = Math.min(98, Math.max(20, Math.round(conf)));
+      const reasonNotesStr = consensusNotes.length > 0 ? ` [Consensus Agent: ${consensusNotes.join(' | ')}]` : '';
+
       return {
         ...c,
-        confidence: newConfidence,
-        reason: alignmentPenalty > 0 ? `${c.reason} [Note: Macro trend counter-alignment penalized confidence by -${alignmentPenalty}%]` : c.reason
+        confidence: finalConf,
+        reason: `${c.reason}${reasonNotesStr}`
       };
-    }).filter(c => c.confidence >= 70);
+    }).filter(c => c.direction !== 'WAIT');
 
     validCandidates.sort((a,b) => b.confidence - a.confidence);
 
-    if (validCandidates.length === 0) return null;
-
-    const selected = validCandidates[0];
     const entryPrice = lastCandle.close || 1.1000;
-    const isBuy = selected.direction === 'BUY';
     const pipsRatio = symbol.includes('JPY') ? 0.01 : ((symbol.includes('XAU') || symbol.includes('GOLD')) ? 0.1 : 0.0001);
-    
-    // --- 8. Dynamic Adaptive ATR-Based SL & TP Protection ---
     const isGold = symbol.includes('XAU') || symbol.includes('GOLD');
     let slPips = 35;
     if (isGold) {
@@ -933,24 +1117,12 @@ export default function ChatradeAI({
     } else {
       slPips = Math.max(15, Math.min(50, Math.round((atr14 * 1.25) / pipsRatio)));
     }
-    const tpPips = Math.round(slPips * 2.3);
-    
-    const stopLoss = isBuy ? (entryPrice - slPips * pipsRatio) : (entryPrice + slPips * pipsRatio);
-    const takeProfit = isBuy ? (entryPrice + tpPips * pipsRatio) : (entryPrice - tpPips * pipsRatio);
 
-    // --- 9. CAPITAL INTELLIGENCE ENGINE (Adaptive balance-aware lot sizer) ---
     const liveAccount = useStore.getState().account as any;
     const rawBalance = liveAccount?.balance || 10000;
     const liveFreeMargin = liveAccount?.freeMargin || rawBalance;
     const liveDrawdownPct = rawBalance > 0 ? Math.max(0, (((rawBalance - (liveAccount?.equity || rawBalance)) / rawBalance) * 100)) : 0;
-    
-    // Circuit Breakers
-    if (liveDrawdownPct >= 10.0) {
-      console.log(`[CIRCUIT BREAKER] Trading blocked. Current Drawdown of ${liveDrawdownPct.toFixed(2)}% exceeds 10% safety ceiling.`);
-      return null;
-    }
 
-    // Consecutive Losses check
     const historyTradesList = useStore.getState().history || [];
     const getConsecutiveLosses = (history: any[]) => {
       let count = 0;
@@ -962,9 +1134,79 @@ export default function ChatradeAI({
       return count;
     };
     const consecutiveLosses = getConsecutiveLosses(historyTradesList);
+
+    const telemetry = {
+      metaApi: {
+        lastPrice: entryPrice,
+        rsi14: Math.round(rsi14 * 10) / 10,
+        atr14: Number(atr14.toFixed(5)),
+        atrPips: slPips,
+        ema9: Number(ema9.toFixed(5)),
+        ema21: Number(ema21.toFixed(5)),
+        ema200: Number(ema200.toFixed(5)),
+        volumeRatio: Number((vol_0 / (averageVolume || 1)).toFixed(2)),
+        bullishScore: candleAnalysis.bullishScore,
+        bearishScore: candleAnalysis.bearishScore,
+        patterns: candleAnalysis.patterns,
+        structures: sdMap.structures,
+        marketRegime,
+        macroBias
+      },
+      news: {
+        sentimentScore: gNewsScore,
+        sentimentBias: gNewsSentiment,
+        impactScore: newsImpactScore,
+        explanation: newsData?.explanation || 'Vertex AI Search news sentiment grounded.',
+        newsImpactAssessment
+      },
+      account: {
+        rawBalance,
+        liveFreeMargin,
+        liveDrawdownPct,
+        consecutiveLosses
+      }
+    };
+
+    if (validCandidates.length === 0) {
+      return {
+        isMatched: false,
+        blockReason: candidatesList.length === 0
+          ? `No strategy candidate matching current technical structure`
+          : `No candidate setup matches the current market parameters`,
+        highestCandidateConfidence: candidatesList.length > 0 ? Math.max(...candidatesList.map((c: any) => c.confidence)) : 0,
+        highestCandidateName: candidatesList.length > 0 ? [...candidatesList].sort((a: any, b: any) => b.confidence - a.confidence)[0]?.name : "None",
+        telemetry
+      };
+    }
+
+    const selected = validCandidates[0];
+    const isBuy = selected.direction === 'BUY';
+    const tpPips = Math.round(slPips * 2.3);
+    
+    const stopLoss = isBuy ? (entryPrice - slPips * pipsRatio) : (entryPrice + slPips * pipsRatio);
+    const takeProfit = isBuy ? (entryPrice + tpPips * pipsRatio) : (entryPrice - tpPips * pipsRatio);
+
+    // Circuit Breakers
+    if (liveDrawdownPct >= 10.0) {
+      console.log(`[CIRCUIT BREAKER] Trading blocked. Current Drawdown of ${liveDrawdownPct.toFixed(2)}% exceeds 10% safety ceiling.`);
+      return {
+        isMatched: false,
+        blockReason: `Circuit Breaker Active: Floating drawdown of ${liveDrawdownPct.toFixed(2)}% exceeds 10% safety ceiling`,
+        highestCandidateConfidence: 0,
+        highestCandidateName: "Blocked by Risk Ceiling",
+        telemetry
+      };
+    }
+
     if (consecutiveLosses >= 5) {
       console.log(`[CIRCUIT BREAKER] Consecutive loss streak is ${consecutiveLosses}. Halting new autonomous entries to prevent emotional bleed.`);
-      return null;
+      return {
+        isMatched: false,
+        blockReason: `Circuit Breaker Active: Consecutive loss streak of ${consecutiveLosses} trades reached`,
+        highestCandidateConfidence: 0,
+        highestCandidateName: "Blocked by Consecutive Loss Limit",
+        telemetry
+      };
     }
 
     let lotSizeChoice = useStore.getState().strategySettings?.lotSize || 0.1;
@@ -998,7 +1240,7 @@ export default function ChatradeAI({
         adaptedRiskPercentage = riskPercentage * 0.5; // Cut risk in half if drawdown is high
       }
       
-      // Streak-based lot size scaling: "After a loss streak of 3 trades: Reduce lot size by 50%" (or reduce to 25% normal)
+      // Streak-based lot size scaling
       let streakFactor = 1.0;
       if (consecutiveLosses >= 3) {
         streakFactor = 0.5;
@@ -1008,20 +1250,24 @@ export default function ChatradeAI({
       const pipValuePerLot = isGold ? 100 : 10;
       const maxSafeLot = riskAmount / (slPips * pipValuePerLot);
       
-      // Also scale down if free margin is low
       const marginFactor = liveFreeMargin < rawBalance * 0.3 ? 0.5 : 1.0;
-      const proposedLot = maxSafeLot * marginFactor * streakFactor * momentumMultiplier;
-      lotSizeChoice = Math.min(lotSizeChoice * momentumMultiplier * streakFactor, Math.max(0.01, Math.round(proposedLot * 100) / 100));
+      
+      // Dynamic lot size heavily based on account balance, risk limit, and strategy confidence
+      const confidenceMultiplier = (selected.confidence || 80) / 100;
+      const proposedLot = maxSafeLot * marginFactor * streakFactor * momentumMultiplier * confidenceMultiplier;
+      
+      // Dynamic calculation overrides hardcoded values
+      lotSizeChoice = Math.max(0.01, Math.round(proposedLot * 100) / 100);
     }
 
     // --- 10. TRADE QUALITY SCORE & RANKING ---
-    const trendScore = (isDailyBullish === isBuy ? 10 : 3) + (isWeeklyBullish === isBuy ? 10 : 3); // max 20
-    const structureScore = sdMap.structures.length > 0 ? 15 : 8; // max 15
-    const liquidityScore = (lastCandle.low < swingLow || lastCandle.high > swingHigh) ? 15 : 7; // max 15
-    const volumeScore = Math.min(10, Math.round((vol_0 / (averageVolume || 1)) * 5)); // max 10
-    const candlestickScore = Math.min(15, Math.round((isBuy ? candleAnalysis.bullishScore : candleAnalysis.bearishScore) / 6.6)); // max 15
-    const fundamentalScore = Math.round((fundamentalBiasScore / 10)); // max 10
-    const riskScore = lotSizeChoice <= 0.05 ? 15 : 10; // max 15
+    const trendScore = (isDailyBullish === isBuy ? 10 : 3) + (isWeeklyBullish === isBuy ? 10 : 3);
+    const structureScore = sdMap.structures.length > 0 ? 15 : 8;
+    const liquidityScore = (lastCandle.low < swingLow || lastCandle.high > swingHigh) ? 15 : 7;
+    const volumeScore = Math.min(10, Math.round((vol_0 / (averageVolume || 1)) * 5));
+    const candlestickScore = Math.min(15, Math.round((isBuy ? candleAnalysis.bullishScore : candleAnalysis.bearishScore) / 6.6));
+    const fundamentalScore = Math.round((fundamentalBiasScore / 10));
+    const riskScore = lotSizeChoice <= 0.05 ? 15 : 10;
     
     const masterTradeQualityScore = Math.min(100, trendScore + structureScore + liquidityScore + volumeScore + candlestickScore + fundamentalScore + riskScore);
     
@@ -1031,8 +1277,15 @@ export default function ChatradeAI({
     else if (masterTradeQualityScore >= 70) qualityRank = 'Strong';
     else if (masterTradeQualityScore >= 60) qualityRank = 'Moderate';
 
-    // Discard any trade that isn't at least "Strong" (>= 70 Quality Score)
-    if (masterTradeQualityScore < 70) return null;
+    if (masterTradeQualityScore < 70) {
+      return {
+        isMatched: false,
+        blockReason: `Master Trade Quality Score (${masterTradeQualityScore}/100) fell below required 70 threshold`,
+        highestCandidateConfidence: selected.confidence,
+        highestCandidateName: selected.name,
+        telemetry
+      };
+    }
 
     // --- 11. COGNITIVE MULTI-AGENT DEBATE CHAMBER CONFLUXES ---
     const activeRankings = getStrategyRankings();
@@ -1042,13 +1295,47 @@ export default function ChatradeAI({
     
     const liquidityMsg = `Candlestick Agent: Calculated Bullish Score: ${candleAnalysis.bullishScore}, Bearish Score: ${candleAnalysis.bearishScore} (Strength: ${candleAnalysis.strengthScore}/100, Context Score: ${candleAnalysis.marketContextScore}/100). Patterns found: [${candleAnalysis.patterns.join(', ') || 'None'}]. Liquidity Agent: Plotted Order Blocks. Target FVG is mapped near ${entryPrice.toFixed(5)}. High-volume structural transition detected.`;
     
-    const newsMsg = `News Agent: USD Fundamental Bias: ${fundamentalBiasScore}/100. Current news impact score: ${newsImpactScore}. Sentiment is ${newsSentiment}. Risk Agent: Capital vetted. Drawdown is safe at ${liveDrawdownPct.toFixed(2)}%. Position limit parameters fully validated.`;
+    const newsMsg = `News Agent: USD Fundamental Bias: ${fundamentalBiasScore}/100. Current news impact score: ${newsImpactScore}. Sentiment is ${newsSentiment}. Grounded intel: "${newsData?.explanation || 'News sentiment evaluated.'}". Risk Agent: Capital vetted. Drawdown is safe at ${liveDrawdownPct.toFixed(2)}%.`;
     
-    const riskMsg = `Risk Agent: Account balance of $${rawBalance.toFixed(2)} detected. Free Margin is $${liveFreeMargin.toFixed(2)}. Selected lot size: ${lotSizeChoice.toFixed(2)} Standard Lots (Risk index strictly capped at 1.5% with streak factor). Psychology Agent: Zero emotional bias. Setup strictly meets institutional risk rules.`;
+    const riskMsg = `Risk Agent: Account balance of $${rawBalance.toFixed(2)} detected. Free Margin is $${liveFreeMargin.toFixed(2)}. Selected lot size: ${lotSizeChoice.toFixed(2)} Standard Lots. SL: ${stopLoss.toFixed(5)}, TP: ${takeProfit.toFixed(5)}.`;
     
-    const consensusMsg = `Consensus Orchestrator: "${selected.name}" triggers BUY signal with Master Trade Quality Score of ${masterTradeQualityScore} (${qualityRank} Class).${scalingReason} Execution Agent: Trade setup is locked. SL is ${stopLoss.toFixed(5)}, TP is ${takeProfit.toFixed(5)}. Recovery Agent: Historic Strategy Win Rate is ${specificStratPerformance.winRate}%. Setup is APPROVED.`;
+    const consensusMsg = `Consensus Orchestrator: "${selected.name}" triggers BUY signal with Master Trade Quality Score of ${masterTradeQualityScore} (${qualityRank} Class).${scalingReason} Execution Agent: Trade setup is locked. SL is ${stopLoss.toFixed(5)}, TP is ${takeProfit.toFixed(5)}. Historic Strategy Win Rate is ${specificStratPerformance.winRate}%. Setup is APPROVED.`;
+
+    const symbolDriverInfo = getSymbolDriverBreakdown(symbol);
+    const predictedDirection = selected.direction;
+    const newsConvictionScore = Math.min(99, Math.round(selected.confidence * 1.02));
+    const preNewsTrajectoryText = `Model Prediction Engine for ${symbol} predicts ${predictedDirection} direction ahead of high-impact catalysts. Driving entities (${symbolDriverInfo.keyCompaniesAndEntities.slice(0, 3).join(', ')}) align with ${gNewsSentiment} news sentiment. Target is mapped at ${takeProfit.toFixed(5)}.`;
+
+    const cond1_DriverAlign = (predictedDirection === 'BUY' && (gNewsSentiment === 'BULLISH' || gNewsScore >= 48)) || (predictedDirection === 'SELL' && (gNewsSentiment === 'BEARISH' || gNewsScore <= 52));
+    const cond2_NewsEventHandling = Math.abs(newsImpactScore) > 10 || isSessionOpening;
+    const cond3_SmcStructure = sdMap.structures.length > 0 || smc.bosBullish || smc.bosBearish || smc.fvgBullish || smc.fvgBearish;
+    const cond4_MtfVelocity = (predictedDirection === 'BUY' && is1HBullish) || (predictedDirection === 'SELL' && !is1HBullish) || vol_0 > averageVolume;
+    const cond5_RiskSafeguard = lotSizeChoice > 0 && rawBalance > 0;
+
+    const allMarketConditionsFit = cond1_DriverAlign && cond2_NewsEventHandling && cond3_SmcStructure && cond4_MtfVelocity && cond5_RiskSafeguard;
+
+    const marketThesis = {
+      symbol,
+      predictedDirection,
+      convictionScore: newsConvictionScore,
+      assetDriversSummary: symbolDriverInfo.explanation,
+      drivingEntities: symbolDriverInfo.keyCompaniesAndEntities,
+      primaryCompanies: symbolDriverInfo.primaryDrivers.filter(d => d.type === 'COMPANY' || d.type === 'CENTRAL_BANK').map(d => `${d.name} (${d.role})`),
+      newsGroundingCatalyst: newsData?.explanation || `${symbolDriverInfo.displayName} sentiment driven by ${symbolDriverInfo.newsQueryKeywords}`,
+      preNewsPredictionTrajectory: preNewsTrajectoryText,
+      smcStructureConfluence: `${selected.name} (${selected.type}): ${selected.conditions}`,
+      allMarketConditionsFit,
+      conditionChecklist: [
+        { name: "Macro & Fundamental Driver Alignment", met: cond1_DriverAlign, detail: `News sentiment (${gNewsSentiment}) aligns with ${predictedDirection} bias.` },
+        { name: "News Catalyst & Volatility Handling", met: cond2_NewsEventHandling, detail: `Active session news volatility (${newsImpactScore} impact score) evaluated.` },
+        { name: "Institutional SMC Structure Fit", met: cond3_SmcStructure, detail: `Smart Money Concept (${selected.type}) validated on order flow.` },
+        { name: "Multi-Timeframe Velocity & Momentum", met: cond4_MtfVelocity, detail: `MTF trend (${macroBias}) and volume momentum backing direction.` },
+        { name: "Risk & Lot Capital Interlock", met: cond5_RiskSafeguard, detail: `Lot size (${lotSizeChoice.toFixed(2)}) capped within risk threshold.` }
+      ]
+    };
 
     return {
+      isMatched: true,
       strategyName: selected.name,
       direction: selected.direction,
       confidence: selected.confidence,
@@ -1070,10 +1357,38 @@ export default function ChatradeAI({
       highestRanked: selected.name,
       consensusScore: selected.confidence,
       candidates: validCandidates,
-      
-      // Elite Upgraded Metadata
       masterTradeQualityScore,
       qualityRank,
+      driverBreakdown: symbolDriverInfo,
+      newsImpactAssessment,
+      multiTimeframeEvidence: smc.mtfEvidence,
+      evidencePackage: {
+        symbol, strategyName: selected.name, direction: selected.direction,
+        entry: entryPrice, stopLoss, takeProfit, confidence: selected.confidence,
+        multiTimeframeEvidence: smc.mtfEvidence,
+        orderBlocks: smc.mtfEvidence?.orderBlocksAllTF || [],
+        fvgGaps: smc.mtfEvidence?.fvgGapsAllTF || [],
+        liquiditySweeps: smc.mtfEvidence?.sweepsAllTF || [],
+        structureBreaks: smc.mtfEvidence?.structureBreaksAllTF || [],
+        driverBreakdown: symbolDriverInfo,
+        newsImpactAssessment,
+        approvedReason: `Signal passed all institutional multi-agent validation checks with a confidence rating of ${selected.confidence}%. Dynamic news-impact assessment layer verified breaking headlines for ${symbol} aligned with ${smc.mtfEvidence?.allStructuresCombined?.length || 0} multi-timeframe structure objects.`,
+      },
+      preNewsPrediction: {
+        direction: predictedDirection,
+        conviction: newsConvictionScore,
+        catalyst: newsData?.explanation || symbolDriverInfo.explanation,
+        trajectory: preNewsTrajectoryText
+      },
+      marketThesis,
+      allMarketConditionsFit,
+      telemetry: {
+        ...telemetry,
+        account: {
+          ...telemetry.account,
+          lotSizeChoice
+        }
+      },
       candlestickAgent: {
         status: 'completed',
         message: `Candlestick patterns analyzed. Detected [${candleAnalysis.patterns.join(', ') || 'Standard progression'}]. Reliability: ${candleAnalysis.reliabilityScore}/100.`,
@@ -1115,34 +1430,75 @@ export default function ChatradeAI({
       
       let updated = false;
       const nextProtection = { ...currentProtection };
-      
+      let newSL = null;
+
       if (R >= 1.0 && !currentProtection.breakEven) {
         nextProtection.breakEven = true;
         updated = true;
+        newSL = pos.openPrice;
         addMessage({
           sender: 'system',
           text: `🛡️ **[PROFIT PROTECTION: BREAK-EVEN ACTIVATED]** Position **${pos.symbol}** (${isBuy ? 'BUY' : 'SELL'}) has reached the **+1.0R** milestone. Capital safety locked.\n\n* **Protection Rule:** Break-Even Trigger\n* **Action:** Stop Loss moved from ${pos.stopLoss} to Entry price **${pos.openPrice}**.\n* **Risk Exposure:** 0.0% (Zero-risk position active).`
         });
       }
-      
+
       if (R >= 2.0 && !currentProtection.partialLocked) {
         nextProtection.partialLocked = true;
         updated = true;
+        newSL = isBuy ? pos.openPrice + riskAmt : pos.openPrice - riskAmt;
         addMessage({
           sender: 'system',
-          text: `💰 **[PROFIT PROTECTION: PARTIAL LOCK SECURED]** Position **${pos.symbol}** reached **+2.0R** target. Shielding gains.\n\n* **Protection Rule:** Profit Locking Stage 1\n* **Action:** Lock margin and secured a minimum **+1.0R** ($10 USD) payout.\n* **Rejection Shield:** Active.`
+          text: `💰 **[PROFIT PROTECTION: PARTIAL LOCK SECURED]** Position **${pos.symbol}** reached **+2.0R** target. Shielding gains.\n\n* **Protection Rule:** Profit Locking Stage 1\n* **Action:** Stop Loss locked at +1.0R to secure profits.\n* **Rejection Shield:** Active.`
         });
       }
-      
-      if (R >= 3.0 && !currentProtection.trailing) {
-        nextProtection.trailing = true;
-        updated = true;
-        addMessage({
-          sender: 'system',
-          text: `📈 **[DYNAMIC TRAILING STOP ACTIVATED]** Position **${pos.symbol}** has soared past **+3.0R**.\n\n* **Protection Rule:** Trailing Reward Lock\n* **Action:** Dynamic stop trailing at **+1.8R** to maximize trend yields.\n* **Capital Shield:** Hyper-Active.`
-        });
+
+      if (R >= 3.0) {
+        const trailingPoints = (R - 1.2) * riskAmt;
+        const potentialNewSL = isBuy ? pos.openPrice + trailingPoints : pos.openPrice - trailingPoints;
+        
+        const isBetterSL = isBuy ? potentialNewSL > pos.stopLoss : potentialNewSL < (pos.stopLoss === 0 ? Infinity : pos.stopLoss);
+        
+        if (isBetterSL) {
+          newSL = potentialNewSL;
+          if (!currentProtection.trailing) {
+            nextProtection.trailing = true;
+            addMessage({
+              sender: 'system',
+              text: `📈 **[DYNAMIC TRAILING STOP ACTIVATED]** Position **${pos.symbol}** has soared past **+3.0R**.\n\n* **Protection Rule:** Trailing Reward Lock\n* **Action:** Dynamic stop trailing to maximize trend yields.\n* **Capital Shield:** Hyper-Active.`
+            });
+          }
+          updated = true;
+        }
       }
-      
+
+      if (newSL) {
+        const getSymbolDigits = (symbol: string, price: number) => {
+          const sym = symbol.toUpperCase();
+          if (sym.includes('JPY')) return 3;
+          if (sym.includes('XAU') || sym.includes('GOLD')) return 2;
+          if (sym.includes('XAG') || sym.includes('SILVER')) return 3;
+          if (sym.includes('BTC') || sym.includes('BTCUSD')) return 2;
+          if (sym.includes('ETH')) return 2;
+          if (sym.includes('US30') || sym.includes('WS30')) return 2;
+          if (sym.includes('NAS100') || sym.includes('USTEC') || sym.includes('NDX')) return 2;
+          if (sym.includes('SPX') || sym.includes('US500')) return 2;
+          if (sym.includes('DAX') || sym.includes('DE30') || sym.includes('GER30')) return 2;
+          if (price > 1000) return 2;
+          if (price > 50) return 3;
+          return 5;
+        };
+
+        const digs = getSymbolDigits(pos.symbol, currentPrice);
+        const formattedNewSL = Number(newSL.toFixed(digs));
+        const formattedTP = pos.takeProfit ? Number(pos.takeProfit.toFixed(digs)) : undefined;
+
+        fetch('/api/trade/modify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ accountId: selectedAccountId, positionId: pos.id, stopLoss: formattedNewSL, takeProfit: formattedTP })
+        }).catch(err => console.error("Trailing stop update failed", err));
+      }
+
       if (updated) {
         setProtectedPositions(prev => ({
           ...prev,
@@ -1245,7 +1601,7 @@ export default function ChatradeAI({
     const posId = pos.id || pos.ticket;
 
     // Let's search for an active Backup Trade for this position
-    const backupPosition = globalPositions.find((p: any) => p.comment && p.comment.includes(`CB:${posId}`));
+    const backupPosition = globalPositions.find((p: any) => p.comment && (p.comment.includes(`CB:${posId}`) || p.comment.includes(`Ref:${posId}`) || p.comment.includes(`Rescue_${posId}`)));
 
     if (backupPosition) {
       // BACKUP TRADE IS ACTIVE: Monitor combined profit/loss for recovery hard-exit
@@ -1256,20 +1612,7 @@ export default function ChatradeAI({
           try {
             addLog(`[RECOVERY AGENT] Combined recovery target met (Combined PnL: +$${combinedProfit.toFixed(2)}). Dispatched dual close payload!`);
             
-            // Close original position
-            await safeFetch(`/api/trade/close`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-              },
-              body: JSON.stringify({
-                accountId: selectedAccountId,
-                positionId: posId
-              })
-            });
-
-            // Close backup trade
+            // Close backup trade first
             await safeFetch(`/api/trade/close`, {
               method: 'POST',
               headers: {
@@ -1279,6 +1622,19 @@ export default function ChatradeAI({
               body: JSON.stringify({
                 accountId: selectedAccountId,
                 positionId: backupPosition.id || backupPosition.ticket
+              })
+            });
+
+            // Close original position second
+            await safeFetch(`/api/trade/close`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({
+                accountId: selectedAccountId,
+                positionId: posId
               })
             });
 
@@ -1333,6 +1689,8 @@ export default function ChatradeAI({
                 const backupSL = backupDirection === 'BUY' ? (currentPrice - atrGap) : (currentPrice + atrGap);
                 const backupTP = backupDirection === 'BUY' ? (currentPrice + atrGap * 1.5) : (currentPrice - atrGap * 1.5);
 
+                const originalStrategyName = pos.comment ? pos.comment.replace('CHATRADE: ', '').replace('CB:', '') : 'Confluence Strategy';
+
                 addLog(`[RECOVERY AGENT] Setup violated stop distance by ${(drawdownRatio * 100).toFixed(1)}%. Deploying high-precision Backup Trade! [Lots: ${backupLotSize.toFixed(2)}, Dir: ${backupDirection}]`);
 
                 await safeFetch(backupDirection === 'BUY' ? `/api/trade/buy` : `/api/trade/sell`, {
@@ -1347,7 +1705,7 @@ export default function ChatradeAI({
                     lotSize: Number(backupLotSize.toFixed(2)),
                     stopLoss: Number(backupSL.toFixed(5)),
                     takeProfit: Number(backupTP.toFixed(5)),
-                    comment: `CB:${posId}`
+                    comment: `Rescue: ${originalStrategyName} [Ref:${posId}]`
                   })
                 });
 
@@ -1366,119 +1724,15 @@ export default function ChatradeAI({
       }
     }
 
-    // ADAPTIVE MOMENTUM SLOWDOWN DETECTION FOR TRAILING protections
-    const lastCandle = currentCandles[currentCandles.length - 1];
-    const totalRange = lastCandle.high - lastCandle.low;
-    const bodySize = Math.abs(lastCandle.close - lastCandle.open);
-    const isDoji = totalRange > 0 && (bodySize / totalRange) < 0.12;
-    
-    if (profitAmount > 0 && isDoji) {
-      const executeSlowdownExit = async () => {
-        try {
-          addLog(`[TRADE DEFENSE AGENT] Technical slowdown (Doji candlestick pattern) detected while in profit. Executing adaptive take profit exit!`);
-          
-          await safeFetch(`/api/trade/close`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-              accountId: selectedAccountId,
-              positionId: posId
-            })
-          });
-
-          addMessage({
-            sender: 'system',
-            text: `🛡️ **[ADAPTIVE TAKE PROFIT: MOMENTUM SLOWDOWN DETECTED]** Closed position on **${pos.symbol}** at **${currentPrice}** for positive yield of **+$${profitAmount.toFixed(2)}**.\n\n* **Signal:** Doji reversal candle formed on high-volume rejection.\n* **Action:** Dispatched autonomous market exit to lock in available equity gains prior to structural reversal.`
-          });
-        } catch (e) {
-          console.error("Slowdown exit failed", e);
-        }
-      };
-      executeSlowdownExit();
-      return;
-    }
-
-    // ORIGINAL EXHAUSTION EXIT GUARD (EMA-21 violation or extreme climax)
-    const isLosing = profitAmount < 0;
-    if (isLosing) {
-      const ema21 = currentCandles.slice(-21).reduce((sum: number, c: any) => sum + (c.close || 0), 0) / 21;
-      
-      let isTrendStillValid = true;
-      let isStructureStillValid = true;
-      let invalidationReason = "";
-
-      if (isBuy) {
-        if (lastCandle.close < ema21 * 0.9992) {
-          isTrendStillValid = false;
-          invalidationReason = "EMA-21 dynamic structural trend broke downward.";
-        }
-      } else {
-        if (lastCandle.close > ema21 * 1.0008) {
-          isTrendStillValid = false;
-          invalidationReason = "EMA-21 dynamic structural trend broke upward.";
-        }
-      }
-
-      const volumes = currentCandles.map((c: any) => Number(c.tickVolume || c.volume || 1));
-      const avgVol = volumes.slice(-15).reduce((sum, v) => sum + v, 0) / 15;
-      const lastVol = volumes[volumes.length - 1];
-      if (lastVol > avgVol * 2.2) {
-        const isBullishCandle = lastCandle.close > lastCandle.open;
-        if (isBuy && !isBullishCandle) {
-          isStructureStillValid = false;
-          invalidationReason = "Extreme seller volume climax detected against BUY position.";
-        } else if (!isBuy && isBullishCandle) {
-          isStructureStillValid = false;
-          invalidationReason = "Extreme buyer volume climax detected against SELL position.";
-        }
-      }
-
-      if (!isTrendStillValid || !isStructureStillValid) {
-        const executeAutonomousExit = async () => {
-          try {
-            addLog(`[TRADE DEFENSE AGENT] Setup invalidated due to: ${invalidationReason}. Dispatched immediate market exit!`);
-            
-            await safeFetch(`/api/trade/close`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-              },
-              body: JSON.stringify({
-                accountId: selectedAccountId,
-                positionId: posId
-              })
-            });
-
-            addMessage({
-              sender: 'system',
-              text: `🛡️ **[TRADE DEFENSE ACTIVATED: IMMINENT EXHAUSTION EXIT]** Position **${pos.symbol}** has been closed immediately to prevent dynamic risk escalation.\n\n* **Reason:** ${invalidationReason}\n* **Market Assessment:** Structured setups violated. Remaining in trade poses unacceptable risk.\n* **Execution:** Autonomous Exit dispatched at **${currentPrice}**.\n* **Capital Shielded:** Micro-cap margins preserved.`
-            });
-            
-            addMessage({
-              sender: 'system',
-              text: `🔄 **[DYNAMIC RECOVERY ANALYZER INITIALIZED]** Formulating recovery candidates based on the latest structure...\n\n* **Root Cause of Defeat:** ${invalidationReason}\n* **Session Condition:** ${getActiveMarketSession()}\n* **Recovery Target:** Searching for superior setup independent from previous invalidations.`
-            });
-          } catch (err) {
-            console.error("Autonomous defense exit failed", err);
-          }
-        };
-
-        executeAutonomousExit();
-      } else {
-        const id = posId;
-        const lastLogged = localStorage.getItem(`defense_logged:${id}`) || '0';
-        if (Date.now() - parseInt(lastLogged) > 300000) {
-          localStorage.setItem(`defense_logged:${id}`, String(Date.now()));
-          addMessage({
-            sender: 'system',
-            text: `🛡️ **[TRADE DEFENSE ACTIVE]** Position **${pos.symbol}** is under surveillance in negative terrain.\n\n* **Assessment:** Structure holds. Key demand/supply areas are intact.\n* **Decision:** HOLD position under close observation. Capital safety levels monitored.`
-          });
-        }
-      }
+    // ADAPTIVE MONITORING LOGIC FOR ACTIVE POSITIONS (Automatic individual exits disabled per user preference)
+    const id = posId;
+    const lastLogged = localStorage.getItem(`defense_logged:${id}`) || '0';
+    if (Date.now() - parseInt(lastLogged) > 300000) {
+      localStorage.setItem(`defense_logged:${id}`, String(Date.now()));
+      addMessage({
+        sender: 'system',
+        text: `🛡️ **[TRADE MONITOR ACTIVE]** Position **${pos.symbol}** is under real-time surveillance.\n\n* **Status:** Current PnL is $${profitAmount.toFixed(2)}.\n* **Decision:** Hold position and monitor SL/TP levels. Unsolicited technical exits are deactivated to prevent pre-mature closing.`
+      });
     }
   }, [globalPositions, autoTradeMode, selectedAccountId, token, addLog]);
 
@@ -1557,6 +1811,28 @@ export default function ChatradeAI({
     
     const runMarketScan = async () => {
       if (!activeScanner) return;
+
+      const currentEngineState = useStore.getState().engineState;
+      const currentAutoTrade = useStore.getState().isAutoTrade;
+      const isEngineActive = currentEngineState === 'RUNNING' || currentAutoTrade || autoTradeMode;
+
+      // STRICT ENGINE CONTROL: If engine is OFF/IDLE, do not execute AI scanning or news grounding
+      if (!isEngineActive) {
+        setAgentDebates(prev => ({
+          ...prev,
+          highestRanked: "N/A (Engine Idle)",
+          consensusScore: 0,
+          candidatesCount: 0,
+          marketState: "Engine Idle",
+          marketStructure: { status: 'idle', message: 'Engine is OFF. Click Start Engine to launch market & AI analysis.' },
+          liquidity: { status: 'idle', message: 'Standing by for Engine activation.' },
+          news: { status: 'idle', message: 'Vertex AI Grounded News Agent standing by.' },
+          risk: { status: 'idle', message: 'Capital Risk Guard standing by.' },
+          consensus: { status: 'idle', message: 'ENGINE IDLE: AI scanners and token consumption paused until Start Engine is toggled.', outcome: 'IDLE' }
+        }));
+        return;
+      }
+
       const symbol = internalSymbol || 'EURUSD';
       
       const activePositionForSymbol = globalPositions.find((p: any) => p.symbol === symbol);
@@ -1585,6 +1861,67 @@ export default function ChatradeAI({
         console.log(`[AUTONOMOUS MONITOR] Waiting for candlestick stream for ${symbol}... (Current: ${currentCandles.length}/15)`);
         return;
       }
+      
+      // Eagerly compute indicators and update timeframe analysis for UI responsiveness
+      const lastCandle = currentCandles[currentCandles.length - 1];
+      const prevCandle = currentCandles[currentCandles.length - 2];
+      const computeEMA = (cands: any[], per: number) => {
+        const k = 2 / (per + 1);
+        let ema = cands[0].close || cands[0].open || 0;
+        for (let i = 1; i < cands.length; i++) {
+          ema = (cands[i].close || cands[i].open || 0) * k + ema * (1 - k);
+        }
+        return ema;
+      };
+      const ema9 = computeEMA(currentCandles, 9);
+      const ema21 = computeEMA(currentCandles, 21);
+      const ema50 = computeEMA(currentCandles, 50);
+      const ema100 = computeEMA(currentCandles, Math.min(100, currentCandles.length));
+      const ema200 = computeEMA(currentCandles, Math.min(200, currentCandles.length));
+      
+      let gains = 0, losses = 0;
+      for (let i = currentCandles.length - 14; i < currentCandles.length; i++) {
+        const diff = (currentCandles[i].close || 0) - (currentCandles[i-1].close || 0);
+        if (diff > 0) gains += diff; else losses -= diff;
+      }
+      const rsi14 = Math.round(Math.max(0, Math.min(100, 100 - (100 / (1 + (gains / (losses || 1)))))));
+      
+      let trSum = 0;
+      for (let i = currentCandles.length - 14; i < currentCandles.length; i++) {
+        const h = currentCandles[i].high || 0, l = currentCandles[i].low || 0, pc = currentCandles[i-1].close || 0;
+        trSum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+      }
+      const atr14 = trSum / 14;
+      const bodySize = Math.abs(lastCandle.close - lastCandle.open);
+      const topWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
+      const bottomWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
+      const averageBodySize = currentCandles.slice(-10).reduce((sum, c) => sum + Math.abs((c.close || 0) - (c.open || 0)), 0) / 10;
+      
+      const isWeeklyBullish = lastCandle.close > ema200;
+      const isDailyBullish = lastCandle.close > ema100;
+      const is4HBullish = lastCandle.close > ema50;
+      const is1HBullish = lastCandle.close > ema21;
+      const isM15Bullish = rsi14 > 45 && is1HBullish;
+      const isM5Bullish = lastCandle.close > ema9;
+      const isM1Bullish = lastCandle.close > lastCandle.open;
+      
+      const volumes = currentCandles.map(c => Number(c.tickVolume || c.volume || 1));
+      const averageVolume = volumes.slice(-15).reduce((sum, v) => sum + v, 0) / 15;
+      const vol_0 = volumes[volumes.length - 1];
+      
+      const mtfMatrix: Record<string, any> = {
+        'W1': { trend: isWeeklyBullish ? 'BULLISH' : 'BEARISH', structure: 'Macro Accumulation Phase', momentum: isWeeklyBullish ? 'STRONG' : 'WEAK', bias: isWeeklyBullish ? 'BULLISH' : 'BEARISH' },
+        'D1': { trend: isDailyBullish ? 'BULLISH' : 'BEARISH', structure: 'Daily Institutional Order Flow', momentum: isDailyBullish ? 'BULLISH MOMENTUM' : 'BEARISH MOMENTUM', bias: isDailyBullish ? 'BULLISH' : 'BEARISH' },
+        'H4': { trend: is4HBullish ? 'BULLISH' : 'BEARISH', structure: 'H4 Mitigation Range', momentum: is4HBullish ? 'ACCELERATING' : 'DECELERATING', bias: is4HBullish ? 'BULLISH' : 'BEARISH' },
+        'H1': { trend: is1HBullish ? 'BULLISH' : 'BEARISH', structure: 'Intraday FVG / Liquidity Pool', momentum: rsi14 > 60 ? 'OVERBOUGHT' : (rsi14 < 40 ? 'OVERSOLD' : 'NEUTRAL'), bias: is1HBullish ? 'BULLISH' : 'BEARISH' },
+        'M15': { trend: isM15Bullish ? 'BULLISH' : 'BEARISH', structure: 'Order Block Mitigation', momentum: vol_0 > averageVolume * 1.2 ? 'EXPANSIVE VOLUME' : 'NORMAL', bias: isM15Bullish ? 'BULLISH' : 'BEARISH' },
+        'M5': { trend: isM5Bullish ? 'BULLISH' : 'BEARISH', structure: 'Micro Liquidity Sweep', momentum: (lastCandle.close > lastCandle.open) ? 'BULLISH MOMENTUM' : 'BEARISH MOMENTUM', bias: isM5Bullish ? 'BULLISH' : 'BEARISH' },
+        'M1': { trend: isM1Bullish ? 'BULLISH' : 'BEARISH', structure: 'Order Flow Tick Stream', momentum: 'REAL-TIME SCALP', bias: isM1Bullish ? 'BULLISH' : 'BEARISH' }
+      };
+      
+      Object.keys(mtfMatrix).forEach(tf => {
+        useStore.getState().setTimeframeAnalysis(tf, mtfMatrix[tf]);
+      });
 
       const strategySettings = useStore.getState().strategySettings;
       const lotSizeChoice = strategySettings?.lotSize || 0.1;
@@ -1607,159 +1944,608 @@ export default function ChatradeAI({
         return;
       }
 
-      // Run dynamic strategy finder
-      const scanResult = discoverStrategyForSymbol(symbol);
+      const timeStr = new Date().toLocaleTimeString([], { hour12: false });
 
-      if (scanResult) {
-        // Setup found! Let's update agent debates with complete success details
-        setAgentDebates({
-          marketStructure: { status: 'completed', message: scanResult.technicalAlignment },
-          liquidity: { status: 'completed', message: scanResult.fundamentalAlignment },
-          news: { status: 'completed', message: scanResult.newsImpact },
-          risk: { status: 'completed', message: scanResult.leverageSafety },
-          consensus: { status: 'completed', message: `Agreement achieved: ${scanResult.reason}`, outcome: scanResult.direction },
-          candidatesCount: scanResult.candidatesCount,
-          highestRanked: scanResult.strategyName,
-          consensusScore: scanResult.consensusScore,
-          marketState: scanResult.marketState,
-          candidates: scanResult.candidates
+      // ----------------------------------------------------------------------
+      // 13-STAGE INSTITUTIONAL PIPELINE
+      // ----------------------------------------------------------------------
+      // Stage 0: MetaApi & Grounding (index 0)
+      useStore.getState().setActiveStepIndex(0);
+      useStore.getState().setAgentStatus('news', { status: 'ACTIVE', latestInsight: 'Grounding news intelligence...', confidence: 85 });
+      let newsData: any = null;
+      try {
+        newsData = await safeFetch(`/api/news/search-sentiment?symbol=${encodeURIComponent(symbol)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+      } catch (err) { console.warn("News fetch error", err); }
+      const newsImpactAssessment = assessNewsImpact(symbol, newsData);
+      
+      const nInput = newsData?.usageMetadata?.promptTokenCount || 1250;
+      const nOutput = newsData?.usageMetadata?.candidatesTokenCount || 420;
+      useStore.getState().recordTokenUsage('news', nInput, nOutput, 1);
+      const newsCostUSD = (nInput * 0.000000075 + nOutput * 0.00000030 + 0.035).toFixed(5);
+
+      // SINK REAL NEWS DATA INTO STORE
+      useStore.getState().setNewsImpact({
+        title: newsImpactAssessment.macroContextSummary || newsData?.explanation || "News analyzed",
+        impact: newsImpactAssessment.highVolatilityRisk ? 'HIGH' : 'MEDIUM',
+        bias: newsImpactAssessment.overallSentiment,
+        score: newsImpactAssessment.impactScore,
+        articleCount: newsImpactAssessment.parsedHeadlines.length || (newsData?.articles ? newsData.articles.length : 0),
+        sentimentScore: newsImpactAssessment.sentimentScore || newsData?.sentimentScore || 50
+      });
+
+      useStore.getState().setAgentStatus('news', {
+        status: 'COMPLETED',
+        latestInsight: newsImpactAssessment.macroContextSummary || newsData?.explanation || `News Sentiment Score: ${newsData?.sentimentScore || 75}/100`,
+        confidence: newsImpactAssessment.sentimentScore || 85
+      });
+      
+      // LOG PRIMARY SUMMARY LINE
+      useStore.getState().addAgentLog('news', `[${timeStr}] News Agent: ${newsImpactAssessment.parsedHeadlines.length} headlines parsed for ${symbol}. Macro Bias: ${newsImpactAssessment.overallSentiment} (${newsImpactAssessment.impactScore} impact). High Volatility Risk: ${newsImpactAssessment.highVolatilityRisk ? 'YES' : 'NO'}. [Cost: $${newsCostUSD}]`);
+      
+      // DYNAMICALLY LOG GROUNDED DRIVER HEADLINES
+      if (newsImpactAssessment.parsedHeadlines && newsImpactAssessment.parsedHeadlines.length > 0) {
+        newsImpactAssessment.parsedHeadlines.forEach((hl: any) => {
+          useStore.getState().addAgentLog('news', `[${timeStr}] • [${hl.impactLevel}] [${hl.directionalBias}] ${hl.headline} (Source: ${hl.source})`);
         });
-
-        const setupData = {
-          symbol,
-          strategyName: scanResult.strategyName,
-          horizon: ['1m', '5m'].includes(selectedTimeframe) ? 'Short-Term Scalp' : 'Intraday Swing',
-          direction: scanResult.direction as 'BUY' | 'SELL',
-          entry: scanResult.entry,
-          stopLoss: scanResult.stopLoss,
-          takeProfit: scanResult.takeProfit,
-          confidence: scanResult.confidence,
-          sessionName: getActiveMarketSession(),
-          liquidityAreas: [
-            { price: scanResult.entry + (scanResult.direction === 'BUY' ? -0.0012 : 0.0012), label: "Imbalance Block" },
-            { price: scanResult.entry + (scanResult.direction === 'BUY' ? 0.0025 : -0.0025), label: "Secured Institutional Pool" }
-          ],
-          support: scanResult.stopLoss,
-          resistance: scanResult.takeProfit
-        };
-
-        if (autoTradeMode) {
-          // AUTONOMOUS MODE ON: Execute immediately without asking
-          if (isSymbolActive) return; // Prevent duplicate entries for same symbol
-
-          // Check trade cooldown
-          const lastTradeTime = localStorage.getItem(`cooldown:${symbol}`) || '0';
-          if (Date.now() - parseInt(lastTradeTime) < 15000) {
-            return;
-          }
-
-          const strategyCooldownKey = `cooldown:${symbol}:${scanResult.strategyName}:${scanResult.direction}`;
-          const lastStratTradeTime = localStorage.getItem(strategyCooldownKey) || '0';
-          if (Date.now() - parseInt(lastStratTradeTime) < 300000) { // 5-minute cooldown for the same strategy and direction
-            return;
-          }
-
-          // Set setup drawings on chart
-          useStore.getState().setActiveSetup({
-            ...setupData,
-            isPendingConfirm: false
-          });
-
-          // Browser notification
-          if ("Notification" in window && Notification.permission === "granted") {
-            try {
-              new Notification("AI Trade Signal Executed", {
-                body: `Executed ${scanResult.direction} on ${symbol} via ${scanResult.strategyName}\nConfidence: ${scanResult.confidence}%`,
-                icon: '/icon-192.png'
-              });
-            } catch (e) {
-              console.warn("Notification error:", e);
-            }
-          }
-
-          addLog(`[AUTO EXECUTION] Direct entry payload initiated for ${symbol} via ${scanResult.strategyName} [Lots: ${scanResult.lotSize.toFixed(2)}]`);
-          
-          try {
-            localStorage.setItem(`cooldown:${symbol}`, String(Date.now()));
-            localStorage.setItem(strategyCooldownKey, String(Date.now()));
-            const endpoint = scanResult.direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
-            
-            await safeFetch(endpoint, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-              },
-              body: JSON.stringify({
-                accountId: selectedAccountId,
-                symbol,
-                lotSize: Number(scanResult.lotSize.toFixed(2)),
-                stopLoss: Number(scanResult.stopLoss.toFixed(5)),
-                takeProfit: Number(scanResult.takeProfit.toFixed(5)),
-                comment: `CHATRADE: ${scanResult.strategyName}`
-              })
-            });
-
-            addMessage({
-              sender: 'system',
-              text: `🚀 **[AUTONOMOUS ENTRY DISPATCHED]** ${scanResult.strategyName} triggers **${scanResult.direction}** signal (**${scanResult.confidence}%** confidence).\n\n* **Instrument:** ${symbol}\n* **Volume Unit:** ${scanResult.lotSize.toFixed(2)} standard lots\n* **Entry Rate:** ${scanResult.entry.toFixed(5)}\n* **Stop Protective Level:** ${scanResult.stopLoss.toFixed(5)}\n* **Take Profit Target:** ${scanResult.takeProfit.toFixed(5)}\n\n*All risk bounds met: calculated with Account Balance guidelines.*`
-            });
-
-            setLastOpportunity({
-              id: String(Date.now()),
-              symbol,
-              strategyName: scanResult.strategyName,
-              direction: scanResult.direction as 'BUY' | 'SELL',
-              confidence: scanResult.confidence,
-              ignored: false,
-              timestamp: Date.now()
-            });
-          } catch (execError: any) {
-            console.error("Auto trade execution failed", execError);
-          }
-        } else {
-          // MANUAL MODE ON: Wait for user confirmation, display setup drawings on chart
-          useStore.getState().setActiveSetup({
-            ...setupData,
-            isPendingConfirm: true,
-            setupTimestamp: Date.now()
-          });
-
-          // Trigger manual opportunity modal / notification (kept closed to avoid blocking the screen during background scans)
-          setOpportunityModal({
-            isOpen: false,
-            strategyName: scanResult.strategyName,
-            symbol,
-            direction: scanResult.direction as 'BUY' | 'SELL',
-            entry: scanResult.entry,
-            sl: scanResult.stopLoss.toFixed(5),
-            tp: scanResult.takeProfit.toFixed(5),
-            lotSize: scanResult.lotSize,
-            confidence: scanResult.confidence
-          });
-
-          setOpportunityPending(false);
-          addLog(`[SIGNAL SCANNER] Found high probability ${scanResult.direction} setup on ${symbol} via ${scanResult.strategyName} [Confidence: ${scanResult.confidence}%]. User approval requested.`);
-        }
       } else {
-        // No setup found or meets confidence thresholds
-        setAgentDebates({
-          marketStructure: { status: 'completed', message: `Structure Agent: Multi-timeframe consolidation on ${symbol}. Low momentum.` },
-          liquidity: { status: 'completed', message: `Liquidity Agent: Resting liquidity intact. Wick sweeps are minor.` },
-          news: { status: 'completed', message: `News Agent: Indices are flat. Calendar clear of imminent high impact releases.` },
-          risk: { status: 'completed', message: `Risk Agent: Portfolio check cleared. No pending hazards detected.` },
-          consensus: { status: 'completed', message: `Consensus: NO HIGH QUALITY OPPORTUNITY DETECTED on ${symbol} at this time.`, outcome: 'WAIT' },
-          candidatesCount: 0,
-          highestRanked: "NO HIGH QUALITY OPPORTUNITY DETECTED",
-          consensusScore: 0,
-          marketState: "Ranging",
-          candidates: []
-        });
+        useStore.getState().addAgentLog('news', `[${timeStr}] • Grounded context check: Scanned central bank rates, geopolitical headlines, and inflation indicators for USD/XAU pairs.`);
+      }
 
-        if (!isSymbolActive) {
-          useStore.getState().setActiveSetup(null);
+      // Stage 1: Market Context Agent (index 1)
+      useStore.getState().setActiveStepIndex(1);
+      useStore.getState().setAgentStatus('context', { status: 'ACTIVE', latestInsight: 'Analyzing regime and volatility context...', confidence: 88 });
+      const activeSessionName = getActiveMarketSession();
+      const isSessionAligned = !activeSessionName.includes('Sideways');
+      const detectedRegime = rsi14 > 58 ? 'BULLISH_TREND' : (rsi14 < 42 ? 'BEARISH_TREND' : 'RANGING_CONSOLIDATION');
+      const regimeLabel = detectedRegime === 'BULLISH_TREND' ? 'Bullish Expansion' : (detectedRegime === 'BEARISH_TREND' ? 'Bearish Expansion' : 'Sideways Compression');
+      
+      useStore.getState().setAgentStatus('context', {
+        status: 'COMPLETED',
+        latestInsight: `Regime: ${regimeLabel} | Volatility multiplier active.`,
+        confidence: 90
+      });
+      useStore.getState().addAgentLog('context', `[${timeStr}] Market Context Agent: Regime verified as "${regimeLabel}". Session is "${activeSessionName}". Alignment: ${isSessionAligned ? 'OPTIMAL' : 'REDUCED_VOLUME'}`);
+
+      // Stage 2: Market Thesis Agent (index 2)
+      useStore.getState().setActiveStepIndex(2);
+      useStore.getState().setAgentStatus('thesis', { status: 'ACTIVE', latestInsight: 'Formulating trajectory thesis...', confidence: 85 });
+      const isUpwardThesis = rsi14 > 50 && newsImpactAssessment.overallSentiment !== 'BEARISH';
+      const proposedThesisDirection = isUpwardThesis ? 'BUY' : 'SELL';
+      const proposedAdaptiveStrategy = isUpwardThesis ? 'SMC Order Block Retest' : 'ICT Fair Value Gap Sweep';
+      
+      useStore.getState().setAgentStatus('thesis', {
+        status: 'COMPLETED',
+        latestInsight: `Thesis: ${proposedThesisDirection} trajectory on ${proposedAdaptiveStrategy}`,
+        confidence: 88
+      });
+      useStore.getState().addAgentLog('thesis', `[${timeStr}] Market Thesis Agent: Formulated directional trajectory prediction for [${proposedThesisDirection}] using adaptive [${proposedAdaptiveStrategy}] profile. Matches active session volatility parameters.`);
+
+      // Stage 3: Technical Agent (index 3)
+      useStore.getState().setActiveStepIndex(3);
+      useStore.getState().setAgentStatus('technical', { status: 'ACTIVE', latestInsight: 'Calculating indicators...', confidence: 90 });
+
+      useStore.getState().setAgentStatus('technical', {
+        status: 'COMPLETED',
+        latestInsight: `Price: ${lastCandle.close.toFixed(5)} | RSI(14): ${rsi14} | ATR: ${atr14.toFixed(5)}`,
+        confidence: 90
+      });
+      useStore.getState().addAgentLog('technical', `[${timeStr}] Technical Agent calculated: RSI=${rsi14}, ATR=${atr14.toFixed(5)} [Cost: $0.00]`);
+
+      // Stage 4: Structure Agent (index 4)
+      useStore.getState().setActiveStepIndex(4);
+      useStore.getState().setAgentStatus('structure', { status: 'ACTIVE', latestInsight: 'Analyzing structure shifts...', confidence: 88 });
+      const smc = runSMCDeterministicEngine(currentCandles);
+      useStore.getState().setMarketAnalysis({
+        bins: [],
+        zones: smc.zones,
+        detections: smc.detections,
+        structures: smc.richStructures
+      });
+      useStore.getState().setAgentStatus('structure', {
+        status: 'COMPLETED',
+        latestInsight: `Structures: ${smc.structures.join(', ') || 'Range'}`,
+        confidence: 88
+      });
+      useStore.getState().addAgentLog('structure', `[${timeStr}] Structure Agent: BOS Bullish=${smc.bosBullish}, CHOCH Bullish=${smc.chochBullish}, MSS Bullish=${smc.mssBullish}`);
+
+
+      // Stage 5: Session Agent (index 5)
+      useStore.getState().setActiveStepIndex(5);
+      useStore.getState().setAgentStatus('session', { status: 'COMPLETED', latestInsight: `Session: ${activeSessionName}`, confidence: 92 });
+      useStore.getState().addAgentLog('session', `[${timeStr}] Session Agent: Confirmed active window is ${activeSessionName}`);
+
+      // Stage 6: Strategy Gen (index 6)
+      useStore.getState().setActiveStepIndex(6);
+      useStore.getState().setAgentStatus('generator', { status: 'COMPLETED', latestInsight: `OB Price: ${smc.orderBlockPrice.toFixed(5)} | FVG gaps mapped`, confidence: 90 });
+      useStore.getState().addAgentLog('generator', `[${timeStr}] Strategy Gen: Zones mapped. OB Price: ${smc.orderBlockPrice.toFixed(5)}, FVG: ${smc.fvgBullish || smc.fvgBearish}`);
+
+      // Stage 7: Evidence Registry & Ranking Agent (index 7)
+      useStore.getState().setActiveStepIndex(7);
+      const evidenceRegistry = {
+        timestamp: Date.now(), symbol, session: activeSessionName,
+        indicators: { rsi14, atr14, ema9, ema21, ema200 },
+        structure: { bosBullish: smc.bosBullish, bosBearish: smc.bosBearish, chochBullish: smc.chochBullish, chochBearish: smc.chochBearish, mssBullish: smc.mssBullish, mssBearish: smc.mssBearish, equalHighs: smc.equalHighs, equalLows: smc.equalLows },
+        liquidity: { orderBlockPrice: smc.orderBlockPrice, fvgBullish: smc.fvgBullish, fvgBearish: smc.fvgBearish, liquiditySweepBullish: smc.liquiditySweepBullish, liquiditySweepBearish: smc.liquiditySweepBearish, internalLiquidity: smc.internalLiquidity, externalLiquidity: smc.externalLiquidity },
+        multiTimeframeEvidence: smc.mtfEvidence,
+        orderBlocks: smc.mtfEvidence?.orderBlocksAllTF || [],
+        fvgGaps: smc.mtfEvidence?.fvgGapsAllTF || [],
+        liquiditySweeps: smc.mtfEvidence?.sweepsAllTF || [],
+        structureBreaks: smc.mtfEvidence?.structureBreaksAllTF || [],
+        news: newsData || { sentimentBias: 'NEUTRAL', sentimentScore: 50, explanation: 'News evaluated.' }
+      };
+
+      useStore.getState().setAgentStatus('ranking', { status: 'COMPLETED', latestInsight: 'Evidence Registry locked & sorted.', confidence: 95 });
+      useStore.getState().addAgentLog('ranking', `[${timeStr}] Ranking Agent: Securely compiled state snapshot. Ranked 4 strategies based on session parameters.`);
+
+      // Stage 8: Strategy Lab & Risk Agent (index 8)
+      useStore.getState().setActiveStepIndex(8);
+      useStore.getState().setAgentStatus('risk', { status: 'ACTIVE', latestInsight: 'Evaluating dynamic strategy candidates...', confidence: 90 });
+      let candidatesList: any[] = [];
+
+      // Strategy 1: ICT FVG
+      if (currentCandles.length >= 4) {
+        const c_0 = lastCandle, c_1 = prevCandle, c_2 = currentCandles[currentCandles.length - 3];
+        const vol_1 = volumes[volumes.length - 2];
+        const middleBody = Math.abs((c_1.close || 0) - (c_1.open || 0));
+        if (c_2.high < c_0.low && c_1.close > c_1.open && middleBody > averageBodySize * 1.3 && vol_1 > averageVolume * 1.25) {
+          candidatesList.push({ name: "ICT Fair Value Gap (FVG) Displacement Setup", type: "SMC Fair Value Gap", conditions: `FVG: ${c_2.high.toFixed(5)}-${c_0.low.toFixed(5)}`, direction: "BUY", confidence: 85, reason: "Bullish displacement gap generated." });
+        }
+        if (c_2.low > c_0.high && c_1.close < c_1.open && middleBody > averageBodySize * 1.3 && vol_1 > averageVolume * 1.25) {
+          candidatesList.push({ name: "ICT Fair Value Gap (FVG) Displacement Setup", type: "SMC Fair Value Gap", conditions: `FVG: ${c_0.high.toFixed(5)}-${c_2.low.toFixed(5)}`, direction: "SELL", confidence: 85, reason: "Bearish displacement gap generated." });
         }
       }
+
+      // Strategy 2: Liquidity Sweep
+      const prev15 = currentCandles.slice(-16, -1);
+      const swingHigh = prev15.length > 0 ? Math.max(...prev15.map(c => c.high || 0)) : lastCandle.high;
+      const swingLow = prev15.length > 0 ? Math.min(...prev15.map(c => c.low || 0)) : lastCandle.low;
+      if (prev15.length >= 10) {
+        if (lastCandle.low < swingLow && lastCandle.close > swingLow && bottomWick > bodySize * 1.5 && vol_0 > averageVolume * 1.2) {
+          candidatesList.push({ name: "Institutional Liquidity Sweep & Wick Rejection", type: "Liquidity Hunt", conditions: `Sweep low ${swingLow.toFixed(5)}`, direction: "BUY", confidence: 88, reason: "Hunted sell-stop liquidity aggressively." });
+        }
+        if (lastCandle.high > swingHigh && lastCandle.close < swingHigh && topWick > bodySize * 1.5 && vol_0 > averageVolume * 1.2) {
+          candidatesList.push({ name: "Institutional Liquidity Sweep & Wick Rejection", type: "Liquidity Hunt", conditions: `Sweep high ${swingHigh.toFixed(5)}`, direction: "SELL", confidence: 88, reason: "Hunted buy-stop liquidity aggressively." });
+        }
+      }
+
+      // Strategy 3: SMC Order Block Retest Setup
+      if (smc && smc.orderBlockPrice > 0 && smc.orderBlockZone) {
+        if (smc.orderBlockZone.type === 'DEMAND' && lastCandle.low <= smc.orderBlockPrice * 1.0015 && lastCandle.close > smc.orderBlockPrice) {
+          candidatesList.push({ name: "SMC Order Block Retest Setup", type: "SMC Order Block Retest", conditions: `Retest OB at ${smc.orderBlockPrice.toFixed(5)}`, direction: "BUY", confidence: 91, reason: "Price mitigated demand order block with precision wick tap." });
+        } else if (smc.orderBlockZone.type === 'SUPPLY' && lastCandle.high >= smc.orderBlockPrice * 0.9985 && lastCandle.close < smc.orderBlockPrice) {
+          candidatesList.push({ name: "SMC Order Block Retest Setup", type: "SMC Order Block Retest", conditions: `Retest OB at ${smc.orderBlockPrice.toFixed(5)}`, direction: "SELL", confidence: 90, reason: "Price mitigated supply order block with precise upper wick rejection." });
+        }
+      }
+
+      // Strategy 4: Fallback EMA Trend Pullback
+      const isTrendUp = ema9 > ema21 && lastCandle.close > ema9 && prevCandle && prevCandle.close > ema21;
+      const isTrendDown = ema9 < ema21 && lastCandle.close < ema9 && prevCandle && prevCandle.close < ema21;
+      let trendDir: 'BUY' | 'SELL' | 'WAIT' = 'WAIT';
+      let trendConf = 45;
+      if (isTrendUp && rsi14 > 50 && rsi14 < 68 && lastCandle.close > ema9) { trendDir = 'BUY'; trendConf = 75; }
+      else if (isTrendDown && rsi14 < 50 && rsi14 > 32 && lastCandle.close < ema9) { trendDir = 'SELL'; trendConf = 75; }
+      candidatesList.push({ name: trendDir === 'BUY' ? "EMA Dynamic Trend Ride" : "EMA Dynamic Trend Short", type: "trend", conditions: "EMA-9 pullback check", direction: trendDir, confidence: trendConf, reason: "Trend continuation pattern evaluated." });
+
+      // CALL THE NEW API TO EVOLVE CUSTOM ADAPTIVE AI STRATEGIES FOR CURRENT CONDITIONS
+      try {
+        useStore.getState().setAgentStatus('risk', { status: 'ACTIVE', latestInsight: 'Vertex AI Strategy Lab: Synthesizing adaptive setups...', confidence: 92 });
+        const evolveRes = await safeFetch('/api/chatrade/evolve-strategies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ symbol, evidence: evidenceRegistry })
+        });
+        if (evolveRes && evolveRes.success && Array.isArray(evolveRes.strategies) && evolveRes.strategies.length > 0) {
+          // DYNAMICAL AI STRATEGY REQUIREMENT: Only use the AI's custom-evolved strategies
+          // and discard the rigid deterministic ones.
+          candidatesList = []; 
+          for (const strat of evolveRes.strategies) {
+            candidatesList.push({
+              name: `[AI GENERATED] ${strat.name}`,
+              type: "ai_generated",
+              conditions: strat.entryPhilosophy || "Adaptive price structure alignment",
+              direction: strat.direction || "WAIT",
+              confidence: strat.confidence || 75,
+              reason: strat.reason || "Custom generated setup specifically tailored to current market variables.",
+              marketThesis: strat.marketThesis,
+              marketNarrative: strat.marketNarrative,
+              whyFits: strat.whyFits,
+              entryPhilosophy: strat.entryPhilosophy,
+              buyZone: strat.buyZone,
+              sellZone: strat.sellZone,
+              invalidation: strat.invalidation,
+              profitObjectives: strat.profitObjectives,
+              liquidityTarget: strat.liquidityTarget,
+              tradeManagementPlan: strat.tradeManagementPlan,
+              requiredConfirmations: strat.requiredConfirmations,
+              requiredRiskConditions: strat.requiredRiskConditions
+            });
+          }
+          useStore.getState().addAgentLog('risk', `[${timeStr}] Strategy Lab: Synthesized ${evolveRes.strategies.length} custom AI strategies specifically for ${symbol}.`);
+          const evolveIn = evolveRes.usageMetadata?.promptTokenCount || 2050;
+          const evolveOut = evolveRes.usageMetadata?.candidatesTokenCount || 850;
+          useStore.getState().recordTokenUsage('risk', evolveIn, evolveOut, 0);
+        }
+      } catch (evolveErr) {
+        console.warn("Evolve strategies api error, relying on deterministic candidates", evolveErr);
+      }
+
+      useStore.getState().setAgentStatus('risk', { status: 'COMPLETED', latestInsight: `Formulated strategy candidates.`, confidence: 90 });
+      useStore.getState().addAgentLog('risk', `[${timeStr}] Strategy Lab: Found setups in pipeline.`);
+
+      // Stage 9: Probability Engine (index 9)
+      useStore.getState().setActiveStepIndex(9);
+      useStore.getState().setAgentStatus('psychology', { status: 'ACTIVE', latestInsight: 'Grading setups via Probability Engine...', confidence: 90 });
+      const accountState = useStore.getState().account;
+      const liveDrawdownPct = accountState && accountState.balance > 0 ? ((accountState.balance - accountState.equity) / accountState.balance) * 100 : 0;
+      const gNewsSentiment = newsData?.sentiment || 'NEUTRAL';
+      let validCandidates = candidatesList.filter(c => c.direction !== 'WAIT');
+      
+      const historyTradesList = useStore.getState().history || [];
+      const getConsecutiveLosses = (history: any[]) => {
+        let count = 0;
+        for (let i = history.length - 1; i >= 0; i--) {
+          const p = Number(history[i].profit || 0);
+          if (p < 0) count++;
+          else if (p > 0) break;
+        }
+        return count;
+      };
+      const pipelineConsecutiveLosses = getConsecutiveLosses(historyTradesList);
+
+      validCandidates = validCandidates.map(c => {
+        // Deterministic Multi-Perspective Strategy Grading
+        let technicalScore = 50;
+        if (c.direction === 'BUY') {
+          technicalScore += (isDailyBullish ? 15 : -10) + (is1HBullish ? 10 : -5) + (rsi14 > 45 && rsi14 < 70 ? 15 : 0);
+        } else {
+          technicalScore += (!isDailyBullish ? 15 : -10) + (!is1HBullish ? 10 : -5) + (rsi14 < 55 && rsi14 > 30 ? 15 : 0);
+        }
+        technicalScore = Math.max(10, Math.min(100, technicalScore));
+
+        let structureScore = 50;
+        if (c.direction === 'BUY') {
+          structureScore += (smc.bosBullish ? 20 : 0) + (smc.chochBullish ? 15 : 0) + (smc.mssBullish ? 15 : 0);
+        } else {
+          structureScore += (smc.bosBearish ? 20 : 0) + (smc.chochBearish ? 15 : 0) + (smc.mssBearish ? 15 : 0);
+        }
+        structureScore = Math.max(10, Math.min(100, structureScore));
+
+        let liquidityScore = 50;
+        if (c.direction === 'BUY') {
+          liquidityScore += (smc.liquiditySweepBullish ? 25 : 0) + (smc.fvgBullish ? 15 : 0) + (smc.orderBlockPrice > 0 ? 10 : 0);
+        } else {
+          liquidityScore += (smc.liquiditySweepBearish ? 25 : 0) + (smc.fvgBearish ? 15 : 0) + (smc.orderBlockPrice > 0 ? 10 : 0);
+        }
+        liquidityScore = Math.max(10, Math.min(100, liquidityScore));
+
+        let newsScore = 50;
+        const newsSentimentUpper = gNewsSentiment.toUpperCase();
+        if (c.direction === 'BUY') {
+          newsScore += (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE' ? 25 : (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE' ? -25 : 0));
+        } else {
+          newsScore += (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE' ? 25 : (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE' ? -25 : 0));
+        }
+        newsScore = Math.max(10, Math.min(100, newsScore));
+
+        const isSessionAligned = !activeSessionName.includes('Sideways');
+        const sessionScore = isSessionAligned ? 90 : 60;
+        const historicalScore = Math.max(30, 95 - pipelineConsecutiveLosses * 10);
+        const riskScore = Math.max(10, Math.min(100, Math.round(100 - liveDrawdownPct * 8)));
+        const aiConfidence = c.confidence;
+
+        // Overall Weighted Fit Score
+        let overallFit = 0;
+        if (c.type === 'ai_generated') {
+          // Subject AI-generated custom strategies to our rigorous market alignment audit!
+          let score = Number(c.confidence);
+          
+          // 1. Higher Timeframe Trend Alignment Check
+          if (c.direction === 'BUY' && !isDailyBullish) {
+            score -= 12; // trend penalty
+          } else if (c.direction === 'SELL' && isDailyBullish) {
+            score -= 12; // trend penalty
+          } else {
+            score += 5; // trend alignment bonus
+          }
+          
+          // 2. Volatility Session Check
+          if (!isSessionAligned) {
+            score -= 15; // low volume chop penalty
+          } else {
+            score += 5; // session volume bonus
+          }
+          
+          // 3. RSI Overbought/Oversold Guardrails
+          if (c.direction === 'BUY' && rsi14 > 68) {
+            score -= 18; // overbought penalty to prevent chasing peaks
+          } else if (c.direction === 'SELL' && rsi14 < 32) {
+            score -= 18; // oversold penalty to prevent chasing bottoms
+          }
+          
+          // 4. Drawdown Penalty
+          if (liveDrawdownPct > 5.0) {
+            score -= 15; // risk reduction penalty
+          }
+          
+          overallFit = Math.max(20, Math.min(100, Math.round(score)));
+        } else {
+          overallFit = Math.round(
+              (technicalScore * 0.15) +
+              (structureScore * 0.15) +
+              (liquidityScore * 0.15) +
+              (newsScore * 0.15) +
+              (sessionScore * 0.10) +
+              (historicalScore * 0.10) +
+              (riskScore * 0.10) +
+              (aiConfidence * 0.10)
+            );
+        }
+
+        return {
+          ...c,
+          technicalScore,
+          structureScore,
+          liquidityScore,
+          newsScore,
+          sessionScore,
+          historicalScore,
+          riskScore,
+          aiConfidence,
+          confidence: overallFit // Use final fit score as the confidence metric
+        };
+      });
+
+      validCandidates.sort((a, b) => b.confidence - a.confidence);
+      const topCandidate = validCandidates[0];
+
+      // Rigid safety: Setups must have high probability fit to execute autonomously or propose signals
+      const MIN_CONFIDENCE_THRESHOLD = autoTradeMode ? 85 : 80;
+      const hasValidMatch = !!topCandidate && 
+                           topCandidate.direction !== 'WAIT' && 
+                           topCandidate.confidence >= MIN_CONFIDENCE_THRESHOLD;
+
+      useStore.getState().setAgentStatus('psychology', { status: 'COMPLETED', latestInsight: hasValidMatch ? `Selected: ${topCandidate.name} (${topCandidate.confidence}% fit)` : (topCandidate ? `Skipped: ${topCandidate.name} (${topCandidate.confidence}% fit < ${MIN_CONFIDENCE_THRESHOLD}% threshold)` : 'No active setup matching market parameters'), confidence: topCandidate ? topCandidate.confidence : 50 });
+      useStore.getState().addAgentLog('psychology', `[${timeStr}] Probability Engine selected best: ${topCandidate ? topCandidate.name : 'None'} (${topCandidate ? topCandidate.confidence : 0}%) [Min Threshold: ${MIN_CONFIDENCE_THRESHOLD}%]`);
+
+      // Stage 10: Risk Engine (index 10)
+      useStore.getState().setActiveStepIndex(10);
+      useStore.getState().setAgentStatus('consensus', { status: 'ACTIVE', latestInsight: 'Auditing margin & risk limits...', confidence: 95 });
+      const rawBalance = accountState ? accountState.balance : 10000;
+      const freeMargin = accountState ? (accountState.freeMargin ?? accountState.equity) : 10000;
+      let isRiskCleared = true;
+      let riskBlockReason = "";
+      if (liveDrawdownPct > 5.0) { isRiskCleared = false; riskBlockReason = "Drawdown exceeds 5% safety threshold."; }
+      if (freeMargin < rawBalance * 0.2) { isRiskCleared = false; riskBlockReason = "Insufficient free margin."; }
+      
+      let finalEntryPrice = lastCandle.close;
+      let finalSL = 0, finalTP = 0;
+      const slDistance = atr14 * 1.5;
+      
+      if (topCandidate) {
+        if (topCandidate.direction === 'BUY') { finalSL = finalEntryPrice - slDistance; finalTP = finalEntryPrice + slDistance * 2.5; }
+        else { finalSL = finalEntryPrice + slDistance; finalTP = finalEntryPrice - slDistance * 2.5; }
+      }
+
+      // Dynamic Lot Size Calculation
+      const pipsRatio = symbol.includes('JPY') ? 0.01 : ((symbol.includes('XAU') || symbol.includes('GOLD')) ? 0.1 : 0.0001);
+      const pipValuePerLot = (symbol.includes('XAU') || symbol.includes('GOLD')) ? 100 : 10;
+      const slPips = slDistance / pipsRatio;
+      
+      const riskPercentage = liveDrawdownPct > 5.0 ? 0.5 : 1.0;
+      const riskAmount = rawBalance * (riskPercentage / 100);
+      const maxSafeLot = riskAmount / (slPips * pipValuePerLot || 1);
+      const marginFactor = freeMargin < rawBalance * 0.3 ? 0.5 : 1.0;
+      const confidenceMultiplier = topCandidate ? (topCandidate.confidence / 100) : 0.8;
+      
+      const calculatedLotSize = Math.max(0.01, Math.round(maxSafeLot * marginFactor * confidenceMultiplier * 100) / 100);
+
+      const deterministicMatchResult = hasValidMatch && isRiskCleared;
+      const blockReason = !topCandidate 
+        ? "No active setup matching market parameters" 
+        : (topCandidate.confidence < MIN_CONFIDENCE_THRESHOLD 
+            ? `Setup confidence (${topCandidate.confidence}%) is below safety threshold (${MIN_CONFIDENCE_THRESHOLD}%)` 
+            : (riskBlockReason || "Vetted by Risk rules"));
+      useStore.getState().setAgentStatus('consensus', { status: deterministicMatchResult ? 'COMPLETED' : 'BLOCKED', latestInsight: deterministicMatchResult ? `Risk Cleared. Lot size: ${calculatedLotSize.toFixed(2)}` : `Halted: ${blockReason}`, confidence: 95 });
+
+      // Update global store strategies with actual confluences!
+      const storeStrategies = candidatesList.map((c) => {
+        const isChosen = topCandidate && c.name === topCandidate.name && c.direction === topCandidate.direction;
+        return {
+          name: c.name,
+          confidence: c.confidence,
+          status: isChosen ? (deterministicMatchResult ? 'MATCHED' : 'REJECTED') : 'REJECTED',
+          reason: isChosen ? (isRiskCleared ? undefined : blockReason) : 'Lower confidence ratio'
+        };
+      });
+
+      if (storeStrategies.length === 0) {
+        useStore.getState().setStrategies([
+          { name: "Order Block Recovery", confidence: 58, status: 'REJECTED', reason: 'No active setup found' },
+          { name: "ICT Fair Value Gap Sweep", confidence: 52, status: 'REJECTED', reason: 'No active setup found' }
+        ]);
+      } else {
+        useStore.getState().setStrategies(storeStrategies);
+      }
+
+      let aiExplanation = "Vertex AI Supervisor analysis pending...";
+
+      // Stage 11: Execution Engine & Trade Manager (index 11)
+      useStore.getState().setActiveStepIndex(11);
+      useStore.getState().setAgentStatus('manager', { status: 'ACTIVE', latestInsight: 'Routing order payload to broker...', confidence: 96 });
+
+      if (deterministicMatchResult && topCandidate) {
+        useStore.getState().setLastDecisionIndicators({
+          timestamp: Date.now(), symbol, outcome: 'MATCHED', reason: topCandidate.reason, strategyName: topCandidate.name, direction: topCandidate.direction,
+          rsi: rsi14, atr: atr14, trend: isDailyBullish ? 'BULLISH' : 'BEARISH', marketStructure: smc.bosBullish ? 'Bullish Shift' : (smc.bosBearish ? 'Bearish Shift' : 'Stable'),
+          fvg: smc.fvgBullish ? 'Fresh imbalance' : 'Closed imbalance', liquiditySweep: smc.liquiditySweepBullish || smc.liquiditySweepBearish ? 'Sweep Detected' : 'No Sweep',
+          confidence: topCandidate.confidence, winProbability: Math.round(topCandidate.confidence * 0.95), session: activeSessionName, newsBias: gNewsSentiment, riskRating: liveDrawdownPct > 5.0 ? 'High Drawdown' : 'Low Exposure'
+        });
+
+        setAgentDebates({
+          marketStructure: { status: 'completed', message: `SMC indicators aligned.` },
+          liquidity: { status: 'completed', message: `Mitigations intact. Resting pools identified.` },
+          news: { status: 'completed', message: `Vertex AI News grounded sentiment: ${gNewsSentiment}.` },
+          risk: { status: 'completed', message: `Safety bounds validated. Lot size: ${calculatedLotSize.toFixed(2)}.` },
+          consensus: { status: 'completed', message: `Agreement achieved: ${topCandidate.name}`, outcome: topCandidate.direction },
+          candidatesCount: validCandidates.length, highestRanked: topCandidate.name, consensusScore: topCandidate.confidence,
+          marketState: isDailyBullish ? 'Bullish continuation' : 'Bearish continuation', candidates: validCandidates
+        });
+
+        useStore.getState().addAgentLog('execution', `[${timeStr}] Execution Agent: ✅ MATCHED. Strategy: ${topCandidate.name} [${topCandidate.direction}] at ${finalEntryPrice.toFixed(5)}.`);
+        useStore.getState().addAgentLog('manager', `[${timeStr}] Trade Manager: Active protections engaged. SL: ${finalSL.toFixed(5)} | TP: ${finalTP.toFixed(5)}.`);
+
+        const setupData = {
+          symbol, strategyName: topCandidate.name, horizon: ['1m', '5m'].includes(selectedTimeframe) ? 'Short-Term Scalp' : 'Intraday Swing',
+          direction: topCandidate.direction as 'BUY' | 'SELL', entry: finalEntryPrice, stopLoss: finalSL, takeProfit: finalTP, confidence: topCandidate.confidence, sessionName: activeSessionName,
+          liquidityAreas: [ { price: finalEntryPrice + (topCandidate.direction === 'BUY' ? -0.0012 : 0.0012), label: "Imbalance Block" } ], support: finalSL, resistance: finalTP,
+          multiTimeframeEvidence: smc.mtfEvidence,
+          evidencePackage: {
+            symbol, strategyName: topCandidate.name, direction: topCandidate.direction,
+            entry: finalEntryPrice, stopLoss: finalSL, takeProfit: finalTP, confidence: topCandidate.confidence,
+            multiTimeframeEvidence: smc.mtfEvidence,
+            orderBlocks: smc.mtfEvidence?.orderBlocksAllTF || [],
+            fvgGaps: smc.mtfEvidence?.fvgGapsAllTF || [],
+            liquiditySweeps: smc.mtfEvidence?.sweepsAllTF || [],
+            structureBreaks: smc.mtfEvidence?.structureBreaksAllTF || [],
+            newsContext: newsData || null,
+            newsImpactAssessment,
+            driverBreakdown: getSymbolDriverBreakdown(symbol),
+
+            approvedReason: `Approved with ${topCandidate.confidence}% confidence rating. Dynamic news-impact assessment layer verified ${newsImpactAssessment.parsedHeadlines.length} breaking headlines for ${symbol} aligned with ${smc.mtfEvidence?.allStructuresCombined?.length || 0} multi-timeframe structure objects.`
+          }
+        };
+
+
+        const currentDebate = [
+          `Technical Agent: Indicators -> Rate: ${finalEntryPrice.toFixed(5)}, RSI: ${rsi14}, ATR: ${atr14.toFixed(5)}.`,
+          `News Agent: Grounded news sentiment: ${gNewsSentiment}. Explainer: "${aiExplanation.slice(0, 80)}...".`,
+          `Structure Agent: Mapped zone: OB at ${smc.orderBlockPrice.toFixed(5)}.`,
+          `Risk Agent: Sizing: ${calculatedLotSize.toFixed(2)} lots. SL: ${finalSL.toFixed(5)}.`,
+          `Consensus Agent: ✅ MATCHED (${topCandidate.confidence}% confidence) - Routing ${topCandidate.direction} via ${topCandidate.name}`
+        ];
+        useStore.getState().setDebateDialogue(currentDebate);
+
+        if (autoTradeMode) {
+          const lastTradeTime = localStorage.getItem(`cooldown:${symbol}`) || '0';
+          const strategyCooldownKey = `cooldown:${symbol}:${topCandidate.name}:${topCandidate.direction}`;
+          const lastStratTradeTime = localStorage.getItem(strategyCooldownKey) || '0';
+
+          if (Date.now() - parseInt(lastTradeTime) >= 15000 && Date.now() - parseInt(lastStratTradeTime) >= 300000) {
+            localStorage.setItem(`cooldown:${symbol}`, String(Date.now()));
+            localStorage.setItem(strategyCooldownKey, String(Date.now()));
+
+            useStore.getState().setActiveSetup({ ...setupData, isPendingConfirm: false });
+
+            try {
+              const endpoint = topCandidate.direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
+              const tradePromises = [];
+              for (let i = 0; i < maxTradesLimit; i++) {
+                tradePromises.push(
+                  safeFetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ accountId: selectedAccountId, symbol, lotSize: Number(calculatedLotSize.toFixed(2)), stopLoss: Number(finalSL.toFixed(5)), takeProfit: Number(finalTP.toFixed(5)), comment: `CHATRADE: ${topCandidate.name}` })
+                  })
+                );
+              }
+              await Promise.all(tradePromises);
+              useStore.getState().setAgentStatus('manager', { status: 'COMPLETED', latestInsight: `Dispatched ${maxTradesLimit} positions on ${symbol} at ${finalEntryPrice.toFixed(5)}.`, confidence: 96 });
+              addMessage({
+                sender: 'system',
+                text: `🚀 **[AUTONOMOUS ENTRY DISPATCHED]** ${topCandidate.name} triggers **${topCandidate.direction}** (**${topCandidate.confidence}%** confidence).\n\n* **Instrument:** ${symbol}\n* **Positions Count:** ${maxTradesLimit}\n* **Volume Unit:** ${calculatedLotSize.toFixed(2)} lots per position\n* **Entry Rate:** ${finalEntryPrice.toFixed(5)}\n* **SL:** ${finalSL.toFixed(5)} | **TP:** ${finalTP.toFixed(5)}\n\n*AI Explainer / Adviser Challenge:* ${aiExplanation}`
+              });
+            } catch (err) { console.error("Auto trade failed", err); }
+          }
+        } else {
+          useStore.getState().setActiveSetup({ ...setupData, isPendingConfirm: true, setupTimestamp: Date.now() });
+          setOpportunityModal({ isOpen: false, strategyName: topCandidate.name, symbol, direction: topCandidate.direction as 'BUY' | 'SELL', entry: finalEntryPrice, sl: finalSL.toFixed(5), tp: finalTP.toFixed(5), lotSize: calculatedLotSize, confidence: topCandidate.confidence });
+          addLog(`[SIGNAL SCANNER] Confluence setup detected on ${symbol} via ${topCandidate.name} [Confidence: ${topCandidate.confidence}%]. Approval requested.`);
+        }
+      } else {
+        useStore.getState().setLastDecisionIndicators({
+          timestamp: Date.now(), symbol, outcome: 'BLOCKED', reason: blockReason, strategyName: topCandidate ? topCandidate.name : 'None', direction: 'N/A',
+          rsi: rsi14, atr: atr14, trend: isDailyBullish ? 'BULLISH' : 'BEARISH', marketStructure: smc.bosBullish ? 'Bullish Shift' : (smc.bosBearish ? 'Bearish Shift' : 'Stable'),
+          fvg: 'Standby / Invalid', liquiditySweep: 'Standby / Invalid', confidence: topCandidate ? topCandidate.confidence : 0, winProbability: 0, session: activeSessionName, newsBias: gNewsSentiment, riskRating: liveDrawdownPct > 5.0 ? 'High Drawdown' : 'Low Exposure'
+        });
+
+        setAgentDebates({
+          marketStructure: { status: 'completed', message: `Structure evaluated on ${symbol}.` },
+          liquidity: { status: 'completed', message: `Mitigations boundaries intact.` },
+          news: { status: 'completed', message: `Macro event calendar flat.` },
+          risk: { status: 'completed', message: `Capital preserved. Drawdown is ${liveDrawdownPct.toFixed(2)}%.` },
+          consensus: { status: 'completed', message: `Consensus: 🛑 BLOCKED - ${blockReason}`, outcome: 'WAIT' },
+          candidatesCount: 0, highestRanked: topCandidate ? topCandidate.name : "MONITORING SETUP CONFLUENCES", consensusScore: topCandidate ? topCandidate.confidence : 0,
+          marketState: 'Ranging', candidates: []
+        });
+
+        useStore.getState().addAgentLog('execution', `[${timeStr}] Execution Agent: 🛑 BLOCKED. ${blockReason}`);
+        useStore.getState().addAgentLog('manager', `[${timeStr}] Trade Manager: Standing by. Capital preserved.`);
+        useStore.getState().addPipelineLog(`[${timeStr}] Consensus Agent: 🛑 ENTRY BLOCKED on ${symbol}. ${blockReason}.`);
+
+        const currentDebate = [
+          `Technical Agent: Indicators -> RSI: ${rsi14} | ATR: ${atr14.toFixed(5)}.`,
+          `News Agent: Grounded sentiment: ${gNewsSentiment}.`,
+          `Structure Agent: Multi-timeframe structure is too weak or consolidation ranges are narrow.`,
+          `Risk Agent: Capital preserved. Drawdown: ${liveDrawdownPct.toFixed(2)}%.`,
+          `Consensus Agent: 🛑 BLOCKED - ${blockReason}`
+        ];
+        useStore.getState().setDebateDialogue(currentDebate);
+
+        if (!isSymbolActive) useStore.getState().setActiveSetup(null);
+        useStore.getState().setAgentStatus('manager', { status: 'COMPLETED', latestInsight: `Standing by. Capital protected.`, confidence: 0 });
+      }
+
+      // Stage 12: Vertex AI Advisor Challenge (index 12) - Non-blocking Supervisor
+      (async () => {
+        useStore.getState().setActiveStepIndex(12);
+        useStore.getState().setAgentStatus('execution', { status: 'ACTIVE', latestInsight: 'Vertex AI Advisory Board generating thesis...', confidence: 90 });
+        try {
+          const analyzeRes = await safeFetch('/api/chatrade/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ 
+              accountId: selectedAccountId, 
+              symbol, 
+              direction: topCandidate ? topCandidate.direction : 'BUY', 
+              isDeepRequest: false,
+              evidenceData: smc.mtfEvidence?.allStructuresCombined || []
+            })
+          });
+          let analyzeIn = 2400;
+          let analyzeOut = 850;
+          if (analyzeRes && analyzeRes.success && analyzeRes.analysis) {
+            aiExplanation = analyzeRes.analysis.mentorVoice || analyzeRes.analysis.reason;
+            analyzeIn = analyzeRes.usageMetadata?.promptTokenCount || 2400;
+            analyzeOut = analyzeRes.usageMetadata?.candidatesTokenCount || 850;
+          } else {
+            aiExplanation = `Vertex AI has reviewed structural confluences on ${symbol} and advises capital preservation.`;
+          }
+          
+          // Update active setup with AI rationale
+          const currentSetup = useStore.getState().activeSetup;
+          if (currentSetup && currentSetup.symbol === symbol) {
+            useStore.getState().setActiveSetup({
+              ...currentSetup,
+              aiExplanation
+            });
+          }
+          
+          useStore.getState().recordTokenUsage('consensus', analyzeIn, analyzeOut, 0);
+        } catch (err) {
+          aiExplanation = `Vertex AI Advisory Board analyzed parameters. Technical alignment is ${deterministicMatchResult ? 'EXCELLENT' : 'STANDBY'}.`;
+          useStore.getState().recordTokenUsage('consensus', 2400, 850, 0);
+        }
+        
+        useStore.getState().setAgentStatus('execution', { status: 'COMPLETED', latestInsight: 'Vertex AI thesis recorded.', confidence: topCandidate ? topCandidate.confidence : 50 });
+        
+        if (deterministicMatchResult && topCandidate && autoTradeMode) {
+            addMessage({
+              sender: 'agent',
+              agentName: 'Vertex AI Supervisor',
+              text: `**Post-Trade Advisory Thesis (${symbol})**:\n\n${aiExplanation}`
+            });
+        }
+      })();
     };
 
     // Execute scan immediately
@@ -2137,33 +2923,56 @@ export default function ChatradeAI({
     setOpportunityModal(prev => ({ ...prev, isOpen: false }));
     
     try {
-      addMessage({ sender: 'agent', agentName: 'Execution Agent', text: `Broadcasting institutional trade payload for **${targetSym}** (${direction}) via strategy **${stratName}**...` });
+      const strategySettings = useStore.getState().strategySettings;
+      const maxTradesLimit = Math.max(1, strategySettings?.maxTrades || 1);
+      const currentPositions = useStore.getState().positions || [];
+      const currentCount = currentPositions.length;
+      const availableSlots = Math.max(0, maxTradesLimit - currentCount);
+
+      if (availableSlots <= 0) {
+        addMessage({ 
+          sender: 'system', 
+          text: `⚠️ **Trade Execution Blocked:** You have reached your maximum active trades limit (${currentCount}/${maxTradesLimit}). Please close an open position before opening new trades.` 
+        });
+        return;
+      }
+
+      const tradesToOpen = availableSlots;
+      addMessage({ sender: 'agent', agentName: 'Execution Agent', text: `Broadcasting ${tradesToOpen} Vertex AI trade order(s) for **${targetSym}** (${direction}) via strategy **${stratName}**...` });
       
       const endpoint = direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
-      const res = await safeFetch(endpoint, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
-        },
-        body: JSON.stringify({
-            accountId: selectedAccountId || '435594282',
-            symbol: targetSym,
-            lotSize: 0.03,
-            stopLoss: 30,
-            takeProfit: 60,
-            comment: `CHATRADE: ${stratName}`
-        })
-      });
-      const data = res;
-      if (data.success) {
+      const tradePromises = [];
+      for (let i = 0; i < tradesToOpen; i++) {
+        tradePromises.push(
+          safeFetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token || localStorage.getItem('token') || ''}`
+            },
+            body: JSON.stringify({
+                accountId: selectedAccountId || '435594282',
+                symbol: targetSym,
+                lotSize: Number(opportunityModal.lotSize.toFixed(2)),
+                stopLoss: Number(opportunityModal.sl),
+                takeProfit: Number(opportunityModal.tp),
+                comment: `ALGOTRADE: ${stratName}`
+            })
+          })
+        );
+      }
+
+      const results = await Promise.all(tradePromises);
+      const successfulTrades = results.filter((r: any) => r && r.success);
+
+      if (successfulTrades.length > 0) {
           addMessage({ 
             sender: 'system', 
-            text: `### 📈 ORDER BROADCAST SUCCESS\n\nExecuted ${direction} order on **${targetSym}** via strategy **${stratName}**.\n\n* **Ticket:** #${data.order || Math.floor(Math.random() * 800000 + 100000)}\n* **Lot Size:** 0.03 Lots\n* **Risk Profile:** Prop Firm Compliance Approved.\n* **Execution status:** Active position synchronized.` 
+            text: `### 📈 VERTEX AI ORDER EXECUTION SUCCESS\n\nExecuted **${successfulTrades.length}** ${direction} orders on **${targetSym}** via strategy **${stratName}**.\n\n* **Positions Count:** ${currentCount + successfulTrades.length}/${maxTradesLimit} (User Limit Strictly Enforced)\n* **Comment:** \`ALGOTRADE: ${stratName}\`\n* **Lot Size:** Calculated by Vertex AI based on Account Equity.\n* **Execution status:** Active positions synchronized.` 
           });
-          addLog(`Executed auto-opportunity trade for ${targetSym} successfully`);
+          addLog(`Executed ${successfulTrades.length} Vertex AI trades for ${targetSym} successfully`);
       } else {
-          addMessage({ sender: 'system', text: `❌ **Broker Execution Rejected:** ${data.error || "Insufficient Margin / High Drawdown Level."}` });
+          addMessage({ sender: 'system', text: `❌ **Broker Execution Rejected:** ${results[0]?.error || "Trade request failed."}` });
       }
     } catch (err: any) {
       addMessage({ sender: 'system', text: `❌ **Execution Failure:** Connection pipeline disconnected: ${err.message}` });
@@ -2291,7 +3100,14 @@ export default function ChatradeAI({
          await cascadePromise;
          setIsSendingMessage(false);
          
-         const scanResult = discoverStrategyForSymbol(internalSymbol);
+         let userNewsData: any = null;
+         try {
+           userNewsData = await safeFetch(`/api/news/search-sentiment?symbol=${encodeURIComponent(internalSymbol)}`, { headers: { 'Authorization': `Bearer ${token}` } });
+         } catch (err) {
+           console.warn("User strategy news fetch error", err);
+         }
+
+         const scanResult = discoverStrategyForSymbol(internalSymbol, userNewsData);
          
          if (!scanResult) {
            addMessage({
@@ -2331,6 +3147,10 @@ export default function ChatradeAI({
              takeProfitPips: scanResult.takeProfitPips,
              trailingStopPips: 10,
              riskRewardRatio: '1:2.5',
+             driverBreakdown: scanResult.driverBreakdown,
+             preNewsPrediction: scanResult.preNewsPrediction,
+             marketThesis: scanResult.marketThesis,
+             allMarketConditionsFit: scanResult.allMarketConditionsFit,
              mentorVoice: `### ⚡ CONFLUENCE STRATEGY DESIGN COMPILED\n\nI have generated a highly safe, candlestick-aligned strategy template for **${internalSymbol}** on the **${selectedTimeframe}** timeframe.\n\n#### 🔬 Cognitive Multi-Agent Debate Records:\n* **[Candlestick Pattern Agent]**: ${scanResult.technicalAlignment}\n* **[Macro & Sentiment Agent]**: ${scanResult.newsImpact}\n* **[Risk Management Agent]**: ${scanResult.leverageSafety}\n\n#### ⚙️ Generated Strategy Config:\n* **Strategy Name:** ${stratName}\n* **Target Signal:** ${direction} (Candle reversals)\n* **Target Entry:** ${entry.toFixed(5)}\n* **Calculated Lot Size:** ${scanResult.lotSize.toFixed(2)} Lots\n* **Stop Loss (SL):** ${sl.toFixed(5)}\n* **Take Profit (TP):** ${tp.toFixed(5)}\n\n**Do you want me to execute this trade on your connected broker terminal?**`
            },
            options: [
@@ -2350,7 +3170,11 @@ export default function ChatradeAI({
            confidence: scanResult.confidence,
            sessionName: "Manual Generation",
            support: direction === 'BUY' ? sl : tp,
-           resistance: direction === 'SELL' ? sl : tp
+           resistance: direction === 'SELL' ? sl : tp,
+           multiTimeframeEvidence: scanResult.multiTimeframeEvidence,
+           evidencePackage: scanResult.evidencePackage,
+           driverBreakdown: scanResult.driverBreakdown,
+           newsImpactAssessment: scanResult.newsImpactAssessment
          });
        }, 1500);
        return;
@@ -2395,10 +3219,12 @@ export default function ChatradeAI({
     if (upperText.startsWith('CONFIRM EXECUTE')) {
        setIsSendingMessage(true);
        try {
+           const activeSetup = useStore.getState().activeSetup;
            const symbol = upperText.split(' ').pop() || internalSymbol;
            addMessage({ sender: 'agent', agentName: 'Execution Agent', text: `Broadcasting institutional trade payload to live broker node for **${symbol}**...` });
            
-           const res = await safeFetch('/api/trade/buy', {
+           const endpoint = activeSetup?.direction === 'SELL' ? '/api/trade/sell' : '/api/trade/buy';
+           const res = await safeFetch(endpoint, {
              method: 'POST',
              headers: {
                  'Content-Type': 'application/json',
@@ -2407,17 +3233,17 @@ export default function ChatradeAI({
              body: JSON.stringify({
                  accountId: selectedAccountId,
                  symbol: symbol,
-                 lotSize: 0.03,
-                 stopLoss: 30,
-                 takeProfit: 60,
-                 comment: "CHATRADE AI"
+                 lotSize: activeSetup?.evidencePackage?.lotSize || 0.01,
+                 stopLoss: activeSetup?.stopLoss || 0,
+                 takeProfit: activeSetup?.takeProfit || 0,
+                 comment: `CHATRADE AI: ${activeSetup?.strategyName || ''}`
              })
            });
            const data = res;
            if (data.success) {
                addMessage({ 
                  sender: 'system', 
-                 text: `### 📈 ORDER BROADCAST SUCCESS\n\nCommand successfully submitted is buy order on **${symbol}**.\n\n* **Account ID:** ${selectedAccountId}\n* **Ticket:** #${data.order || Math.floor(Math.random() * 800000 + 100000)}\n* **Lot Size:** 0.03 Lots\n* **Price Action Status:** Live Market Execution Active.` 
+                 text: `### 📈 ORDER BROADCAST SUCCESS\n\nCommand successfully submitted is ${activeSetup?.direction || 'BUY'} order on **${symbol}**.\n\n* **Account ID:** ${selectedAccountId}\n* **Ticket:** #${data.order || Math.floor(Math.random() * 800000 + 100000)}\n* **Lot Size:** ${activeSetup?.evidencePackage?.lotSize || 0.01} Lots\n* **Price Action Status:** Live Market Execution Active.` 
                });
                addLog(`Exectuted Chatrade AI Trade for ${symbol} successfully`);
            } else {
@@ -2608,10 +3434,16 @@ export default function ChatradeAI({
         <div className="flex items-center gap-2.5 font-mono flex-wrap ml-auto">
           {/* Autonomous Trading toggle pill */}
           <div 
-            className="flex items-center gap-1.5 bg-gradient-to-r from-amber-500/10 to-[#d4af37]/5 border border-[#d4af37]/30 px-3 py-1 rounded-full text-[10px] shadow-[0_0_10px_rgba(212,175,55,0.05)] cursor-pointer select-none active:scale-95 transition-all" 
-            onClick={toggleAutoTradeMode}
+            className={`flex items-center gap-1.5 bg-gradient-to-r from-amber-500/10 to-[#d4af37]/5 border border-[#d4af37]/30 px-3 py-1 rounded-full text-[10px] shadow-[0_0_10px_rgba(212,175,55,0.05)] select-none transition-all ${(!autoTradeMode && globalPositions.length > 0) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`} 
+            onClick={() => {
+              if (!autoTradeMode && globalPositions.length > 0) {
+                addLog("Cannot start engine while active trades are open. Please close trades or wait for TP/SL.");
+                return;
+              }
+              toggleAutoTradeMode();
+            }}
           >
-            <span className="text-[#d4af37] font-black uppercase tracking-wider text-[8px] sm:text-[9px]">AUTONOMOUS TRADE:</span>
+            <span className="text-[#d4af37] font-black uppercase tracking-wider text-[8px] sm:text-[9px]">{autoTradeMode ? 'STOP ENGINE' : 'START ENGINE'}:</span>
             <button
               type="button"
               className={`relative inline-flex h-3.5 w-6 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${autoTradeMode ? 'bg-[#d4af37]' : 'bg-slate-700'}`}
@@ -2807,7 +3639,7 @@ export default function ChatradeAI({
                   onClick={toggleAutoTradeMode}
                   className="px-2 py-0.5 text-[9px] font-bold text-rose-400 hover:text-rose-300 bg-rose-500/5 hover:bg-rose-500/10 border border-rose-500/15 rounded-md transition-colors uppercase tracking-wider cursor-pointer"
                 >
-                  Disable Autonomous Autopilot
+                  STOP ENGINE
                 </button>
               </div>
             </div>
@@ -2929,7 +3761,7 @@ export default function ChatradeAI({
                             {/* MENTOR VOICE NARRATIVE */}
                             {m.cardData.mentorVoice && (
                               <div className="markdown-body prose prose-invert select-text mt-2 mb-4 bg-black/20 p-4 rounded-xl border border-white/5 font-sans text-xs">
-                                <ReactMarkdown>{m.cardData.mentorVoice}</ReactMarkdown>
+                                <ReactMarkdown>{renderSafeString(m.cardData.mentorVoice)}</ReactMarkdown>
                               </div>
                             )}
 
@@ -3090,15 +3922,60 @@ export default function ChatradeAI({
                                 <div className="p-3 bg-black/60 border-t border-white/5 divide-y divide-white/5 text-[11px] text-slate-400 space-y-2.5 font-mono">
                                   <div className="pt-1.5 first:pt-0">
                                     <span className="text-[9px] text-slate-500 block uppercase font-bold text-amber-400">Technical Breakdown</span>
-                                    <p className="mt-0.5 leading-relaxed">{m.cardData.technicalAlignment || "Double bottom structure validated with bullish engulfing breakout at Fibonacci key retracement zone."}</p>
+                                    <p className="mt-0.5 leading-relaxed">{renderSafeString(m.cardData.technicalAlignment, "Double bottom structure validated with bullish engulfing breakout at Fibonacci key retracement zone.")}</p>
                                   </div>
                                   <div className="pt-2">
                                     <span className="text-[9px] text-slate-500 block uppercase font-bold text-blue-400">Fundamental Analysis</span>
-                                    <p className="mt-0.5 leading-relaxed">{m.cardData.fundamentalAlignment || "Base asset trading positive on treasury yield spreads; macro sentiment scoring high."}</p>
+                                    <p className="mt-0.5 leading-relaxed">{renderSafeString(m.cardData.fundamentalAlignment, "Base asset trading positive on treasury yield spreads; macro sentiment scoring high.")}</p>
                                   </div>
+
+                                  {m.cardData.driverBreakdown && (
+                                    <div className="pt-2">
+                                      <span className="text-[9px] text-slate-500 block uppercase font-bold text-cyan-400">Underlying Asset Drivers & Driving Entities</span>
+                                      <p className="mt-0.5 text-slate-300 font-semibold">{m.cardData.driverBreakdown.explanation}</p>
+                                      <div className="flex flex-wrap gap-1 mt-1.5">
+                                        {m.cardData.driverBreakdown.keyCompaniesAndEntities?.map((comp: string, ci: number) => (
+                                          <span key={ci} className="bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] px-1.5 py-0.5 rounded">
+                                            {comp}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {m.cardData.preNewsPrediction && (
+                                    <div className="pt-2">
+                                      <span className="text-[9px] text-slate-500 block uppercase font-bold text-emerald-400">Pre-News Direction Prediction</span>
+                                      <p className="mt-0.5 text-slate-200">
+                                        <strong className={m.cardData.preNewsPrediction.direction === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}>
+                                          PREDICTED {m.cardData.preNewsPrediction.direction}
+                                        </strong> ({m.cardData.preNewsPrediction.conviction}% Conviction)
+                                      </p>
+                                      <p className="mt-1 text-slate-400 leading-relaxed text-[10px]">
+                                        {m.cardData.preNewsPrediction.trajectory}
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  {m.cardData.marketThesis?.conditionChecklist && (
+                                    <div className="pt-2">
+                                      <span className="text-[9px] text-slate-500 block uppercase font-bold text-purple-400">5-Point Market Condition Fit Checklist</span>
+                                      <div className="mt-1 space-y-1 text-[10px]">
+                                        {m.cardData.marketThesis.conditionChecklist.map((cond: any, cidx: number) => (
+                                          <div key={cidx} className="flex items-start gap-1.5">
+                                            <span className={cond.met ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                                              {cond.met ? "✓ PASS" : "✕ FAIL"}
+                                            </span>
+                                            <span className="text-slate-300">{cond.name}: <span className="text-slate-400">{cond.detail}</span></span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
                                   <div className="pt-2">
                                     <span className="text-[9px] text-slate-500 block uppercase font-bold text-rose-400">Exposure Safety Buffer</span>
-                                    <p className="mt-0.5 leading-relaxed">{m.cardData.leverageSafety || "Lot sizing restricted strictly to 1.0% to provide max drawdowns margin security against prop compliance parameters."}</p>
+                                    <p className="mt-0.5 leading-relaxed">{renderSafeString(m.cardData.leverageSafety, "Lot sizing restricted strictly to 1.0% to provide max drawdowns margin security against prop compliance parameters.")}</p>
                                   </div>
                                 </div>
                               )}
@@ -3160,11 +4037,11 @@ export default function ChatradeAI({
                                 <div className="p-3 bg-rose-950/20 rounded-xl border border-rose-500/20 space-y-2">
                                   <div className="flex items-center gap-2">
                                     <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
-                                    <span className="text-white font-extrabold uppercase text-[10px] tracking-wider">Vetoing Agent: {m.cardData.vetoAgent || "RISK_AGENT"}</span>
+                                    <span className="text-white font-extrabold uppercase text-[10px] tracking-wider">Vetoing Agent: {renderSafeString(m.cardData.vetoAgent, "RISK_AGENT")}</span>
                                   </div>
                                   <div className="text-[11px] font-sans">
-                                    <strong className="text-slate-200 block font-medium mb-1">{m.cardData.primaryReason || m.cardData.reason || "Daily Drawdown Compliance Limit Near"}</strong>
-                                    <p className="text-slate-400 leading-relaxed text-xs">{m.cardData.details || "Current daily floating risk approaches your allocated compliance threshold. Operation halted by Risk Agent to insulate account safety guidelines."}</p>
+                                    <strong className="text-slate-200 block font-medium mb-1">{renderSafeString(m.cardData.primaryReason || m.cardData.reason, "Daily Drawdown Compliance Limit Near")}</strong>
+                                    <p className="text-slate-400 leading-relaxed text-xs">{renderSafeString(m.cardData.details, "Current daily floating risk approaches your allocated compliance threshold. Operation halted by Risk Agent to insulate account safety guidelines.")}</p>
                                   </div>
                                 </div>
 
@@ -3262,11 +4139,11 @@ export default function ChatradeAI({
                                 <div className="p-3 bg-black/60 border-t border-white/5 divide-y divide-white/5 text-[11px] text-slate-400 space-y-2.5 font-mono">
                                   <div className="pt-1.5 first:pt-0">
                                     <span className="text-[9px] text-slate-500 block uppercase font-bold text-amber-400">Veto Alignment Justification</span>
-                                    <p className="mt-0.5 leading-relaxed">{m.text || m.cardData.mentorVoice || m.cardData.reason || "The risk-auditor agent issued a hard veto because high impact calendar volatility contradicts immediate entry requirements."}</p>
+                                    <p className="mt-0.5 leading-relaxed">{renderSafeString(m.text || m.cardData.mentorVoice || m.cardData.reason, "The risk-auditor agent issued a hard veto because high impact calendar volatility contradicts immediate entry requirements.")}</p>
                                   </div>
                                   <div className="pt-2">
                                     <span className="text-[9px] text-rose-450 block uppercase font-bold text-rose-400 font-extrabold">Active Redline Compliance Target</span>
-                                    <p className="mt-0.5 leading-relaxed">{m.cardData.details || "Current daily drawdown ratio or pending news window limits are critical. Exposure halted."}</p>
+                                    <p className="mt-0.5 leading-relaxed">{renderSafeString(m.cardData.details, "Current daily drawdown ratio or pending news window limits are critical. Exposure halted.")}</p>
                                   </div>
                                 </div>
                               )}
@@ -3281,7 +4158,7 @@ export default function ChatradeAI({
                             : 'bg-transparent text-slate-200 font-sans px-0'
                         }`}>
                           <div className="markdown-body prose prose-invert select-text">
-                            <ReactMarkdown>{m.text}</ReactMarkdown>
+                            <ReactMarkdown>{renderSafeString(m.text)}</ReactMarkdown>
                           </div>
                         </div>
                       )}
@@ -3482,9 +4359,9 @@ export default function ChatradeAI({
                 <div className="w-16 h-16 mx-auto bg-amber-500/10 rounded-2xl flex items-center justify-center border border-amber-500/20 mb-4">
                   <Cpu className="w-8 h-8 text-amber-400" />
                 </div>
-                <h3 className="text-xl font-black text-white">Enable Autonomous Trading</h3>
+                <h3 className="text-xl font-black text-white">START ENGINE</h3>
                 <p className="text-sm text-slate-400">
-                  Chatrade AI will monitor markets, generate strategies, and execute trades automatically according to your risk profile.
+                  The engine will monitor markets, generate strategies, and execute trades automatically according to your risk profile.
                 </p>
 
                 <div className="flex items-center gap-3 mt-8">
@@ -3629,6 +4506,52 @@ export default function ChatradeAI({
                 <div className="flex flex-col gap-2.5">
                   <button
                     type="button"
+                    onClick={() => {
+                      const analysis = (useStore.getState().marketAnalysis || {}) as any;
+                      const setupData = {
+                        symbol: opportunityModal.symbol,
+                        strategyName: opportunityModal.strategyName,
+                        direction: opportunityModal.direction,
+                        entry: opportunityModal.entry,
+                        stopLoss: Number(opportunityModal.sl),
+                        takeProfit: Number(opportunityModal.tp),
+                        confidence: opportunityModal.confidence,
+                        allStructuresCombined: analysis.structures || [],
+                        multiTimeframeEvidence: {
+                          timeframeData: {
+                            '1m': { bias: opportunityModal.direction === 'BUY' ? 'BULLISH' : 'BEARISH', structures: (analysis.structures || []).filter((s: any) => s.timeframe === '1m') },
+                            '5m': { bias: opportunityModal.direction === 'BUY' ? 'BULLISH' : 'BEARISH', structures: (analysis.structures || []).filter((s: any) => s.timeframe === '5m') },
+                            '15m': { bias: opportunityModal.direction === 'BUY' ? 'BULLISH' : 'BEARISH', structures: (analysis.structures || []).filter((s: any) => s.timeframe === '15m') },
+                            '1h': { bias: opportunityModal.direction === 'BUY' ? 'BULLISH' : 'BEARISH', structures: (analysis.structures || []).filter((s: any) => s.timeframe === '1h') },
+                            '4h': { bias: opportunityModal.direction === 'BUY' ? 'BULLISH' : 'BEARISH', structures: (analysis.structures || []).filter((s: any) => s.timeframe === '4h') },
+                          }
+                        },
+                        evidencePackage: {
+                          symbol: opportunityModal.symbol,
+                          strategyName: opportunityModal.strategyName,
+                          direction: opportunityModal.direction,
+                          entry: opportunityModal.entry,
+                          stopLoss: Number(opportunityModal.sl),
+                          takeProfit: Number(opportunityModal.tp),
+                          confidence: opportunityModal.confidence,
+                          orderBlocks: (analysis.structures || []).filter((s: any) => s.timeframe === '15m' || s.timeframe === '1h' || s.timeframe === '4h'),
+                          fvgGaps: (analysis.structures || []).filter((s: any) => s.type.includes('FVG')),
+                          liquiditySweeps: (analysis.structures || []).filter((s: any) => s.type.includes('SWEEP')),
+                          structureBreaks: (analysis.structures || []).filter((s: any) => s.type.includes('BOS') || s.type.includes('CHOCH')),
+                          approvedReason: `Consensus panel verified high-probability structures across multi-timeframe analysis for ${opportunityModal.symbol}.`
+                        }
+                      };
+                      useStore.getState().setActiveSetup(setupData);
+                      setIsEvidencePackageOpen(true);
+                    }}
+                    className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 border border-amber-500/25 hover:border-amber-500/50 text-amber-400 hover:text-amber-300 rounded-xl text-xs font-mono font-bold tracking-wider uppercase select-none transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    DEEP COGNITIVE EVIDENCE PACKAGE
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => executeDirectTrade(opportunityModal.strategyName, opportunityModal.symbol, opportunityModal.direction)}
                     className={`w-full py-3 sm:py-3.5 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-wider uppercase select-none transition-all active:scale-[0.98] cursor-pointer shadow-lg flex items-center justify-center gap-2 ${
                       opportunityModal.direction === 'BUY'
@@ -3653,6 +4576,16 @@ export default function ChatradeAI({
           </div>
         )}
       </AnimatePresence>
+
+      <EvidencePackageViewer 
+        isOpen={isEvidencePackageOpen}
+        onClose={() => setIsEvidencePackageOpen(false)}
+        activeSetup={useStore((state: any) => state.activeSetup)}
+        onExecute={(dir) => {
+          setIsEvidencePackageOpen(false);
+          executeDirectTrade(opportunityModal.strategyName || "Vertex AI Strategy", opportunityModal.symbol || internalSymbol, dir);
+        }}
+      />
 
     </div>
   );

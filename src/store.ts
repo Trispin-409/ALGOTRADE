@@ -1,5 +1,35 @@
 import { create } from 'zustand';
 
+export interface PushNotification {
+  id: string;
+  title: string;
+  body: string;
+  symbol: string;
+  impact: 'HIGH' | 'MEDIUM' | 'LOW';
+  timestamp: number;
+  read: boolean;
+  url?: string;
+  headline?: string;
+  source?: string;
+  category?: string;
+  impactScore?: number;
+}
+
+export interface TokenMetrics {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalGroundingQueries: number;
+  totalInferenceCalls: number;
+  estimatedTotalCostUSD: number;
+  lastCycleCostUSD: number;
+  agentBreakdown: {
+    news: { inputTokens: number; outputTokens: number; groundingQueries: number; calls: number; costUSD: number };
+    technical: { inputTokens: number; outputTokens: number; groundingQueries: number; calls: number; costUSD: number };
+    consensus: { inputTokens: number; outputTokens: number; groundingQueries: number; calls: number; costUSD: number };
+    risk: { inputTokens: number; outputTokens: number; groundingQueries: number; calls: number; costUSD: number };
+  };
+}
+
 interface AccountStore {
   connectionStatus: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE";
   account: { balance: number; equity: number; margin?: number; freeMargin?: number; marginLevel?: number; currency: string } | null;
@@ -39,21 +69,31 @@ interface AccountStore {
   activeSetup: any | null;
   isAutoTrade: boolean;
   autoTradeConfirmationOpen: boolean;
+  engineState: 'STOPPED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'STOPPING' | 'ERROR';
+  engineSession: any | null;
   // Agent Monitoring State
   agentStatus: { [key: string]: { status: string, latestInsight: string, confidence: number } };
   agentLogs: { [key: string]: string[] };
   activityFeed: string[];
   
+  // Token & Cost Analytics State
+  tokenMetrics: TokenMetrics;
+
   // Strategy & Market State
   strategies: { name: string, confidence: number, status: 'MATCHED' | 'REJECTED' | 'WAITING', reason?: string }[];
   marketSession: string;
   timeframeAnalysis: { [tf: string]: { trend: string, structure?: string, momentum?: string, bias: string } };
   newsImpact: { title: string, impact: 'HIGH' | 'MEDIUM' | 'LOW', bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL', score: number, articleCount?: number, sentimentScore?: number };
+  pushNotifications: PushNotification[];
+  pushNotificationsEnabled: boolean;
+  audioAlertsEnabled: boolean;
+  unreadPushCount: number;
   riskMetrics: any;
   tradeSignal: any | null;
   activeStepIndex: number;
   pipelineLogs: string[];
   debateDialogue: string[];
+  lastDecisionIndicators: any | null;
 
   setConnectionStatus: (status: "INIT" | "CONNECTING" | "SYNCING" | "READY" | "OFFLINE") => void;
   updateAccount: (payload: { balance?: number; equity?: number; margin?: number; freeMargin?: number; marginLevel?: number; currency?: string }) => void;
@@ -87,18 +127,28 @@ interface AccountStore {
   // Global Actions
   setIsAutoTrade: (isAutoTrade: boolean) => void;
   setAutoTradeConfirmationOpen: (open: boolean) => void;
+  setEngineState: (state: 'STOPPED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'STOPPING' | 'ERROR') => void;
+  setEngineSession: (session: any | null) => void;
   setAgentStatus: (id: string, status: Partial<{ status: string, latestInsight: string, confidence: number }>) => void;
   addAgentLog: (id: string, log: string) => void;
   addActivity: (activity: string) => void;
   setMarketSession: (session: string) => void;
   setTimeframeAnalysis: (tf: string, analysis: { trend: string, structure?: string, momentum?: string, bias: string }) => void;
   setNewsImpact: (impact: any) => void;
+  setPushNotificationsEnabled: (enabled: boolean) => void;
+  setAudioAlertsEnabled: (enabled: boolean) => void;
+  addPushNotification: (notification: Omit<PushNotification, 'id' | 'timestamp' | 'read'>) => void;
+  markPushNotificationAsRead: (id: string) => void;
+  clearAllPushNotifications: () => void;
   setRiskMetrics: (metrics: any) => void;
   setTradeSignal: (signal: any) => void;
   setStrategies: (strategies: any[]) => void;
   setActiveStepIndex: (index: number) => void;
   addPipelineLog: (log: string) => void;
   setDebateDialogue: (dialogue: string[]) => void;
+  setLastDecisionIndicators: (indicators: any | null) => void;
+  recordTokenUsage: (agentKey: 'news' | 'technical' | 'consensus' | 'risk', inputTokens: number, outputTokens: number, groundingQueries?: number) => void;
+  setTokenMetrics: (metrics: Partial<TokenMetrics> | ((prev: TokenMetrics) => TokenMetrics)) => void;
 }
 
 export const useStore = create<AccountStore>((set) => ({
@@ -115,6 +165,8 @@ export const useStore = create<AccountStore>((set) => ({
   activeSetup: null,
   isAutoTrade: false,
   autoTradeConfirmationOpen: false,
+  engineState: 'STOPPED',
+  engineSession: null,
   agentStatus: {},
   agentLogs: {},
   activityFeed: [],
@@ -122,11 +174,43 @@ export const useStore = create<AccountStore>((set) => ({
   marketSession: 'New York',
   timeframeAnalysis: {},
   newsImpact: { title: 'No major news', impact: 'LOW', bias: 'NEUTRAL', score: 0 },
+  pushNotifications: (() => {
+    try {
+      const saved = localStorage.getItem('push_notifications_list');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  })(),
+  pushNotificationsEnabled: typeof window !== 'undefined' ? localStorage.getItem('push_notifications_enabled') !== 'false' : true,
+  audioAlertsEnabled: typeof window !== 'undefined' ? localStorage.getItem('audio_alerts_enabled') !== 'false' : true,
+  unreadPushCount: 0,
   riskMetrics: { balance: 1000, risk: 0, drawdown: 0, health: 'Stable' },
   tradeSignal: null,
   activeStepIndex: 0,
   pipelineLogs: [],
   debateDialogue: [],
+  lastDecisionIndicators: null,
+  tokenMetrics: (() => {
+    try {
+      const saved = localStorage.getItem('chatrade_token_metrics');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn("Could not load token metrics from localStorage", e);
+    }
+    return {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalGroundingQueries: 0,
+      totalInferenceCalls: 0,
+      estimatedTotalCostUSD: 0,
+      lastCycleCostUSD: 0,
+      agentBreakdown: {
+        news: { inputTokens: 0, outputTokens: 0, groundingQueries: 0, calls: 0, costUSD: 0 },
+        technical: { inputTokens: 0, outputTokens: 0, groundingQueries: 0, calls: 0, costUSD: 0 },
+        consensus: { inputTokens: 0, outputTokens: 0, groundingQueries: 0, calls: 0, costUSD: 0 },
+        risk: { inputTokens: 0, outputTokens: 0, groundingQueries: 0, calls: 0, costUSD: 0 },
+      }
+    };
+  })(),
   chartSettings: (() => {
     try {
       const saved = localStorage.getItem('chartSettings');
@@ -303,13 +387,26 @@ export const useStore = create<AccountStore>((set) => ({
       const riskAmountUSD = riskAmount / exchangeRate;
       const calculatedLot = riskAmountUSD / (stopLossPips * 10); 
       newSettings.lotSize = Math.max(0.01, Math.round(calculatedLot * 100) / 100);
-      const fundedAmountUSD = fundedAmount / exchangeRate;
-      newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200)); 
+      
+      if (settings.maxTrades !== undefined) {
+        newSettings.maxTrades = settings.maxTrades;
+      } else if (state.strategySettings.maxTrades !== undefined && state.strategySettings.maxTrades !== null) {
+        newSettings.maxTrades = state.strategySettings.maxTrades;
+      } else {
+        const fundedAmountUSD = fundedAmount / exchangeRate;
+        newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200)); 
+      }
     } else if (newSettings.riskConfig?.usePreferredLotSize) {
       newSettings.lotSize = newSettings.riskConfig.preferredLotSize;
-      const exchangeRate = newSettings.riskConfig.currency === 'ZAR' ? 18.5 : 1.0;
-      const fundedAmountUSD = newSettings.riskConfig.fundedAmount / exchangeRate;
-      newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200));
+      if (settings.maxTrades !== undefined) {
+        newSettings.maxTrades = settings.maxTrades;
+      } else if (state.strategySettings.maxTrades !== undefined && state.strategySettings.maxTrades !== null) {
+        newSettings.maxTrades = state.strategySettings.maxTrades;
+      } else {
+        const exchangeRate = newSettings.riskConfig.currency === 'ZAR' ? 18.5 : 1.0;
+        const fundedAmountUSD = newSettings.riskConfig.fundedAmount / exchangeRate;
+        newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200));
+      }
     }
     if (newSettings.lotSize !== undefined) newSettings.lotSize = Math.max(0.01, newSettings.lotSize);
     if (newSettings.maxTrades !== undefined) newSettings.maxTrades = Math.max(1, newSettings.maxTrades);
@@ -327,6 +424,8 @@ export const useStore = create<AccountStore>((set) => ({
   setActiveSetup: (setup) => set({ activeSetup: setup }),
   setIsAutoTrade: (isAutoTrade) => set({ isAutoTrade }),
   setAutoTradeConfirmationOpen: (open) => set({ autoTradeConfirmationOpen: open }),
+  setEngineState: (state) => set({ engineState: state, isAutoTrade: state === 'RUNNING' }),
+  setEngineSession: (session) => set({ engineSession: session }),
   setAgentStatus: (id, status) => set((state) => ({
       agentStatus: { ...state.agentStatus, [id]: { ...state.agentStatus[id], ...status } }
   })),
@@ -339,12 +438,91 @@ export const useStore = create<AccountStore>((set) => ({
   setMarketSession: (session) => set({ marketSession: session }),
   setTimeframeAnalysis: (tf, analysis) => set((state) => ({ timeframeAnalysis: { ...state.timeframeAnalysis, [tf]: analysis } })),
   setNewsImpact: (impact) => set({ newsImpact: impact }),
+  setPushNotificationsEnabled: (enabled) => {
+    try { localStorage.setItem('push_notifications_enabled', String(enabled)); } catch(e) {}
+    set({ pushNotificationsEnabled: enabled });
+  },
+  setAudioAlertsEnabled: (enabled) => {
+    try { localStorage.setItem('audio_alerts_enabled', String(enabled)); } catch(e) {}
+    set({ audioAlertsEnabled: enabled });
+  },
+  addPushNotification: (item) => set((state) => {
+    const newNotif: PushNotification = {
+      ...item,
+      id: 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      timestamp: Date.now(),
+      read: false,
+    };
+    const updated = [newNotif, ...state.pushNotifications].slice(0, 50);
+    try { localStorage.setItem('push_notifications_list', JSON.stringify(updated)); } catch(e) {}
+    const unread = updated.filter(n => !n.read).length;
+    return { pushNotifications: updated, unreadPushCount: unread };
+  }),
+  markPushNotificationAsRead: (id) => set((state) => {
+    const updated = state.pushNotifications.map(n => n.id === id ? { ...n, read: true } : n);
+    try { localStorage.setItem('push_notifications_list', JSON.stringify(updated)); } catch(e) {}
+    const unread = updated.filter(n => !n.read).length;
+    return { pushNotifications: updated, unreadPushCount: unread };
+  }),
+  clearAllPushNotifications: () => {
+    try { localStorage.removeItem('push_notifications_list'); } catch(e) {}
+    set({ pushNotifications: [], unreadPushCount: 0 });
+  },
   setRiskMetrics: (metrics) => set({ riskMetrics: metrics }),
   setTradeSignal: (signal) => set({ tradeSignal: signal }),
   setStrategies: (strategies) => set({ strategies }),
   setActiveStepIndex: (index) => set({ activeStepIndex: index }),
   addPipelineLog: (log) => set((state) => ({ pipelineLogs: [log, ...state.pipelineLogs].slice(0, 100) })),
   setDebateDialogue: (dialogue) => set({ debateDialogue: dialogue }),
+  setLastDecisionIndicators: (indicators) => set({ lastDecisionIndicators: indicators }),
+  recordTokenUsage: (agentKey, inputTokens, outputTokens, groundingQueries = 0) => set((state) => {
+    const inputCost = inputTokens * 0.000000075;
+    const outputCost = outputTokens * 0.00000030;
+    const groundingCost = groundingQueries * 0.035;
+    const stepCost = inputCost + outputCost + groundingCost;
+
+    const currentAgent = state.tokenMetrics.agentBreakdown[agentKey] || { inputTokens: 0, outputTokens: 0, groundingQueries: 0, calls: 0, costUSD: 0 };
+    const updatedAgent = {
+      ...currentAgent,
+      inputTokens: currentAgent.inputTokens + inputTokens,
+      outputTokens: currentAgent.outputTokens + outputTokens,
+      groundingQueries: (currentAgent.groundingQueries || 0) + groundingQueries,
+      calls: currentAgent.calls + 1,
+      costUSD: currentAgent.costUSD + stepCost,
+    };
+
+    const newMetrics = {
+      totalInputTokens: state.tokenMetrics.totalInputTokens + inputTokens,
+      totalOutputTokens: state.tokenMetrics.totalOutputTokens + outputTokens,
+      totalGroundingQueries: state.tokenMetrics.totalGroundingQueries + groundingQueries,
+      totalInferenceCalls: state.tokenMetrics.totalInferenceCalls + 1,
+      estimatedTotalCostUSD: state.tokenMetrics.estimatedTotalCostUSD + stepCost,
+      lastCycleCostUSD: stepCost,
+      agentBreakdown: {
+        ...state.tokenMetrics.agentBreakdown,
+        [agentKey]: updatedAgent,
+      }
+    };
+
+    try {
+      localStorage.setItem('chatrade_token_metrics', JSON.stringify(newMetrics));
+    } catch (e) {
+      console.warn("Could not save token metrics to localStorage", e);
+    }
+
+    return {
+      tokenMetrics: newMetrics
+    };
+  }),
+  setTokenMetrics: (metrics) => set((state) => {
+    const nextMetrics = typeof metrics === 'function' ? metrics(state.tokenMetrics) : { ...state.tokenMetrics, ...metrics };
+    try {
+      localStorage.setItem('chatrade_token_metrics', JSON.stringify(nextMetrics));
+    } catch (e) {
+      console.warn("Could not save token metrics to localStorage", e);
+    }
+    return { tokenMetrics: nextMetrics };
+  }),
 }));
 
 export interface SessionDetails {

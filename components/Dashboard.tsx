@@ -5,6 +5,7 @@ import { TradingAccount, MetaStats } from '../types';
 import { formatCurrency, safeFetch } from '../src/lib/utils';
 import { useStore } from '../src/store';
 import DailyHeatmap from './DailyHeatmap';
+import VertexCostAuditor from './VertexCostAuditor';
 
 interface DashboardProps {
   accounts: TradingAccount[];
@@ -62,6 +63,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   selectedAccountId,
   isLoading, 
   isTradingReady, 
+  isAlgoTradeRunning,
   token,
   hasActiveSubscription = true
 }) => {
@@ -645,6 +647,9 @@ const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Vertex AI Enterprise Cost & Grounding Auditor */}
+      <VertexCostAuditor isAlgoTradeRunning={isAlgoTradeRunning} className="w-full relative z-10" />
 
       {/* MAIN CONTENT GRID */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">

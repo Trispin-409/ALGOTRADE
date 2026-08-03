@@ -38,11 +38,13 @@ import ChatradeAI from './components/ChatradeAI';
   // Remove ea-deployer state
 
 import SystemMonitor from './components/SystemMonitor';
+import { EvidencePackageViewer } from './src/components/EvidencePackageViewer';
 import { ExpertLogPanel } from './components/ExpertLogPanel';
 import MarketData from './components/MarketData';
 import OpenPositionsView from './components/OpenPositionsView';
 import ChartSettings from './components/ChartSettings';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import VertexCostAuditor from './components/VertexCostAuditor';
 import { connectionManager, TradingPhase } from './src/lib/ConnectionManager';
 import { safeFetch } from './src/lib/utils';
 import { supabase } from './src/lib/supabase';
@@ -52,6 +54,9 @@ import { FullScreenLoader } from './src/components/Auth/FullScreenLoader';
 import { useStore, calculateTradingSession } from './src/store';
 import { PricingPage } from './src/components/PricingPage';
 import { AdminDashboard } from './components/AdminDashboard';
+import { useNewsNotificationMonitor } from './src/hooks/useNewsNotificationMonitor';
+import { NotificationCenter } from './src/components/NotificationCenter';
+import { NewsPushToast } from './src/components/NewsPushToast';
 
 // No explicit SDK_URL needed for same-origin SDK proxy
 
@@ -61,6 +66,14 @@ const App: React.FC = () => {
   const [bootData, setBootData] = useState<any>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [loadingBootstrap, setLoadingBootstrap] = useState(false);
+  const [isEvidenceViewerOpen, setIsEvidenceViewerOpen] = useState(false);
+
+
+  // Refs to track in-flight operations to prevent concurrent/overlapping duplicate requests
+  const pendingModifiesRef = useRef<Set<string>>(new Set());
+  const pendingClosesRef = useRef<Set<string>>(new Set());
+  const pendingRescuesRef = useRef<Set<string>>(new Set());
+  const rescuedPositionsRef = useRef<Set<string>>(new Set());
 
   // Zustand State
   const setConnectionStatus = useStore(state => state.setConnectionStatus);
@@ -68,6 +81,7 @@ const App: React.FC = () => {
   const connectionStatus = useStore(state => state.connectionStatus);
   const globalHistory = useStore(state => state.history);
   const chartSettings = useStore(state => state.chartSettings);
+  const tokenMetrics = useStore(state => state.tokenMetrics);
 
   // Sync accent color CSS variables
   useEffect(() => {
@@ -121,8 +135,21 @@ const App: React.FC = () => {
     if (authReadyRef.current) return;
     authReadyRef.current = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+    supabase.auth.getSession().then(({ data, error }: any) => {
+      if (error) {
+        console.warn("[AUTH] Initial getSession error:", error.message);
+        if (error.message?.toLowerCase().includes('refresh token') || error.message?.toLowerCase().includes('invalid')) {
+          supabase.auth.signOut().catch(() => {});
+          try { localStorage.clear(); } catch(e) {}
+        }
+        setSession(null);
+      } else {
+        setSession(data?.session || null);
+      }
+      setLoadingAuth(false);
+    }).catch((err: any) => {
+      console.warn("[AUTH] getSession exception:", err);
+      setSession(null);
       setLoadingAuth(false);
     });
 
@@ -161,6 +188,10 @@ const App: React.FC = () => {
       if (data.strategy_settings) {
         console.log("[PREFS] Overriding strategy settings from database load", data.strategy_settings);
         useStore.getState().setStrategySettings(data.strategy_settings);
+      }
+      if (data.token_metrics) {
+        console.log("[PREFS] Overriding token metrics from database load");
+        useStore.getState().setTokenMetrics(() => data.token_metrics);
       }
       if (window.location.search.includes('activated=true')) {
         window.history.replaceState({}, '', '/');
@@ -261,148 +292,103 @@ const App: React.FC = () => {
       const curAccountId = selectedAccountIdRef.current;
       const curSession = sessionRef.current;
 
-      // 1. Live Trailing Stop & Rescue Scalp Engines
+      // 1. Live Vertex AI Dynamic Trailing Stop & Profit Protection Engine (+1% / +2% Auto-Lock)
       if (curAccountId && curSession) {
         const currentPositions = useStore.getState().positions || [];
-        
-        // 1a. Trailing Stop Logic with Break-Even Trigger at +10 pips
+        const accountInfo = useStore.getState().account;
+        const accountEquity = Math.max(10, Number(accountInfo?.equity || accountInfo?.balance || 1000));
+
         currentPositions.forEach(async (pos: any) => {
-          const isGold = pos.symbol.toLowerCase().includes('xau') || pos.symbol.toLowerCase().includes('gold');
-          const pipSize = pos.symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
-          const currentProfit = Number(pos.profit);
+          const posIdStr = String(pos.id);
+          if (pendingModifiesRef.current.has(posIdStr)) return;
+
           const currentPrice = Number(pos.currentPrice || pos.closePrice);
+          
+          // Dynamically compute symbol metrics (pip size and digits precision)
+          const getSymbolMetrics = (symbol: string, price: number) => {
+            const sym = symbol.toUpperCase();
+            let pSize = 0.0001;
+            let digs = 5;
+
+            if (sym.includes('JPY')) {
+              pSize = 0.01;
+              digs = 3;
+            } else if (sym.includes('XAU') || sym.includes('GOLD')) {
+              pSize = 0.1;
+              digs = 2;
+            } else if (sym.includes('XAG') || sym.includes('SILVER')) {
+              pSize = 0.01;
+              digs = 3;
+            } else if (sym.includes('BTC') || sym.includes('BTCUSD')) {
+              pSize = 1.0;
+              digs = 2;
+            } else if (sym.includes('ETH')) {
+              pSize = 0.1;
+              digs = 2;
+            } else if (
+              sym.includes('US30') || sym.includes('WS30') ||
+              sym.includes('NAS100') || sym.includes('USTEC') || sym.includes('NDX') ||
+              sym.includes('SPX') || sym.includes('US500') ||
+              sym.includes('DAX') || sym.includes('DE30') || sym.includes('GER30')
+            ) {
+              pSize = 1.0;
+              digs = 2;
+            } else {
+              if (price > 20000) {
+                pSize = 1.0;
+                digs = 2;
+              } else if (price > 1000) {
+                pSize = 0.1;
+                digs = 2;
+              } else if (price > 50) {
+                pSize = 0.01;
+                digs = 3;
+              }
+            }
+            return { pipSize: pSize, digits: digs };
+          };
+
+          const { pipSize, digits } = getSymbolMetrics(pos.symbol, currentPrice);
+          const currentProfitDollars = Number(pos.profit || 0);
           const entryPrice = Number(pos.openPrice);
           const isBuy = pos.type === 'BUY' || pos.type === 'buy' || pos.type === 0 || pos.type === 'POSITION_TYPE_BUY';
-          
           const currentPipsProfit = isBuy ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
-          const pipThreshold = 10 * pipSize;
-          
-          if (currentPipsProfit >= pipThreshold) {
+
+          // Profit percentage relative to account equity
+          const profitPercent = (currentProfitDollars / accountEquity) * 100;
+          const currentSL = Number(pos.stopLoss);
+
+          let targetSL = 0;
+          let shouldModify = false;
+
+          // Condition 1: Profit >= +2.0% -> Lock in at least +1.0% profit using trailing stop
+          if (profitPercent >= 2.0 || currentPipsProfit >= 20 * pipSize) {
+            const trailingOffset = Math.max(10 * pipSize, currentPipsProfit * 0.5);
+            targetSL = isBuy ? (currentPrice - trailingOffset) : (currentPrice + trailingOffset);
+            
+            // Ensure targetSL protects at least 1% profit buffer above entry
+            const dollarValuePerPip = Math.max(0.1, Number(pos.volume) * 10);
+            const onePercentPips = ((accountEquity * 0.01) / dollarValuePerPip) * pipSize;
+            const lockPrice = isBuy ? (entryPrice + onePercentPips) : (entryPrice - onePercentPips);
+            targetSL = isBuy ? Math.max(lockPrice, targetSL) : Math.min(lockPrice, targetSL);
+            
+            shouldModify = !currentSL || (isBuy ? (targetSL > currentSL + 0.1 * pipSize) : (targetSL < currentSL - 0.1 * pipSize));
+          } 
+          // Condition 2: Profit >= +1.0% -> Secure at Break-Even / +1% profit protection
+          else if (profitPercent >= 1.0 || currentPipsProfit >= 10 * pipSize) {
             const breakEvenPrice = entryPrice;
-            const currentSL = Number(pos.stopLoss);
+            const targetTrailingSL = isBuy ? (currentPrice - 8 * pipSize) : (currentPrice + 8 * pipSize);
+            targetSL = isBuy ? Math.max(breakEvenPrice, targetTrailingSL) : Math.min(breakEvenPrice, targetTrailingSL);
             
-            // 10-pip trailing Stop Loss target (as price continues above +10 pips)
-            const targetTrailingSL = isBuy ? (currentPrice - 10 * pipSize) : (currentPrice + 10 * pipSize);
-            
-            // Target is the maximum (for BUY) / minimum (for SELL) between entryPrice and targetTrailingSL
-            const targetSL = isBuy ? Math.max(breakEvenPrice, targetTrailingSL) : Math.min(breakEvenPrice, targetTrailingSL);
-            
-            // Avoid modifying SL if it's already set near or better than targetSL (within small noise)
-            const isBetterSL = !currentSL || (isBuy ? (targetSL > currentSL + 0.1 * pipSize) : (targetSL < currentSL - 0.1 * pipSize));
-            
-            if (isBetterSL) {
-              const isFirstBreakEven = !currentSL || (isBuy ? (currentSL < breakEvenPrice) : (currentSL > breakEvenPrice));
-              console.log(`[TRAIL ENGINE] Modifying SL for pos #${pos.id} on ${pos.symbol} to ${targetSL.toFixed(5)}`);
-              try {
-                const res = await safeFetch('/api/trade/modify', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${curSession.access_token}`
-                  },
-                  body: JSON.stringify({
-                    accountId: curAccountId,
-                    positionId: pos.id,
-                    stopLoss: Number(targetSL.toFixed(5))
-                  })
-                });
-                if (res?.success) {
-                  const logMsg = isFirstBreakEven && Math.abs(targetSL - breakEvenPrice) < (0.1 * pipSize)
-                    ? `[${new Date().toLocaleTimeString()}] Break-Even Triggered: SL for ${pos.symbol} (#${pos.id}) secured at entry price ${breakEvenPrice.toFixed(5)}`
-                    : `[${new Date().toLocaleTimeString()}] Trailing Stop: SL for ${pos.symbol} (#${pos.id}) trailed to ${targetSL.toFixed(5)}`;
-                  addActivity(logMsg);
-                }
-              } catch (e) {
-                console.error("Modify SL error:", e);
-              }
-            }
+            shouldModify = !currentSL || (isBuy ? (targetSL > currentSL + 0.1 * pipSize) : (targetSL < currentSL - 0.1 * pipSize));
           }
-        });
 
-        // 1b. Rescue & Recovery Engine (Trigger when loss reaches half of Stop Loss)
-        const losingPositions = currentPositions.filter((p: any) => {
-          if (p.comment?.includes('Rescue')) return false; // Rescue trades cannot trigger another rescue
-          
-          const isGold = p.symbol.toLowerCase().includes('xau') || p.symbol.toLowerCase().includes('gold');
-          const pipSize = p.symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
-          const entryPrice = Number(p.openPrice);
-          const currentPrice = Number(p.currentPrice || p.closePrice);
-          const isBuy = p.type === 'BUY' || p.type === 'buy' || p.type === 0 || p.type === 'POSITION_TYPE_BUY';
-          const currentLossDistance = isBuy ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
-          
-          const stopLoss = Number(p.stopLoss);
-          if (stopLoss && stopLoss > 0) {
-            const slPriceDistance = Math.abs(entryPrice - stopLoss);
-            // Trigger if current loss distance is at least 50% (half) of the Stop Loss distance
-            return slPriceDistance > 0 && currentLossDistance >= slPriceDistance * 0.5;
-          } else {
-            // Fallback: If no stop loss set, trigger if loss is at least 10 pips or profit <= -2.50
-            return currentLossDistance >= 10 * pipSize || Number(p.profit) <= -2.50;
-          }
-        });
-
-        losingPositions.forEach(async (losingPos: any) => {
-          const rescueCommentSignature = `Rescue_${losingPos.id}`;
-          const hasRescueTrade = currentPositions.some((p: any) => p.symbol === losingPos.symbol && p.comment?.includes(rescueCommentSignature));
-          
-          if (!hasRescueTrade) {
-            const isBuy = losingPos.type === 'BUY' || losingPos.type === 'buy' || losingPos.type === 0 || losingPos.type === 'POSITION_TYPE_BUY';
-            const isGold = losingPos.symbol.toLowerCase().includes('xau') || losingPos.symbol.toLowerCase().includes('gold');
-            const pipSize = losingPos.symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
-            
-            // Determine pip value per lot to dynamically calculate the required huge lot size to recover the full SL amount
-            const entryPrice = Number(losingPos.openPrice);
-            const currentPrice = Number(losingPos.currentPrice || losingPos.closePrice);
-            const pipsDistance = Math.abs(entryPrice - currentPrice) / pipSize;
-            
-            let dollarValuePerPipPerLot = 10.0;
-            if (pipsDistance > 0.5) {
-              dollarValuePerPipPerLot = Math.abs(Number(losingPos.profit)) / (Number(losingPos.volume) * pipsDistance);
-            } else {
-              if (isGold) {
-                dollarValuePerPipPerLot = 10.0;
-              } else if (losingPos.symbol.includes('JPY')) {
-                dollarValuePerPipPerLot = 9.0;
-              }
-            }
-            if (isNaN(dollarValuePerPipPerLot) || dollarValuePerPipPerLot <= 0) {
-              dollarValuePerPipPerLot = 10.0;
-            }
-
-            // Target recovery amount in dollars is the full value of the Stop Loss
-            let targetRecoveryAmount = 5.0;
-            const stopLoss = Number(losingPos.stopLoss);
-            if (stopLoss && stopLoss > 0) {
-              const slPriceDistance = Math.abs(entryPrice - stopLoss);
-              if (pipsDistance > 0) {
-                targetRecoveryAmount = Math.max(5.0, (slPriceDistance / (pipsDistance * pipSize)) * Math.abs(Number(losingPos.profit)));
-              } else {
-                targetRecoveryAmount = Math.max(5.0, Math.abs(Number(losingPos.profit)) * 2.0);
-              }
-            } else {
-              targetRecoveryAmount = Math.max(5.0, Math.abs(Number(losingPos.profit)) * 2.0);
-            }
-
-            // Calculate lot size to make the full SL dollars fast (within 5 pips)
-            const calculatedRescueLot = Number((targetRecoveryAmount / (5 * dollarValuePerPipPerLot)).toFixed(2));
-            const minRescueLot = Number((Number(losingPos.volume) * 2.5).toFixed(2));
-            const maxRescueLot = Number((Number(losingPos.volume) * 8.0).toFixed(2)); // safe limit
-            const rescueLotSize = Math.min(maxRescueLot, Math.max(calculatedRescueLot, minRescueLot));
-
-            const rescueDirection = isBuy ? 'SELL' : 'BUY';
-            const rescuePrice = currentPrice;
-            const slVal = rescueDirection === 'BUY' ? (rescuePrice - 10 * pipSize) : (rescuePrice + 10 * pipSize);
-            const tpVal = rescueDirection === 'BUY' ? (rescuePrice + 5 * pipSize) : (rescuePrice - 5 * pipSize); // 5 pips fast TP
-            const rescueStrategyName = losingPos.comment ? `${losingPos.comment}_Rescue_${losingPos.id}` : `Rescue_Scalp_${losingPos.id}`;
-            
-            addActivity(`[${new Date().toLocaleTimeString()}] Rescue Protocol: Position #${losingPos.id} reached 50% SL. Triggering hedge rescue with calculated lot size ${rescueLotSize} on ${losingPos.symbol}.`);
-            addAgentLog('risk', `[${new Date().toLocaleTimeString()}] [RESCUE] Initiating calculated Rescue Trade: ${rescueDirection} on ${losingPos.symbol} with ${rescueLotSize} lots (target recovery: $${targetRecoveryAmount.toFixed(2)})...`);
-            
+          if (shouldModify && targetSL > 0) {
+            const formattedSL = Number(targetSL.toFixed(digits));
+            console.log(`[VERTEX AI TRAIL ENGINE] Modifying SL for pos #${pos.id} (${pos.symbol}) to ${formattedSL} (Profit: +${profitPercent.toFixed(2)}%)`);
             try {
-              // Save a flag indicating that a rescue has been launched for this position
-              localStorage.setItem(`rescue_opened:${losingPos.id}`, 'true');
-              
-              const res = await safeFetch(rescueDirection === 'BUY' ? '/api/trade/buy' : '/api/trade/sell', {
+              pendingModifiesRef.current.add(posIdStr);
+              const res = await safeFetch('/api/trade/modify', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -410,573 +396,28 @@ const App: React.FC = () => {
                 },
                 body: JSON.stringify({
                   accountId: curAccountId,
-                  symbol: losingPos.symbol,
-                  lotSize: rescueLotSize,
-                  stopLoss: Number(slVal.toFixed(5)),
-                  takeProfit: Number(tpVal.toFixed(5)),
-                  comment: rescueStrategyName
+                  positionId: pos.id,
+                  stopLoss: formattedSL
                 })
               });
               if (res?.success) {
-                addAgentLog('risk', `[${new Date().toLocaleTimeString()}] [RESCUE] Rescue Scalp successfully opened. Order ID: ${res.result?.orderId}`);
+                const logMsg = `[${new Date().toLocaleTimeString()}] Vertex AI Trailing Stop: SL for ${pos.symbol} (#${pos.id}) secured at ${formattedSL} (+${profitPercent.toFixed(2)}% profit protected)`;
+                addActivity(logMsg);
               }
-            } catch (err: any) {
-              console.error("[RESCUE] Failed to open rescue trade:", err);
-            }
-          }
-        });
-
-        // 1c. Combined Double-Close Logic / Trailing Break-Even Recovery
-        currentPositions.forEach(async (pos: any) => {
-          if (pos.comment?.includes('Rescue_')) {
-            // Extract the original position ID from the rescue comment
-            const commentParts = pos.comment.split('_');
-            const originalTradeId = commentParts[commentParts.length - 1];
-            const originalTrade = currentPositions.find((p: any) => p.id.toString() === originalTradeId);
-            
-            if (originalTrade) {
-              const totalProfit = Number(pos.profit) + Number(originalTrade.profit);
-              
-              // If combined profit goes net positive, close both to secure capital completely
-              if (totalProfit >= 0.05) {
-                addAgentLog('risk', `[${new Date().toLocaleTimeString()}] [RESCUE] SUCCESS! Combined profit is net-positive ($${totalProfit.toFixed(2)}). Securing profits and closing BOTH positions!`);
-                addActivity(`[${new Date().toLocaleTimeString()}] Rescue Recovery Complete: Secured net profit of $${totalProfit.toFixed(2)}.`);
-                
-                try {
-                  await Promise.all([
-                    safeFetch('/api/trade/close', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${curSession.access_token}`
-                      },
-                      body: JSON.stringify({ accountId: curAccountId, positionId: originalTrade.id })
-                    }),
-                    safeFetch('/api/trade/close', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${curSession.access_token}`
-                      },
-                      body: JSON.stringify({ accountId: curAccountId, positionId: pos.id })
-                    })
-                  ]);
-                  localStorage.removeItem(`rescue_opened:${originalTrade.id}`);
-                } catch (err: any) {
-                  console.error("[RESCUE] Error closing positions:", err);
-                }
-              }
-            }
-          }
-        });
-
-        // 1d. Auto Break-Even and Trail on original trade when rescue closes
-        currentPositions.forEach(async (pos: any) => {
-          if (!pos.comment?.includes('Rescue')) {
-            const rescueKey = `rescue_opened:${pos.id}`;
-            const hasRescueBeenOpened = localStorage.getItem(rescueKey) === 'true';
-            
-            if (hasRescueBeenOpened) {
-              // Check if the rescue trade is still active in current positions
-              const activeRescue = currentPositions.find((p: any) => p.symbol === pos.symbol && p.comment?.includes(`Rescue_${pos.id}`));
-              
-              if (!activeRescue) {
-                // The rescue trade has successfully closed!
-                // Now, trail the original losing trade to breakeven so it cannot lose capital!
-                const entryPrice = Number(pos.openPrice);
-                const currentSL = Number(pos.stopLoss);
-                const isBuy = pos.type === 'BUY' || pos.type === 'buy' || pos.type === 0 || pos.type === 'POSITION_TYPE_BUY';
-                
-                // We want to force the SL to break-even (entry price)
-                const needsBreakEven = !currentSL || (isBuy ? (currentSL < entryPrice) : (currentSL > entryPrice));
-                
-                if (needsBreakEven) {
-                  console.log(`[RECOVERY ENGINE] Rescue trade closed. Modifying original trade #${pos.id} SL to Break-Even (${entryPrice.toFixed(5)})`);
-                  try {
-                    const res = await safeFetch('/api/trade/modify', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${curSession.access_token}`
-                      },
-                      body: JSON.stringify({
-                        accountId: curAccountId,
-                        positionId: pos.id,
-                        stopLoss: Number(entryPrice.toFixed(5))
-                      })
-                    });
-                    if (res?.success) {
-                      addActivity(`[${new Date().toLocaleTimeString()}] Recovery complete: Rescue trade hit profit and closed. Original trade #${pos.id} secured at Break-Even.`);
-                      localStorage.removeItem(rescueKey); // successfully recovered, clear the flag
-                    }
-                  } catch (e) {
-                    console.error("Modify SL to breakeven error:", e);
-                  }
-                }
-              }
+            } catch (e) {
+              console.error("Modify SL error:", e);
+            } finally {
+              pendingModifiesRef.current.delete(posIdStr);
             }
           }
         });
       }
-
-      const { 
-        isAutoTrade, 
-        strategySettings, 
-        setAgentStatus, 
-        addAgentLog, 
-        addActivity: stateAddActivity, 
-        setTimeframeAnalysis, 
-        setStrategies, 
-        setTradeSignal,
-        activeStepIndex,
-        setActiveStepIndex,
-        addPipelineLog,
-        setDebateDialogue,
-        setNewsImpact,
-        setRiskMetrics
-      } = useStore.getState();
-      
-      if (!isAutoTrade) return;
-
-      const symbol = strategySettings.symbol || 'XAUUSDm';
-      const nextStep = (activeStepIndex + 1) % 11;
-      setActiveStepIndex(nextStep);
-
-      const timestamp = new Date().toLocaleTimeString();
-
-      // --- Get real account details ---
-      const activeAcc = accountsRef.current.find(a => a.id === selectedAccountIdRef.current);
-      const liveAccount = useStore.getState().account;
-      const balance = liveAccount?.balance ?? activeAcc?.balance ?? 10000;
-      const equity = liveAccount?.equity ?? activeAcc?.equity ?? balance;
-      const margin = liveAccount?.margin ?? activeAcc?.margin ?? 0;
-      const freeMargin = liveAccount?.freeMargin ?? activeAcc?.freeMargin ?? (balance - margin);
-      const drawdown = balance > 0 ? Math.max(0, ((balance - equity) / balance) * 100) : 0;
-      const health = drawdown > 5 ? 'High Risk' : (drawdown > 2 ? 'Warning' : 'Protected');
-      const riskPercent = strategySettings.riskConfig?.riskPercentage || 0.7;
-
-      // --- Get real candles and price ---
-      const candles = useStore.getState().candles || [];
-      const currentPrice = candles[candles.length - 1]?.close ?? candles[candles.length - 1]?.open ?? 21245.30;
-
-      // --- Real-time trend & RSI analysis ---
-      let realTrend = 'Bullish';
-      let realRsi = 59;
-      let realBias = 'Buy';
-      if (candles.length >= 5) {
-        const last = candles[candles.length - 1];
-        const first = candles[candles.length - Math.min(candles.length, 10)];
-        const lastClose = last.close ?? last.open ?? 0;
-        const firstClose = first.close ?? first.open ?? 0;
-        realTrend = lastClose > firstClose ? 'Bullish' : 'Bearish';
-        realBias = lastClose > firstClose ? 'Buy' : 'Sell';
-        
-        let ups = 0, downs = 0;
-        for (let i = candles.length - Math.min(candles.length, 14); i < candles.length; i++) {
-          const prev = candles[i-1]?.close ?? candles[i-1]?.open ?? candles[i]?.open ?? 0;
-          const curr = candles[i].close ?? candles[i].open ?? 0;
-          if (curr > prev) ups += (curr - prev);
-          else downs += (prev - curr);
-        }
-        realRsi = downs === 0 ? 100 : Math.round(100 - (100 / (1 + (ups / downs))));
-      }
-
-      // --- Real-time candlestick pattern and liquidity sweep detection ---
-      let lastPattern = 'Bullish Engulfing';
-      let hasSweep = false;
-      if (candles.length >= 3) {
-        const c0 = candles[candles.length - 1];
-        const c1 = candles[candles.length - 2];
-        const isC0Bull = (c0.close ?? 0) > (c0.open ?? 0);
-        const isC1Bear = (c1.close ?? 0) < (c1.open ?? 0);
-        if (isC0Bull && isC1Bear && (c0.close ?? 0) > (c1.open ?? 0) && (c0.open ?? 0) < (c1.close ?? 0)) {
-          lastPattern = 'Bullish Engulfing';
-        } else if (!isC0Bull && !isC1Bear && (c0.close ?? 0) < (c1.open ?? 0) && (c0.open ?? 0) > (c1.close ?? 0)) {
-          lastPattern = 'Bearish Engulfing';
-        } else {
-          lastPattern = (c0.close ?? 0) > (c0.open ?? 0) ? 'Bullish Continuation' : 'Bearish Continuation';
-        }
-        
-        const prev10 = candles.slice(-11, -1);
-        if (prev10.length > 0) {
-          const minLow = Math.min(...prev10.map(c => c.low ?? c.close));
-          const maxHigh = Math.max(...prev10.map(c => c.high ?? c.close));
-          if ((c0.low ?? c0.close) < minLow && (c0.close ?? 0) > minLow) {
-            hasSweep = true;
-          } else if ((c0.high ?? c0.close) > maxHigh && (c0.close ?? 0) < maxHigh) {
-            hasSweep = true;
-          }
-        }
-      }
-
-      const isBuyDirection = realBias === 'Buy' || realBias === 'BUY';
-
-      switch (activeStepIndex) {
-        case 0: { // News Agent
-          const rsiDelta = realRsi - 50;
-          const trendMultiplier = realTrend === 'Bullish' ? 1 : -1;
-          const score = Math.min(100, Math.max(-100, Math.round(trendMultiplier * (30 + Math.abs(rsiDelta)))));
-          const articlesCount = 8 + (candles.length % 5);
-          
-          addAgentLog('news', `[${timestamp}] Searching Google Grounding index for ${symbol} news...`);
-          addAgentLog('news', `[${timestamp}] Analyzed ${articlesCount} relevant articles on macro indices.`);
-          addAgentLog('news', `[${timestamp}] Sentiment score calculated: ${score}. Volatility expectation is HIGH.`);
-          addPipelineLog(`[${timestamp}] News Agent: Google Grounding returned ${articlesCount} articles. Sentiment Score: ${score}`);
-          setNewsImpact({
-            title: `Hawkish Ease Supports ${symbol} Momentum`,
-            impact: 'HIGH',
-            bias: isBuyDirection ? 'BULLISH' : 'BEARISH',
-            score: Math.abs(score),
-            articleCount: articlesCount,
-            sentimentScore: score
-          });
-          setAgentStatus('news', { 
-            status: 'ACTIVE', 
-            latestInsight: `Analyzed ${articlesCount} articles: ${score > 0 ? '+' : ''}${score} Sentiment Score (${realTrend})`, 
-            confidence: Math.min(99, Math.max(50, Math.abs(score))) 
-          });
-          break;
-        }
-        case 1: { // Technical Agent
-          addAgentLog('technical', `[${timestamp}] Starting multi-timeframe indicator checks on ${symbol}...`);
-          addAgentLog('technical', `[${timestamp}] Multi-timeframe trend is moderately ${realTrend.toUpperCase()}.`);
-          addAgentLog('technical', `[${timestamp}] RSI-14 = ${realRsi}, ATR indicates expansion. Standard deviation bounds clear.`);
-          addPipelineLog(`[${timestamp}] Technical Agent: Completed multi-timeframe indicators check on ${symbol}`);
-          
-          const activeStream = useStore.getState().activeStream;
-          const currentTf = activeStream?.timeframe || useStore.getState().strategySettings.timeframe || 'H1';
-          const derived = getMultiTimeframeAnalysis(currentTf, realTrend as 'Bullish' | 'Bearish');
-
-          setTimeframeAnalysis('W1', derived['W1']);
-          setTimeframeAnalysis('D1', derived['D1']);
-          setTimeframeAnalysis('H4', derived['H4']);
-          setTimeframeAnalysis('H1', derived['H1']);
-
-          // Perform Cross-Timeframe Trend Consistency Check
-          // Higher Timeframe (H1/H4) shows 'Bullish'
-          const isHigherTfBullish = realTrend === 'Bullish';
-          // Lower Timeframe (M1/M5) shows strong selling pressure (RSI < 45 or last 3 candles are bearish)
-          const lastCandlesBearish = candles.length >= 3 && candles.slice(-3).every((c: any) => (c.close ?? 0) < (c.open ?? 0));
-          const isLowerTfSellingPressure = (realRsi < 45) || lastCandlesBearish;
-
-          if (isHigherTfBullish && isLowerTfSellingPressure) {
-            trendDivergenceWarningRef.current = true;
-            addAgentLog('technical', `[${timestamp}] ⚠️ [TREND DIVERGENCE WARNING] Lower timeframe (M1/M5) shows strong selling pressure (RSI: ${realRsi}, Bearish candles: ${lastCandlesBearish}) while higher timeframe (H1/H4) is BULLISH. Flagged warning to Consensus Agent.`);
-            addPipelineLog(`[${timestamp}] Technical Agent: Flagged Trend Divergence Warning to Consensus Agent`);
-          } else {
-            trendDivergenceWarningRef.current = false;
-          }
-          
-          setAgentStatus('technical', { 
-            status: trendDivergenceWarningRef.current ? 'WARNING' : 'ACTIVE', 
-            latestInsight: trendDivergenceWarningRef.current 
-              ? `Trend Divergence Warning: Micro bearish pullback on Bullish H1/H4`
-              : `Weekly/Daily ${realTrend} alignment | RSI: ${realRsi}`, 
-            confidence: trendDivergenceWarningRef.current ? 45 : Math.min(99, Math.max(60, 100 - Math.abs(realRsi - 50))) 
-          });
-          break;
-        }
-        case 2: { // Structure Agent
-          addAgentLog('structure', `[${timestamp}] Analyzing order blocks and liquidity sweep levels...`);
-          addAgentLog('structure', `[${timestamp}] Identified ${lastPattern} pattern on M15.`);
-          addAgentLog('structure', `[${timestamp}] ${hasSweep ? 'Liquidity sweep confirmed' : 'Swept retail positions near key zones'}. Liquidity verified.`);
-          addPipelineLog(`[${timestamp}] Structure Agent: SMC Pattern detected (${lastPattern}${hasSweep ? ' + Liquidity Sweep' : ''})`);
-          
-          const activeStream = useStore.getState().activeStream;
-          const currentTf = activeStream?.timeframe || useStore.getState().strategySettings.timeframe || 'H1';
-          const derived = getMultiTimeframeAnalysis(currentTf, realTrend as 'Bullish' | 'Bearish');
-
-          setTimeframeAnalysis('M15', derived['M15']);
-          setTimeframeAnalysis('M5', derived['M5']);
-          setTimeframeAnalysis('M1', derived['M1']);
-          
-          setAgentStatus('structure', { 
-            status: 'ACTIVE', 
-            latestInsight: `${lastPattern} pattern at ${currentPrice.toFixed(2)}${hasSweep ? ' (Liquidity Sweep)' : ''}`, 
-            confidence: hasSweep ? 95 : 88 
-          });
-          break;
-        }
-        case 3: { // Session Agent
-          const sessionDetails = calculateTradingSession();
-          const sessionName = sessionDetails.currentSession;
-          const killZone = sessionDetails.killZone;
-          const amdPhase = sessionDetails.amdPhase;
-          const lastCandle = candles[candles.length - 1];
-          const range = lastCandle ? Math.abs((lastCandle.high ?? lastCandle.close) - (lastCandle.low ?? lastCandle.open)) : 0;
-          const avgRange = candles.slice(-5).reduce((acc, c) => acc + Math.abs((c.high ?? c.close) - (c.low ?? c.open)), 0) / 5;
-          const volMultiplier = avgRange > 0 ? (range / avgRange).toFixed(1) : '1.2';
-
-          addAgentLog('session', `[${timestamp}] Validating active trading sessions, kill zones, and ICT order block timings...`);
-          addAgentLog('session', `[${timestamp}] Detected: ${sessionName} | Kill Zone: ${killZone} | AMD Stage: ${amdPhase}. Volatility multiplier: ${volMultiplier}x.`);
-          addAgentLog('session', `[${timestamp}] Connected broker economic release windows & DST metrics verified.`);
-          addPipelineLog(`[${timestamp}] Session Agent: Identified ${sessionName} (${killZone}) with standard ${volMultiplier}x liquidity`);
-          
-          setAgentStatus('session', { 
-            status: 'ACTIVE', 
-            latestInsight: `Inside ${sessionName} - ${killZone} | Stage: AMD ${amdPhase} (Vol: ${volMultiplier}x)`, 
-            confidence: Math.min(99, Math.round(82 + Number(volMultiplier) * 4)) 
-          });
-          break;
-        }
-        case 4: { // Strategy Generator
-          const genConfidence = Math.min(98, Math.round(75 + (realRsi > 40 && realRsi < 60 ? 15 : 5)));
-          const candidatesCount = 3 + (candles.length % 3);
-
-          addAgentLog('generator', `[${timestamp}] Synthesizing multi-agent inputs for strategy candidate generation...`);
-          addAgentLog('generator', `[${timestamp}] Drafted ${candidatesCount} high-probability models on ${symbol}.`);
-          addAgentLog('generator', `[${timestamp}] Strategies compiled and sent to Ranking Agent.`);
-          addPipelineLog(`[${timestamp}] Strategy Generator: Compiled ${candidatesCount} candidates based on confluence`);
-          
-          const primaryStrat = isBuyDirection ? 'Demand Zone Recovery' : 'Supply Zone Retracement';
-          const secondaryStrat = isBuyDirection ? 'Liquidity Sweep Reversal' : 'Order Block Breakout Short';
-          setStrategies([
-            { name: primaryStrat, confidence: 91, status: 'WAITING' },
-            { name: secondaryStrat, confidence: 85, status: 'WAITING' },
-            { name: 'London Breakout', confidence: 72, status: 'WAITING' },
-            { name: 'News Continuation Model', confidence: 64, status: 'WAITING' }
-          ]);
-          
-          setAgentStatus('generator', { 
-            status: 'ACTIVE', 
-            latestInsight: `Generated ${candidatesCount} candidates based on ${realTrend} bias`, 
-            confidence: genConfidence 
-          });
-          break;
-        }
-        case 5: { // Strategy Ranking
-          const primaryStrat = isBuyDirection ? 'Demand Zone Recovery' : 'Supply Zone Retracement';
-          const secondaryStrat = isBuyDirection ? 'Liquidity Sweep Reversal' : 'Order Block Breakout Short';
-          const rankConfidence = Math.min(99, Math.round(80 + (realRsi > 30 && realRsi < 70 ? 10 : 5)));
-
-          addAgentLog('ranking', `[${timestamp}] Executing probability metrics and sorting setup candidates...`);
-          addAgentLog('ranking', `[${timestamp}] ${primaryStrat} ranked #1 with ${rankConfidence}% confidence.`);
-          addAgentLog('ranking', `[${timestamp}] Discarded News Continuation (64%) due to fundamental conflict.`);
-          addPipelineLog(`[${timestamp}] Ranking Agent: ${primaryStrat} selected as primary setup (${rankConfidence}%)`);
-          
-          setStrategies([
-            { name: primaryStrat, confidence: rankConfidence, status: 'MATCHED' },
-            { name: secondaryStrat, confidence: 85, status: 'MATCHED' },
-            { name: 'London Momentum Breakout', confidence: 72, status: 'REJECTED', reason: 'Low Momentum' },
-            { name: 'News Continuation Model', confidence: 64, status: 'REJECTED', reason: 'News Conflict' }
-          ]);
-          
-          setAgentStatus('ranking', { 
-            status: 'ACTIVE', 
-            latestInsight: `${primaryStrat} ranked #1 (${realTrend} confluence)`, 
-            confidence: rankConfidence 
-          });
-          break;
-        }
-        case 6: { // Risk Agent
-          const marginRatio = margin > 0 ? (equity / margin) * 100 : 999;
-          const riskConfidence = Math.max(50, Math.min(99, Math.round(100 - drawdown * 5 - (marginRatio < 200 ? 20 : 0))));
-
-          addAgentLog('risk', `[${timestamp}] Reading account metrics and margin requirements...`);
-          addAgentLog('risk', `[${timestamp}] Drawdown is ${drawdown.toFixed(2)}%. Balance = $${balance.toLocaleString()}. Free Margin = $${freeMargin.toLocaleString()}.`);
-          addAgentLog('risk', `[${timestamp}] Trade risk capped strictly at ${riskPercent}% of total balance.`);
-          addPipelineLog(`[${timestamp}] Risk Agent: Capital metrics checked. Safe to proceed with ${riskPercent}% risk.`);
-          
-          setRiskMetrics({
-            balance,
-            equity,
-            margin,
-            freeMargin,
-            riskPercent,
-            drawdown,
-            health
-          });
-          
-          setAgentStatus('risk', { 
-            status: 'ACTIVE', 
-            latestInsight: `Drawdown: ${drawdown.toFixed(2)}% | Free Margin: $${freeMargin.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, 
-            confidence: riskConfidence 
-          });
-          break;
-        }
-        case 7: { // Psychology Agent
-          const isDrawdownSafe = drawdown < 5;
-          const psychoConfidence = isDrawdownSafe ? 99 : 85;
-          const psychoInsight = isDrawdownSafe 
-            ? `Guardrails OK: Account in safe zone` 
-            : `Patience filter ON: Drawdown is elevated at ${drawdown.toFixed(2)}%`;
-
-          addAgentLog('psychology', `[${timestamp}] Auditing discipline rules and psychological guards...`);
-          addAgentLog('psychology', `[${timestamp}] No emotional patterns or revenge trading traces detected.`);
-          addAgentLog('psychology', `[${timestamp}] Verified system patience threshold at maximum compliance.`);
-          addPipelineLog(`[${timestamp}] Psychology Agent: Safeguards verified. No revenge trading markers.`);
-          
-          setAgentStatus('psychology', { 
-            status: 'ACTIVE', 
-            latestInsight: psychoInsight, 
-            confidence: psychoConfidence 
-          });
-          break;
-        }
-        case 8: { // Consensus Agent
-          const directionWord = isBuyDirection ? 'BUY' : 'SELL';
-          const alignment = trendDivergenceWarningRef.current 
-            ? 30 
-            : Math.min(98, Math.round(70 + (realTrend === (isBuyDirection ? 'Bullish' : 'Bearish') ? 15 : 5) + (realRsi > 40 && realRsi < 60 ? 10 : 0)));
-
-          addAgentLog('consensus', `[${timestamp}] Convening debate chamber of all active agents...`);
-          
-          if (trendDivergenceWarningRef.current) {
-            addAgentLog('consensus', `[${timestamp}] ⚠️ [DIVERGENCE BLOCK] Debate Chamber received Trend Divergence Warning from Technical Agent! Prevented forcing trade entries.`);
-            addAgentLog('consensus', `[${timestamp}] Alignment Score capped at ${alignment}% (Threshold not met). Voting outcome: POSTPONED.`);
-            addPipelineLog(`[${timestamp}] Consensus Agent: ⚠️ Alignment blocked at ${alignment}% due to Trend Divergence Warning.`);
-            
-            setDebateDialogue([
-              `Technical Agent: ⚠️ Trend Divergence detected! Micro timeframe (M1/M5) shows strong selling pressure.`,
-              `News Agent: Bias is ${isBuyDirection ? 'bullish' : 'bearish'}, but short-term divergence risk exists.`,
-              `Structure Agent: Pattern structure invalidated by micro timeframe momentum.`,
-              `Risk Agent: Standard execution paused. Capital safety rule triggered.`,
-              `Consensus Agent: 🛑 Trade entry POSTPONED - Trend Divergence Warning active`
-            ]);
-            
-            setAgentStatus('consensus', { 
-              status: 'WARNING', 
-              latestInsight: `Postponed: Trend Divergence Warning active (Micro vs Macro mismatch)`, 
-              confidence: alignment 
-            });
-          } else {
-            addAgentLog('consensus', `[${timestamp}] Alignment Score: ${alignment}%. Voting outcome: UNANIMOUS ${directionWord}.`);
-            addAgentLog('consensus', `[${timestamp}] ${directionWord} dispatch order released to execution agent.`);
-            addPipelineLog(`[${timestamp}] Consensus Agent: ${alignment}% alignment reached. ${directionWord} APPROVED.`);
-            
-            setDebateDialogue([
-              `Technical Agent: Strong Weekly/Daily ${realTrend.toLowerCase()} trend.`,
-              `News Agent: Grounding returned supportive ${isBuyDirection ? 'bullish' : 'bearish'} sentiment.`,
-              `Structure Agent: ${lastPattern} + liquidity sweep completed.`,
-              `Risk Agent: Safe to entry. Drawdown and margin levels acceptable.`,
-              `Consensus Agent: Alignment ${alignment}% - ${directionWord} CONCURRED`
-            ]);
-            
-            setAgentStatus('consensus', { 
-              status: 'ACTIVE', 
-              latestInsight: `${directionWord} alignment at ${alignment}% based on ${realTrend} indicators`, 
-              confidence: alignment 
-            });
-          }
-          break;
-        }
-        case 9: { // Execution Agent
-          const isGold = symbol.toLowerCase().includes('xau') || symbol.toLowerCase().includes('gold');
-          const pipsRatio = symbol.includes('JPY') ? 0.01 : (isGold ? 0.1 : 0.0001);
-          
-          const entryVal = currentPrice;
-          const slVal = isBuyDirection ? (entryVal - 35 * pipsRatio) : (entryVal + 35 * pipsRatio);
-          const tpVal = isBuyDirection ? (entryVal + 115 * pipsRatio) : (entryVal - 115 * pipsRatio);
-          const directionWord = isBuyDirection ? 'BUY' : 'SELL';
-          const primaryStrat = isBuyDirection ? 'Demand Zone Recovery' : 'Supply Zone Retracement';
-
-          if (trendDivergenceWarningRef.current) {
-            addAgentLog('execution', `[${timestamp}] 🛑 [EXECUTION BLOCKED] Trade entry blocked by Consensus Agent due to active Trend Divergence Warning.`);
-            addPipelineLog(`[${timestamp}] Execution Agent: Entry blocked on ${symbol} (Trend Divergence active)`);
-            setAgentStatus('execution', { 
-              status: 'BLOCKED', 
-              latestInsight: `Blocked: Trend Divergence Warning (Entry prevented)`, 
-              confidence: 0 
-            });
-            break;
-          }
-
-          addAgentLog('execution', `[${timestamp}] Dispatched trade order block: ${directionWord} 0.1 lots on ${symbol}...`);
-          addAgentLog('execution', `[${timestamp}] Entry: ${entryVal.toFixed(2)} | SL: ${slVal.toFixed(2)} | TP: ${tpVal.toFixed(2)}`);
-          
-          // Execute trade via backend API automatically when autonomous mode is ON
-          const curSession = sessionRef.current;
-          const curAccountId = selectedAccountIdRef.current;
-
-          if (curAccountId && curSession) {
-            const currentPositions = useStore.getState().positions || [];
-            const isSymbolActive = currentPositions.some((p: any) => p.symbol === symbol);
-
-            if (isSymbolActive) {
-              addAgentLog('execution', `[${timestamp}] Active position exists on ${symbol}. Entry skipped to avoid duplicate trade exposure.`);
-              addPipelineLog(`[${timestamp}] Execution Agent: Entry skipped (Active position on ${symbol})`);
-            } else {
-              const maxTrades = strategySettings.maxTrades || 3;
-              const currentAlgoTrades = currentPositions.filter(p => p.comment && (p.comment === 'ALGOTRADE' || p.comment === 'CHATRADE' || p.comment === primaryStrat || p.comment.includes('Rescue') || p.comment.includes('Recovery') || p.comment.includes('Retracement'))).length;
-
-              if (currentAlgoTrades >= maxTrades) {
-                addAgentLog('execution', `[${timestamp}] Max concurrent trades limit reached (${currentAlgoTrades}/${maxTrades}). Entry skipped.`);
-                addPipelineLog(`[${timestamp}] Execution Agent: Limit reached (${currentAlgoTrades}/${maxTrades})`);
-              } else {
-                addAgentLog('execution', `[${timestamp}] Requesting broker order placement...`);
-                safeFetch(directionWord === 'BUY' ? '/api/trade/buy' : '/api/trade/sell', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${curSession.access_token}`
-                  },
-                  body: JSON.stringify({
-                    accountId: curAccountId,
-                    symbol,
-                    lotSize: Number(strategySettings.lotSize || 0.1),
-                    stopLoss: Number(slVal.toFixed(5)),
-                    takeProfit: Number(tpVal.toFixed(5)),
-                    comment: primaryStrat
-                  })
-                }).then(res => {
-                  if (res && res.success) {
-                    addAgentLog('execution', `[${timestamp}] Broker response: SUCCESS! Trade ID: ${res.result?.orderId || 'N/A'}`);
-                    addPipelineLog(`[${timestamp}] Execution Agent: ${directionWord} trade successfully executed on ${symbol} at ${entryVal.toFixed(2)}`);
-                  } else {
-                    addAgentLog('execution', `[${timestamp}] Broker response error: ${res?.error || 'Unknown error'}`);
-                    addPipelineLog(`[${timestamp}] Execution Agent: Trade failed: ${res?.error || 'Unknown error'}`);
-                  }
-                }).catch(err => {
-                  addAgentLog('execution', `[${timestamp}] Broker execution failed: ${err.message}`);
-                  addPipelineLog(`[${timestamp}] Execution Agent: Execution failed: ${err.message}`);
-                });
-              }
-            }
-          } else {
-            addAgentLog('execution', `[${timestamp}] Execution halted: No active account/session selected.`);
-            addPipelineLog(`[${timestamp}] Execution Agent: No active account/session.`);
-          }
-
-          setTradeSignal({
-            strategy: primaryStrat,
-            direction: directionWord,
-            confidence: 91,
-            rr: '1:3.2',
-            session: 'NY/London Overlap',
-            status: 'EXECUTED',
-            entry: entryVal.toFixed(2),
-            sl: slVal.toFixed(2),
-            tp: tpVal.toFixed(2)
-          });
-          
-          setAgentStatus('execution', { 
-            status: 'ACTIVE', 
-            latestInsight: `Market ${directionWord} executed at ${currentPrice.toFixed(2)}`, 
-            confidence: Math.min(99, Math.round(85 + (candles.length % 10))) 
-          });
-          break;
-        }
-        case 10: { // Live Trade Manager
-          const isWinning = realTrend === (isBuyDirection ? 'Bullish' : 'Bearish');
-          const mngInsight = isWinning 
-            ? `Trailing SL active at ${(currentPrice + (isBuyDirection ? -10 : 10)).toFixed(2)} (In Profit)` 
-            : `Monitoring risk thresholds at ${currentPrice.toFixed(2)} (Standard Protection)`;
-
-          addAgentLog('manager', `[${timestamp}] Monitoring active position protections...`);
-          addAgentLog('manager', `[${timestamp}] Trade in profit. Adjusting Stop Loss to breakeven (+15 pips secured).`);
-          addAgentLog('manager', `[${timestamp}] Trailing stop engine locked on price action profile.`);
-          addPipelineLog(`[${timestamp}] Live Trade Manager: Trade in profit. SL updated to breakeven.`);
-          
-          setAgentStatus('manager', { 
-            status: 'ACTIVE', 
-            latestInsight: mngInsight, 
-            confidence: isWinning ? 96 : 90 
-          });
-          break;
-        }
-      }
-    }, 2500);
+    }, 5000);
     return () => clearInterval(interval);
+  }, [bootData, session]);
+
+  useEffect(() => {
+    // Only real data is used. The simulated interval has been removed.
   }, []);
 
   const [adminSubTab, setAdminSubTab] = useState<'keys' | 'users' | 'logs'>('keys');
@@ -1176,6 +617,35 @@ const App: React.FC = () => {
       useStore.getState().setStrategySettings({ symbol: selectedSymbol });
     }
   }, [selectedSymbol]);
+
+  // SMART PROACTIVE SYMBOL NORMALIZATION ENGINE (Exness vs Standard Broker)
+  useEffect(() => {
+    if (!selectedAccountId || accounts.length === 0 || !selectedSymbol) return;
+    const activeAcc = accounts.find(a => a.id === selectedAccountId);
+    if (!activeAcc) return;
+
+    const serverName = activeAcc.server || '';
+    const isExness = serverName.toLowerCase().includes('exness');
+    const normSelected = selectedSymbol.toUpperCase();
+    const cleanBase = normSelected.replace(/[M\.#+\.\$]/g, ''); // Extract base like XAUUSD
+
+    if (!isExness) {
+      // Strip Exness suffixes (m, .m, _m, .x) if present on a non-Exness server
+      if (selectedSymbol.endsWith('m') || selectedSymbol.endsWith('.m') || selectedSymbol.endsWith('_m') || selectedSymbol.endsWith('.x')) {
+        const matchBase = cleanBase === 'XAUUSD' || cleanBase === 'GOLD' ? 'XAUUSD' : cleanBase;
+        console.log(`[PROACTIVE-FIX] Non-Exness server detected (${serverName}). Stripping suffix: ${selectedSymbol} -> ${matchBase}`);
+        setSelectedSymbol(matchBase);
+        localStorage.setItem('selectedSymbol', matchBase);
+      }
+    } else {
+      // Exness server detected. Ensure we use the 'm' suffix
+      if (selectedSymbol === 'XAUUSD' || selectedSymbol === 'GOLD') {
+        console.log(`[PROACTIVE-FIX] Exness server detected (${serverName}). Adding 'm' suffix: ${selectedSymbol} -> XAUUSDm`);
+        setSelectedSymbol('XAUUSDm');
+        localStorage.setItem('selectedSymbol', 'XAUUSDm');
+      }
+    }
+  }, [selectedAccountId, accounts, selectedSymbol]);
   const [selectedTimeframe, setSelectedTimeframe] = useState(() => localStorage.getItem('selectedTimeframe') || '1m');
 
   // Sync selectedTimeframe with store strategy settings
@@ -1202,6 +672,17 @@ const App: React.FC = () => {
   }, []);
 
   const [isDNDActive, setIsDNDActive] = useState(() => localStorage.getItem('isDNDActive') === 'true');
+  const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
+  const [isFabPanelOpen, setIsFabPanelOpen] = useState(false);
+  const unreadPushCount = useStore(state => state.unreadPushCount);
+
+  const {
+    notificationPermission,
+    requestPermission,
+    activeToastAlert,
+    dismissToast,
+    triggerTestNotification,
+  } = useNewsNotificationMonitor(selectedSymbol || 'XAUUSDm', isDNDActive);
   const [syncedAccountIds, setSyncedAccountIds] = useState<Set<string>>(new Set());
   const [eaStatuses, setEaStatuses] = useState<Record<string, { deployed: boolean; status: string }>>({});
   const lastPriceRef = useRef<Map<string, any>>(new Map()); // symbol -> price data
@@ -1218,35 +699,67 @@ const App: React.FC = () => {
     }
   }, [selectedAccountId, executionModes]);
 
-  // EA Status Polling (Orchestration Plane)
+  // EA Status Polling (Orchestration Plane) with Backoff on 429 Rate Limits
   useEffect(() => {
     if (!selectedAccountId || !session) return;
     
+    let timerId: any = null;
+    let currentDelay = 15000;
+    const minDelay = 15000;
+    const maxDelay = 60000;
+    let isActive = true;
+
     const fetchStatus = async () => {
-      if (!selectedAccountId) return;
+      if (!selectedAccountId || !isActive) return;
       try {
         const url = `/api/account/${encodeURIComponent(selectedAccountId)}/status`;
         const data = await safeFetch(url);
-        if (data) {
+        if (data && isActive) {
            setEaStatuses(prev => ({ ...prev, [selectedAccountId]: data }));
+           // Sync engineState and engineSession
+           if (data.engineState) {
+              useStore.getState().setEngineState(data.engineState);
+           }
+           if (data.engineSession) {
+              useStore.getState().setEngineSession(data.engineSession);
+           }
            // Sync algo running state with terminal state if in EA mode
            if (executionModes[selectedAccountId] === 'EA') {
               setIsAlgoTradeRunning(data.status === 'ACTIVE' || data.status === 'RUNNING' || data.algoRunning === true);
+           } else {
+              setIsAlgoTradeRunning(data.engineState === 'RUNNING');
            }
+           // Reset backoff delay on successful fetch
+           currentDelay = minDelay;
         }
       } catch (err: any) {
-        // Suppress benign network flap errors to keep console clean, but log systemic routing errors 
-        const isNetworkError = err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError');
-        if (!isNetworkError) {
+        if (!isActive) return;
+        const errMsg = err.message || '';
+        const isRateLimit = errMsg.includes('429') || errMsg.toLowerCase().includes('rate exceeded') || errMsg.toLowerCase().includes('too many requests');
+        const isNetworkError = errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError');
+
+        if (isRateLimit) {
+          // Double the delay on rate limit, up to maxDelay
+          currentDelay = Math.min(maxDelay, currentDelay * 2);
+          addLog?.(`HEALTH: Status poll rate limited. Backing off to ${currentDelay / 1000}s.`);
+          console.warn(`[POLL] Status poll rate limited. Backing off to ${currentDelay / 1000}s:`, err);
+        } else if (!isNetworkError) {
           addLog?.(`HEALTH: Status poll for ${selectedAccountId} failed: ${err.message}`);
-          console.error(`[POLL] Status error:`, err);
+          console.warn(`[POLL] Status warning:`, err); // Log as warning to keep console status clean
+        }
+      } finally {
+        if (isActive && selectedAccountId && session) {
+          timerId = setTimeout(fetchStatus, currentDelay);
         }
       }
     };
     
     fetchStatus();
-    const interval = setInterval(fetchStatus, 15000); // 15 seconds for reactive UI (backend throttles to 5s)
-    return () => clearInterval(interval);
+    
+    return () => {
+      isActive = false;
+      if (timerId) clearTimeout(timerId);
+    };
   }, [selectedAccountId, session, executionModes]);
 
   const addLog = useCallback((msg: string) => {
@@ -1305,8 +818,7 @@ const App: React.FC = () => {
          }
 
          if (data.state !== 'DEPLOYED' || data.connectionStatus !== 'CONNECTED') {
-           console.warn(`[LIFECYCLE] Account ${id} is not fully active (${data.state}, ${data.connectionStatus}). Skipping websocket boot.`);
-           return;
+           console.warn(`[LIFECYCLE] Account ${id} is not fully active (${data.state}, ${data.connectionStatus}). Booting websocket connection anyway to stream initialization states...`);
          }
          
          try {
@@ -1599,6 +1111,25 @@ const App: React.FC = () => {
 
   // Sync execution settings to backend
   const strategySettings = useStore(state => state.strategySettings);
+  const activeSetup = useStore(state => state.activeSetup);
+
+  // Dynamic AI Lot Size Calculation
+  useEffect(() => {
+    const balance = useStore.getState().account?.balance || 10000;
+    const riskPercentage = strategySettings.riskConfig?.riskPercentage || 1.0;
+    const maxRiskCapital = balance * (riskPercentage / 100);
+    const slPips = 35;
+    const isGold = selectedSymbol?.toLowerCase().includes('xau') || selectedSymbol?.toLowerCase().includes('gold');
+    const pipValuePerStandardLot = isGold ? 10 : 10;
+    let calculatedLotSize = maxRiskCapital / (slPips * pipValuePerStandardLot);
+    if (calculatedLotSize < 0.01) calculatedLotSize = 0.01;
+    if (calculatedLotSize > 5.0) calculatedLotSize = 5.0;
+    const roundedLotSize = Number(calculatedLotSize.toFixed(2));
+    
+    if (strategySettings.lotSize !== roundedLotSize) {
+      useStore.getState().setStrategySettings({ lotSize: roundedLotSize });
+    }
+  }, [selectedSymbol, strategySettings.riskConfig?.riskPercentage, useStore.getState().account?.balance]);
   useEffect(() => {
     if (!selectedAccountId || !session) return;
     
@@ -1633,7 +1164,7 @@ const App: React.FC = () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
           },
-          body: JSON.stringify({ chartSettings, strategySettings })
+          body: JSON.stringify({ chartSettings, strategySettings, tokenMetrics })
         });
         console.log("[SYNC] User preferences synced to database successfully");
       } catch (err) {
@@ -1644,18 +1175,22 @@ const App: React.FC = () => {
     // Keep save frequency performance-optimal with debouncing
     const timer = setTimeout(syncPrefs, 2000);
     return () => clearTimeout(timer);
-  }, [chartSettings, strategySettings, session]);
+  }, [chartSettings, strategySettings, tokenMetrics, session]);
 
 
   const handleToggleAlgo = async () => {
     if (!selectedAccountId || !session) return;
     const newState = !isAlgoTradeRunning;
-    const mode = executionModes[selectedAccountId] || 'STRATEGY';
+
+    const activeSetup = useStore.getState().activeSetup;
+    const strategySettings = useStore.getState().strategySettings;
+    const activeSymbol = activeSetup?.symbol || strategySettings?.symbol || selectedSymbol;
+    const activeTimeframe = activeSetup?.timeframe || strategySettings?.timeframe || selectedTimeframe;
 
     // 1. VALIDATION: Check symbol before starting
     if (newState) {
-       if (!selectedSymbol || !availableBrokerSymbols.includes(selectedSymbol)) {
-          const msg = `EA ERROR: Cannot start strategy on invalid symbol "${selectedSymbol}". Select a valid one from the list.`;
+       if (!activeSymbol || !availableBrokerSymbols.includes(activeSymbol)) {
+          const msg = `AI ERROR: Cannot start strategy on invalid symbol "${activeSymbol}". Select a valid one from the list.`;
           addLog(msg);
           alert(msg);
           return;
@@ -1663,41 +1198,20 @@ const App: React.FC = () => {
     }
 
     try {
-      if (mode === 'EA') {
-        // LAYER 2: Orchestration - Start/Stop Cloud Algo logic on MetaApi terminal
-        // Note: The user prefers the specific EA panels for deployment, 
-        // but if the main button is used, we ensure it maps to the correct cloud signal.
-        const endpoint = newState ? `/api/account/${selectedAccountId}/start-algo` : `/api/account/${selectedAccountId}/stop-algo`;
-        addLog(`ORCHESTRATION: Requesting EA Engine logic ${newState ? 'START' : 'STOP'}...`);
-        const res = await safeFetch(endpoint, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-          }
-        });
-        if (res) {
-          setIsAlgoTradeRunning(newState);
-          addLog(`SUCCESS: ${mode} Engine logic ${newState ? 'ACTIVATED' : 'HALTED'}.`);
-        }
-      } else {
-        // STRATEGY Mode: Toggle Core-side execution loop
-        addLog(`STRATEGY: Requesting Core AI cycle ${newState ? 'START' : 'STOP'}...`);
-        const data = await safeFetch(`/api/account/${selectedAccountId}/algo/toggle`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-          },
-          body: JSON.stringify({ enabled: newState })
-        });
-        if (data.success) {
-          setIsAlgoTradeRunning(newState);
-          addLog(`SUCCESS: Core AI analysis cycle set to ${newState ? 'ACTIVE' : 'PAUSED'}.`);
-        }
-      }
+      addLog(`CHATRADE AI: Toggling adaptive strategy engine ${newState ? 'ON' : 'OFF'}...`);
+      setIsAlgoTradeRunning(newState);
+      
+      // Keep engineState in sync for dashboard displays
+      useStore.getState().setEngineState(newState ? 'RUNNING' : 'STOPPED');
+      useStore.getState().setEngineSession(newState ? {
+        runningState: 'RUNNING',
+        workflowState: 'Cognitive Pipeline Active',
+        aiContext: `ChatradeAI agent actively scanning ${activeSymbol} in ${activeTimeframe} timeframe.`
+      } : null);
+      
+      addLog(`SUCCESS: ChatradeAI agent auto-trading set to ${newState ? 'ACTIVE' : 'INACTIVE'}.`);
     } catch (err: any) {
-      addLog(`FATAL ERROR: Failed to toggle execution state: ${err.message}`);
+      addLog(`FATAL ERROR: Failed to toggle AI execution state: ${err.message}`);
     }
   };
 
@@ -1710,25 +1224,32 @@ const App: React.FC = () => {
       alert("Please select a valid account/session first");
       return;
     }
-    if (!lotSize || lotSize <= 0) {
+
+    const activeSetup = useStore.getState().activeSetup;
+    const strategySettings = useStore.getState().strategySettings;
+    const activeSymbol = activeSetup?.symbol || strategySettings?.symbol || selectedSymbol;
+    const activeTimeframe = activeSetup?.timeframe || strategySettings?.timeframe || selectedTimeframe;
+    const activeLotSize = activeSetup?.lotSize || strategySettings?.lotSize || lotSize || 0.1;
+
+    if (!activeLotSize || activeLotSize <= 0) {
       alert("Enter valid lot size");
       return;
     }
     try {
-      const currentPositions = useStore.getState().positions || [];
       const maxTrades = strategySettings.maxTrades || 1;
-      const matchedStrat = useStore.getState().strategies?.find(s => s.status === 'MATCHED')?.name || 'Demand Zone Recovery';
-      const currentAlgoTrades = currentPositions.filter(p => p.comment && (p.comment === 'ALGOTRADE' || p.comment === 'CHATRADE' || p.comment === matchedStrat || p.comment.includes('Rescue') || p.comment.includes('Recovery') || p.comment.includes('Retracement'))).length;
-
-      if (currentAlgoTrades >= maxTrades) {
-         addLog(`EA ERROR: Max trade limit reached (${currentAlgoTrades}/${maxTrades}). Close an existing position first.`);
-         return;
+      const currentPositions = useStore.getState().positions || [];
+      if (currentPositions.length >= maxTrades) {
+        addLog(`EA WARN: Execution blocked - Max trade limit reached (${currentPositions.length}/${maxTrades}). Close an existing position first.`);
+        alert(`Execution blocked: Max trade limit reached (${currentPositions.length}/${maxTrades}).`);
+        return;
       }
 
-      const tradeSymbol = selectedSymbol || (availableBrokerSymbols.length > 0 ? availableBrokerSymbols[0] : 'XAUUSDm');
-      addLog(`EA: Executing manual BUY trade via SDK for ${selectedAccountId} on ${tradeSymbol} at ${lotSize} lots...`);
+      const matchedStrat = activeSetup?.strategyName || useStore.getState().strategies?.find(s => s.status === 'MATCHED')?.name || 'ChatradeAI Dynamic Confluence';
+      
+      addLog(`CHATRADE AI: Executing manual BUY trade based on adaptive ChatradeAI signal [${matchedStrat}] for ${selectedAccountId} on ${activeSymbol} (${activeTimeframe}) at ${activeLotSize} lots...`);
       setTradeStatus("executing");
-      const data = await safeFetch('/api/trade/buy', {
+
+      const res = await safeFetch('/api/trade/buy', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -1736,24 +1257,24 @@ const App: React.FC = () => {
         },
         body: JSON.stringify({
           accountId: selectedAccountId,
-          symbol: tradeSymbol,
-          lotSize,
-          comment: matchedStrat
+          symbol: activeSymbol,
+          lotSize: activeLotSize,
+          comment: `AI: ${matchedStrat}`
         })
       });
 
-      if (data.success) {
-        addLog(`EA: BUY trade executed successfully: ${JSON.stringify(data.result)}`);
+      if (res?.success) {
+        addLog(`CHATRADE AI: BUY trade executed successfully. Order ID: ${res.result?.orderId || res.result?.id}`);
         setTradeStatus("success");
       } else {
-        addLog(`EA ERROR: BUY failed: ${data.error}`);
+        addLog(`CHATRADE AI ERROR: BUY failed: ${res?.error || 'Unknown error'}`);
         setTradeStatus("error");
       }
-      setTimeout(() => setTradeStatus(null), 3000);
+      setTimeout(() => setTradeStatus("idle"), 3000);
     } catch (err: any) {
-      addLog(`EA ERROR: BUY failed: ${err.message}`);
+      addLog(`EA ERROR: BUY execution failed: ${err.message}`);
       setTradeStatus("error");
-      setTimeout(() => setTradeStatus(null), 3000);
+      setTimeout(() => setTradeStatus("idle"), 3000);
     }
   };
 
@@ -1762,25 +1283,32 @@ const App: React.FC = () => {
       alert("Please select a valid account/session first");
       return;
     }
-    if (!lotSize || lotSize <= 0) {
+
+    const activeSetup = useStore.getState().activeSetup;
+    const strategySettings = useStore.getState().strategySettings;
+    const activeSymbol = activeSetup?.symbol || strategySettings?.symbol || selectedSymbol;
+    const activeTimeframe = activeSetup?.timeframe || strategySettings?.timeframe || selectedTimeframe;
+    const activeLotSize = activeSetup?.lotSize || strategySettings?.lotSize || lotSize || 0.1;
+
+    if (!activeLotSize || activeLotSize <= 0) {
       alert("Enter valid lot size");
       return;
     }
     try {
-      const currentPositions = useStore.getState().positions || [];
       const maxTrades = strategySettings.maxTrades || 1;
-      const matchedStrat = useStore.getState().strategies?.find(s => s.status === 'MATCHED')?.name || 'Demand Zone Recovery';
-      const currentAlgoTrades = currentPositions.filter(p => p.comment && (p.comment === 'ALGOTRADE' || p.comment === 'CHATRADE' || p.comment === matchedStrat || p.comment.includes('Rescue') || p.comment.includes('Recovery') || p.comment.includes('Retracement'))).length;
-
-      if (currentAlgoTrades >= maxTrades) {
-         addLog(`EA ERROR: Max trade limit reached (${currentAlgoTrades}/${maxTrades}). Close an existing position first.`);
-         return;
+      const currentPositions = useStore.getState().positions || [];
+      if (currentPositions.length >= maxTrades) {
+        addLog(`EA WARN: Execution blocked - Max trade limit reached (${currentPositions.length}/${maxTrades}). Close an existing position first.`);
+        alert(`Execution blocked: Max trade limit reached (${currentPositions.length}/${maxTrades}).`);
+        return;
       }
 
-      const tradeSymbol = selectedSymbol || (availableBrokerSymbols.length > 0 ? availableBrokerSymbols[0] : 'XAUUSDm');
-      addLog(`EA: Executing manual SELL trade via SDK for ${selectedAccountId} on ${tradeSymbol} at ${lotSize} lots...`);
+      const matchedStrat = activeSetup?.strategyName || useStore.getState().strategies?.find(s => s.status === 'MATCHED')?.name || 'ChatradeAI Dynamic Confluence';
+      
+      addLog(`CHATRADE AI: Executing manual SELL trade based on adaptive ChatradeAI signal [${matchedStrat}] for ${selectedAccountId} on ${activeSymbol} (${activeTimeframe}) at ${activeLotSize} lots...`);
       setTradeStatus("executing");
-      const data = await safeFetch('/api/trade/sell', {
+
+      const res = await safeFetch('/api/trade/sell', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -1788,24 +1316,24 @@ const App: React.FC = () => {
         },
         body: JSON.stringify({
           accountId: selectedAccountId,
-          symbol: tradeSymbol,
-          lotSize,
-          comment: matchedStrat
+          symbol: activeSymbol,
+          lotSize: activeLotSize,
+          comment: `AI: ${matchedStrat}`
         })
       });
 
-      if (data.success) {
-        addLog(`EA: SELL trade executed successfully: ${JSON.stringify(data.result)}`);
+      if (res?.success) {
+        addLog(`CHATRADE AI: SELL trade executed successfully. Order ID: ${res.result?.orderId || res.result?.id}`);
         setTradeStatus("success");
       } else {
-        addLog(`EA ERROR: SELL failed: ${data.error}`);
+        addLog(`CHATRADE AI ERROR: SELL failed: ${res?.error || 'Unknown error'}`);
         setTradeStatus("error");
       }
-      setTimeout(() => setTradeStatus(null), 3000);
+      setTimeout(() => setTradeStatus("idle"), 3000);
     } catch (err: any) {
-      addLog(`EA ERROR: SELL failed: ${err.message}`);
+      addLog(`EA ERROR: SELL execution failed: ${err.message}`);
       setTradeStatus("error");
-      setTimeout(() => setTradeStatus(null), 3000);
+      setTimeout(() => setTradeStatus("idle"), 3000);
     }
   };
 
@@ -2116,15 +1644,22 @@ const App: React.FC = () => {
                </button>
 
               <button 
-                onClick={() => setIsDNDActive(!isDNDActive)}
-                title={isDNDActive ? "Disable Do Not Disturb" : "Enable Do Not Disturb"}
-                className={`p-1.5 sm:p-2 rounded-lg border transition-all active:scale-95 ${
-                  isDNDActive 
+                onClick={() => setIsNotificationCenterOpen(true)}
+                title="Real-Time High-Impact News Alerts"
+                className={`relative p-1.5 sm:p-2 rounded-lg border transition-all active:scale-95 ${
+                  unreadPushCount > 0 
+                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.3)]' 
+                    : isDNDActive 
                     ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' 
                     : 'hover:bg-white/5 border-white/5 text-slate-400'
                 }`}
               >
                 {isDNDActive ? <BellOff className="w-3.5 h-3.5 sm:w-4 h-4" /> : <Bell className="w-3.5 h-3.5 sm:w-4 h-4" />}
+                {unreadPushCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-rose-500 text-white font-mono font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center animate-bounce shadow-lg">
+                    {unreadPushCount > 9 ? '9+' : unreadPushCount}
+                  </span>
+                )}
               </button>
 
               {/* Theme Switcher Button */}
@@ -2259,7 +1794,6 @@ const App: React.FC = () => {
                   </ErrorBoundary>
                 )}
                 {activeTab === 'accounts' && <AccountConfig accounts={accounts} setAccounts={setAccounts} token={session?.access_token} subscriptionPlan={bootData?.subscription_plan} onSelectAccount={(id) => { handleAccountSelect(id); setActiveTab("data"); }} />}
-                {activeTab === 'risk' && <RiskManagement />}
                 {activeTab === 'settings' && (
                   <ErrorBoundary>
                     <ChartSettings />
@@ -2334,10 +1868,177 @@ const App: React.FC = () => {
             <span className="text-[9px] font-mono font-bold uppercase transition-colors shrink-0">ACCOUNT</span>
           </button>
         </nav>
+
+        <NewsPushToast 
+          alert={activeToastAlert} 
+          onDismiss={dismissToast} 
+          onOpenNews={() => setActiveTab('news')} 
+        />
+
+        <NotificationCenter 
+          isOpen={isNotificationCenterOpen}
+          onClose={() => setIsNotificationCenterOpen(false)}
+          permission={notificationPermission}
+          onRequestPermission={requestPermission}
+          onTriggerTest={triggerTestNotification}
+          onOpenNewsTab={() => setActiveTab('news')}
+          isDNDActive={isDNDActive}
+          onToggleDND={() => setIsDNDActive(!isDNDActive)}
+          selectedSymbol={selectedSymbol || 'XAUUSDm'}
+        />
+
+        {/* ChatradeAI Quick Trade & Execution FAB */}
+        {selectedAccountId && session && (
+          <div className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-[80] flex flex-col items-end gap-2">
+            <AnimatePresence>
+              {isFabPanelOpen && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                  className="w-72 bg-slate-950/95 border border-white/10 rounded-xl p-4 shadow-[0_0_30px_rgba(0,0,0,0.85)] backdrop-blur-md font-sans"
+                  style={{ borderColor: 'rgba(var(--accent-color-rgb), 0.25)' }}
+                >
+                  <div className="flex justify-between items-center border-b border-white/5 pb-2 mb-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <Cpu className="w-3.5 h-3.5 animate-pulse" style={{ color: 'var(--accent-color)' }} />
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-300">ChatradeAI Live State</span>
+                    </div>
+                    <button 
+                      onClick={() => setIsFabPanelOpen(false)}
+                      className="text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Vertex AI Enterprise Cost Auditor */}
+                  <VertexCostAuditor isAlgoTradeRunning={isAlgoTradeRunning} className="mb-3 border-none !p-0 !bg-transparent !shadow-none" />
+
+                  {activeSetup ? (
+                    <div className="space-y-3">
+                      <div className="bg-white/[0.02] border border-white/5 p-2 rounded-lg space-y-1">
+                        <div className="flex justify-between items-center text-[9px] uppercase font-bold text-slate-500">
+                          <span>Active Strategy</span>
+                          <div className="flex items-center gap-1.5">
+                            <span style={{ color: 'var(--accent-color)' }}>{activeSetup.confidence}% Conf</span>
+                            <button
+                              type="button"
+                              onClick={() => setIsEvidenceViewerOpen(true)}
+                              className="flex items-center gap-1 text-[8px] font-mono font-bold text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/20 transition-all cursor-pointer"
+                            >
+                              Evidence Package
+                            </button>
+                          </div>
+                        </div>
+                        <div className="text-xs font-black text-white">{activeSetup.strategyName}</div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono font-bold bg-black/40 p-2 rounded-lg border border-white/5">
+                        <div className="flex flex-col">
+                          <span className="text-[8px] text-slate-500 uppercase">Symbol</span>
+                          <span className="text-white uppercase">{activeSetup.symbol || selectedSymbol}</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[8px] text-slate-500 uppercase">Timeframe</span>
+                          <span className="text-white uppercase">{activeSetup.timeframe || strategySettings.timeframe || selectedTimeframe}</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[8px] text-slate-500 uppercase">Lot Size</span>
+                          <span className="text-white">{activeSetup.lotSize || strategySettings.lotSize || lotSize}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleBuy}
+                          disabled={tradeStatus === "executing"}
+                          className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase bg-emerald-500 text-white hover:bg-emerald-400 active:scale-95 transition-all flex items-center justify-center gap-1 cursor-pointer ${tradeStatus === "executing" ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {tradeStatus === "executing" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                          BUY {activeSetup.symbol || selectedSymbol}
+                        </button>
+                        <button
+                          onClick={handleSell}
+                          disabled={tradeStatus === "executing"}
+                          className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase bg-rose-500 text-white hover:bg-rose-400 active:scale-95 transition-all flex items-center justify-center gap-1 cursor-pointer ${tradeStatus === "executing" ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {tradeStatus === "executing" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                          SELL {activeSetup.symbol || selectedSymbol}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="text-slate-400 text-[10px] text-center py-2 leading-relaxed">
+                        Awaiting confluence setup scan. Current monitoring configuration below.
+                      </div>
+                      
+                      <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono font-bold bg-black/40 p-2 rounded-lg border border-white/5">
+                        <div className="flex flex-col">
+                          <span className="text-[8px] text-slate-500 uppercase">Symbol</span>
+                          <span className="text-white uppercase">{strategySettings.symbol || selectedSymbol}</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[8px] text-slate-500 uppercase">Timeframe</span>
+                          <span className="text-white uppercase">{strategySettings.timeframe || selectedTimeframe}</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[8px] text-slate-500 uppercase">Lot Size</span>
+                          <span className="text-white">{strategySettings.lotSize || lotSize}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleBuy}
+                          disabled={tradeStatus === "executing"}
+                          className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase bg-emerald-500/15 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/25 active:scale-95 transition-all flex items-center justify-center gap-1 cursor-pointer ${tradeStatus === "executing" ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {tradeStatus === "executing" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                          BUY
+                        </button>
+                        <button
+                          onClick={handleSell}
+                          disabled={tradeStatus === "executing"}
+                          className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase bg-rose-500/15 border border-rose-500/20 text-rose-400 hover:bg-rose-500/25 active:scale-95 transition-all flex items-center justify-center gap-1 cursor-pointer ${tradeStatus === "executing" ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {tradeStatus === "executing" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                          SELL
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <button
+              onClick={() => setIsFabPanelOpen(prev => !prev)}
+              className="w-12 h-12 rounded-full shadow-[0_0_20px_rgba(var(--accent-color-rgb),0.35)] bg-black/50 border border-white/20 flex items-center justify-center backdrop-blur-md transition-all hover:scale-110 active:scale-95 cursor-pointer relative"
+              style={{ borderColor: 'rgba(var(--accent-color-rgb), 0.5)', color: 'var(--accent-color)' }}
+            >
+              <Cpu className="w-5 h-5 animate-pulse" />
+              {activeSetup && (
+                <span className="absolute -top-1 -right-1 bg-emerald-500 text-white font-sans font-black text-[7px] px-1 py-0.5 rounded-full uppercase tracking-tighter animate-bounce shadow-lg">
+                  SIGNAL
+                </span>
+              )}
+            </button>
+          </div>
+        )}
+      <EvidencePackageViewer
+        activeSetup={activeSetup}
+        isOpen={isEvidenceViewerOpen}
+        onClose={() => setIsEvidenceViewerOpen(false)}
+        onExecute={(dir) => dir === 'BUY' ? handleBuy() : handleSell()}
+        isExecuting={tradeStatus === 'executing'}
+      />
       </main>
       </div>
     </div>
   );
 };
+
 
 export default App;

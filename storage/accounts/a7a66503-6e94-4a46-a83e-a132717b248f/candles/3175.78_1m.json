@@ -1,0 +1,19 @@
+[
+  {
+    "symbol": "XAUUSD.crp",
+    "timeframe": "15m",
+    "time": "2026-07-07T06:45:00.000Z",
+    "brokerTime": "2026-07-07 09:45:00.000",
+    "endTime": "2026-07-07T06:59:59.999Z",
+    "endBrokerTime": "2026-07-07 09:59:59.999",
+    "lastUpdateTime": "2026-07-07T06:58:58.745Z",
+    "lastUpdateBrokerTime": "2026-07-07 09:58:58.745",
+    "state": "intermediate",
+    "open": 4132.39,
+    "close": 4130.58,
+    "high": 4132.86,
+    "low": 4128.38,
+    "tickVolume": 5928,
+    "spread": 0.2600000000002183
+  }
+]

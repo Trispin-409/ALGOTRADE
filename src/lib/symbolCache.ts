@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 const symbolsCache = new Map<string, { symbols: string[], lastFetchTime: number, isFetching?: boolean, lastErrorTime?: number }>();
 const CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours (increased to reduce API load)
 const ERROR_TTL = 1000 * 60 * 5; // 5 minutes wait after an error (increased from 1 min)
@@ -24,6 +27,31 @@ function getFallbackSymbols(accountId: string): string[] {
 
   for (const s of FALLBACK_SYMBOLS) {
     extraSymbols.add(s);
+  }
+
+  // Retrieve symbols from local cached metaapi deals and orders files if they exist
+  try {
+    const metaapiDir = path.join(process.cwd(), ".metaapi");
+    const files = [
+      path.join(metaapiDir, `${accountId}-MetaApi-deals.bin`),
+      path.join(metaapiDir, `${accountId}-MetaApi-historyOrders.bin`)
+    ];
+    for (const f of files) {
+      if (fs.existsSync(f)) {
+        const content = fs.readFileSync(f, "utf8");
+        const matches = content.match(/"symbol"\s*:\s*"([^"]+)"/g);
+        if (matches) {
+          for (const m of matches) {
+            const symMatch = m.match(/"symbol"\s*:\s*"([^"]+)"/);
+            if (symMatch && symMatch[1]) {
+              extraSymbols.add(symMatch[1]);
+            }
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn("[SYMBOL_CACHE] Error reading local metaapi cache files:", err.message);
   }
 
   // 1. Add suffix variants based on known active settings
@@ -154,7 +182,10 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
       // Step 1: REST getSymbols
       try {
         if (typeof account.getSymbols === 'function') {
-          symbols = await account.getSymbols();
+          symbols = await Promise.race([
+            account.getSymbols(),
+            new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error("Timeout (15s)")), 15000))
+          ]);
         }
       } catch (e: any) {
         if (e.message?.includes('cpu credits') || e.message?.includes('rate limit')) throw e;
@@ -165,7 +196,10 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
       if (!symbols || symbols.length === 0) {
         try {
           if (typeof account.getSymbolSpecifications === 'function') {
-            const specs = await account.getSymbolSpecifications();
+            const specs = await Promise.race([
+              account.getSymbolSpecifications(),
+              new Promise<any[]>((_, reject) => setTimeout(() => reject(new Error("Timeout (15s)")), 15000))
+            ]);
             symbols = specs.map((s: any) => s.symbol || s);
           }
         } catch (e: any) {
@@ -179,14 +213,22 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
         try {
           const connection = await account.getRPCConnection();
           if (!connection.terminalState?.connected) {
-            await connection.connect();
+            await Promise.race([
+              connection.connect(),
+              new Promise<void>((_, reject) => setTimeout(() => reject(new Error("Timeout (15s)")), 15000))
+            ]);
             try {
-              await connection.waitSynchronized({ timeoutInSeconds: 20 });
+              await connection.waitSynchronized({ timeoutInSeconds: 15 });
             } catch (e) {}
           }
-          symbols = await connection.getSymbols();
+          symbols = await Promise.race([
+            connection.getSymbols(),
+            new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error("Timeout (15s)")), 15000))
+          ]);
         } catch (e: any) {
-          console.error(`[SYMBOL_CACHE] RPC getSymbols failed for ${accountId}:`, e.message);
+          if (!e.message?.includes('cpu credits') && !e.message?.includes('rate limit')) {
+            console.warn(`[SYMBOL_CACHE] RPC getSymbols failed for ${accountId}:`, e.message);
+          }
           throw e; // Final throw to hit the catch block below
         }
       }
@@ -230,9 +272,9 @@ export async function getSymbolsCached(metaapi: any, accountId: string): Promise
       }
 
       if (isRateLimit) {
-        console.warn(`[SYMBOL_CACHE] API Rate-limited for ${accountId}: ${err.message}. Using cache/fallback.`);
+        console.log(`[SYMBOL_CACHE] API Rate-limited for ${accountId}. Using cache/fallback.`);
       } else {
-        console.error(`[SYMBOL_CACHE] API Fetch failed for ${accountId}:`, err.message);
+        console.warn(`[SYMBOL_CACHE] API Fetch failed for ${accountId}:`, err.message);
       }
       
       const fallbackList = hasCachedSymbols

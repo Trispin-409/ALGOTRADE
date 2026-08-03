@@ -51,7 +51,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
     { id: 'data', label: 'Market', icon: TrendingUp },
     ...(hasChatradeAccess ? [{ id: 'chatrade', label: 'Chatrade AI', icon: Cpu }] : []),
     { id: 'accounts', label: 'Accounts', icon: Users },
-    { id: 'risk', label: 'Risk Management', icon: ShieldAlert },
     { id: 'settings', label: 'Chart Settings', icon: Settings },
     { id: 'news', label: 'Fundamentals Analysis', icon: Newspaper },
   ];

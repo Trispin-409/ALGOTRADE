@@ -6,109 +6,47 @@ import { adminSupabase } from './supabaseAdmin';
 
 export class ChatradeMemory {
   
-  static async createUser(id: string, email: string, name: string) {
-    if (!adminSupabase) return null;
-    const { data, error } = await adminSupabase
-      .from('users')
-      .upsert({ id, email, created_at: new Date().toISOString() })
-      .select()
-      .single();
-    if (error) console.error('[MEMORY] Create User Error:', error.message || error);
-    return data;
+  static isUUID(val: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
   }
 
-  static async updateAccountState(accountId: string, userId: string, payload: any) {
-    if (!adminSupabase) return null;
-    const { data, error } = await adminSupabase
-      .from('accounts')
-      .upsert({
-        id: accountId,
-        user_id: userId,
-        ...payload,
-        updated_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-    if (error) console.error('[MEMORY] Update Account Error:', error);
-    return data;
-  }
-
-  static async logStrategySignal(id: string, userId: string, payload: any) {
-    if (!adminSupabase) return null;
-    const { data, error } = await adminSupabase
-      .from('strategy_signals')
-      .insert({
-        id,
-        user_id: userId,
-        ...payload,
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-    if (error) console.error('[MEMORY] Log Signal Error:', error);
-    return data;
-  }
-
-  static async logAIDecision(id: string, userId: string, signalId: string, payload: any) {
-    if (!adminSupabase) return null;
-    const { data, error } = await adminSupabase
-      .from('ai_decisions')
-      .insert({
-        id,
-        user_id: userId,
-        signal_id: signalId,
-        ...payload,
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-    if (error) console.error('[MEMORY] Log AI Decision Error:', error);
-    return data;
-  }
-
-  static async logTrade(id: string, userId: string, payload: any) {
-    if (!adminSupabase) return null;
-    const { data, error } = await adminSupabase
-      .from('trades')
-      .upsert({
-        id,
-        user_id: userId,
-        ...payload
-      })
-      .select()
-      .single();
-    if (error) console.error('[MEMORY] Log Trade Error:', error);
-    return data;
-  }
-
-  static async updateRiskState(id: string, userId: string, payload: any) {
-    if (!adminSupabase) return null;
-    const { data, error } = await adminSupabase
-      .from('risk_state')
-      .upsert({
-        id,
-        user_id: userId,
-        ...payload,
-        updated_at: new Date().toISOString()
-      })
-      .select()
-      .single();
-    if (error) console.error('[MEMORY] Risk State Error:', error);
-    return data;
-  }
-
-  static async saveChat(id: string, userId: string, role: string, message: string, contextType: string = 'general', email?: string) {
-    if (!adminSupabase) return null;
-
-    // Validate if userId is a valid UUID to prevent pg syntax errors
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId);
-    if (!isUUID) {
-      console.warn(`[MEMORY] Cannot save chat: userId '${userId}' is not a valid UUID.`);
-      return null;
+  static async resolveUserId(input: string): Promise<string | null> {
+    if (!adminSupabase || !input) return null;
+    
+    if (this.isUUID(input)) return input;
+    
+    // Check if it's an email
+    if (input.includes('@')) {
+      const { data, error } = await adminSupabase
+        .from('users')
+        .select('id')
+        .eq('email', input.toLowerCase().trim())
+        .maybeSingle();
+      if (data?.id) return data.id;
     }
+    
+    // Otherwise, assume it's an account ID (MetaApi account id)
+    const { data, error } = await adminSupabase
+      .from('ea_leases')
+      .select('user_id')
+      .eq('account_id', input)
+      .maybeSingle();
+    if (data?.user_id) return data.user_id;
+    
+    // Try ea_deployments as fallback
+    const { data: deployData } = await adminSupabase
+      .from('ea_deployments')
+      .select('user_id')
+      .eq('account_id', input)
+      .maybeSingle();
+    if (deployData?.user_id) return deployData.user_id;
 
+    return null;
+  }
+
+  static async ensureUserExists(userId: string, email?: string) {
+    if (!adminSupabase || !userId || !this.isUUID(userId)) return;
     try {
-      // Ensure containing parent user exists first to solve foreign key REFERENCES users(id) failures
       const { data: existingUser } = await adminSupabase
         .from('users')
         .select('id')
@@ -124,15 +62,180 @@ export class ChatradeMemory {
             created_at: new Date().toISOString()
           });
       }
-    } catch (parentErr: any) {
-      console.warn(`[MEMORY] Chat Save parent user validation error:`, parentErr.message || parentErr);
+    } catch (err: any) {
+      console.warn(`[MEMORY] Ensure parent user exists failed:`, err.message || err);
     }
+  }
+
+  static async createUser(id: string, email: string, name: string) {
+    if (!adminSupabase) return null;
+    if (!this.isUUID(id)) {
+      console.error('[MEMORY] Create User skipped: ID is not a valid UUID', id);
+      return null;
+    }
+    const { data, error } = await adminSupabase
+      .from('users')
+      .upsert({ id, email, name, created_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error) console.error('[MEMORY] Create User Error:', error.message || error);
+    return data;
+  }
+
+  static async updateAccountState(accountId: string, userId: string, payload: any) {
+    if (!adminSupabase) return null;
+    const resolvedUid = await this.resolveUserId(userId);
+    if (!resolvedUid) {
+      console.error('[MEMORY] Update Account State skipped: user_id could not be resolved', userId);
+      return null;
+    }
+    if (!this.isUUID(accountId)) {
+      console.error('[MEMORY] Update Account State skipped: account_id is not a valid UUID', accountId);
+      return null;
+    }
+    await this.ensureUserExists(resolvedUid);
+    const { data, error } = await adminSupabase
+      .from('accounts')
+      .upsert({
+        id: accountId,
+        user_id: resolvedUid,
+        ...payload,
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    if (error) console.error('[MEMORY] Update Account Error:', error);
+    return data;
+  }
+
+  static async logStrategySignal(id: string, userId: string, payload: any) {
+    if (!adminSupabase) return null;
+    const resolvedUid = await this.resolveUserId(userId);
+    if (!resolvedUid) {
+      console.error('[MEMORY] Log Signal skipped: user_id could not be resolved', userId);
+      return null;
+    }
+    if (!this.isUUID(id)) {
+      console.error('[MEMORY] Log Signal skipped: signal ID is not a valid UUID', id);
+      return null;
+    }
+    await this.ensureUserExists(resolvedUid);
+    const { data, error } = await adminSupabase
+      .from('strategy_signals')
+      .insert({
+        id,
+        user_id: resolvedUid,
+        ...payload,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    if (error) console.error('[MEMORY] Log Signal Error:', error);
+    return data;
+  }
+
+  static async logAIDecision(id: string, userId: string, signalId: string | null, payload: any) {
+    if (!adminSupabase) return null;
+    const resolvedUid = await this.resolveUserId(userId);
+    if (!resolvedUid) {
+      console.error('[MEMORY] Log AI Decision skipped: user_id could not be resolved', userId);
+      return null;
+    }
+    if (!this.isUUID(id)) {
+      console.error('[MEMORY] Log AI Decision skipped: decision ID is not a valid UUID', id);
+      return null;
+    }
+    const cleanSignalId = (signalId === 'N/A' || !signalId) ? null : signalId;
+    if (cleanSignalId && !this.isUUID(cleanSignalId)) {
+      console.error('[MEMORY] Log AI Decision skipped: signal_id is not a valid UUID', cleanSignalId);
+      return null;
+    }
+    await this.ensureUserExists(resolvedUid);
+    const { data, error } = await adminSupabase
+      .from('ai_decisions')
+      .insert({
+        id,
+        user_id: resolvedUid,
+        signal_id: cleanSignalId,
+        ...payload,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    if (error) console.error('[MEMORY] Log AI Decision Error:', error);
+    return data;
+  }
+
+  static async logTrade(id: string, userId: string, payload: any) {
+    if (!adminSupabase) return null;
+    const resolvedUid = await this.resolveUserId(userId);
+    if (!resolvedUid) {
+      console.error('[MEMORY] Log Trade skipped: user_id could not be resolved', userId);
+      return null;
+    }
+    if (!this.isUUID(id)) {
+      console.error('[MEMORY] Log Trade skipped: trade ID is not a valid UUID', id);
+      return null;
+    }
+    await this.ensureUserExists(resolvedUid);
+    const { data, error } = await adminSupabase
+      .from('trades')
+      .upsert({
+        id,
+        user_id: resolvedUid,
+        ...payload
+      })
+      .select()
+      .single();
+    if (error) console.error('[MEMORY] Log Trade Error:', error);
+    return data;
+  }
+
+  static async updateRiskState(id: string, userId: string, payload: any) {
+    if (!adminSupabase) return null;
+    const resolvedUid = await this.resolveUserId(userId);
+    if (!resolvedUid) {
+      console.error('[MEMORY] Risk State skipped: user_id could not be resolved', userId);
+      return null;
+    }
+    if (!this.isUUID(id)) {
+      console.error('[MEMORY] Risk State skipped: risk state ID is not a valid UUID', id);
+      return null;
+    }
+    await this.ensureUserExists(resolvedUid);
+    const { data, error } = await adminSupabase
+      .from('risk_state')
+      .upsert({
+        id,
+        user_id: resolvedUid,
+        ...payload,
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    if (error) console.error('[MEMORY] Risk State Error:', error);
+    return data;
+  }
+
+  static async saveChat(id: string, userId: string, role: string, message: string, contextType: string = 'general', email?: string) {
+    if (!adminSupabase) return null;
+    const resolvedUid = await this.resolveUserId(userId);
+    if (!resolvedUid) {
+      console.warn(`[MEMORY] Cannot save chat: userId '${userId}' could not be resolved.`);
+      return null;
+    }
+    if (!this.isUUID(id)) {
+      console.warn(`[MEMORY] Cannot save chat: chat ID '${id}' is not a valid UUID.`);
+      return null;
+    }
+
+    await this.ensureUserExists(resolvedUid, email);
 
     const { data, error } = await adminSupabase
       .from('chat_history')
       .insert({
         id,
-        user_id: userId,
+        user_id: resolvedUid,
         role,
         message,
         context_type: contextType,

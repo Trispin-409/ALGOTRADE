@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Newspaper, Loader2, ExternalLink, Globe, TrendingUp, TrendingDown, Minus, Activity, ArrowRight, Server, Shield, Search, Zap, Crosshair, BarChart2 } from 'lucide-react';
+import { Newspaper, Loader2, ExternalLink, Globe, TrendingUp, TrendingDown, Minus, Activity, ArrowRight, Server, Shield, Search, Zap, Crosshair, BarChart2, Bell, BellOff, Volume2, VolumeX, AlertTriangle } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface NewsProps {
@@ -49,6 +49,12 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
   const [currencyFilter, setCurrencyFilter] = useState('ALL');
 
   const candles = useStore(state => state.candles) || [];
+  const pushNotificationsEnabled = useStore(state => state.pushNotificationsEnabled);
+  const audioAlertsEnabled = useStore(state => state.audioAlertsEnabled);
+  const setPushNotificationsEnabled = useStore(state => state.setPushNotificationsEnabled);
+  const setAudioAlertsEnabled = useStore(state => state.setAudioAlertsEnabled);
+
+  const HIGH_IMPACT_KW = ['CPI', 'NFP', 'NON-FARM', 'FOMC', 'FED RATE', 'INTEREST RATE', 'RATE CUT', 'RATE HIKE', 'INFLATION', 'JEROME POWELL', 'GDP', 'UNEMPLOYMENT', 'WAR', 'SURGE', 'CRASH', 'EMERGENCY', 'HIGH-IMPACT', 'HIGH IMPACT', 'ECB RATE', 'BOE RATE', 'BANK OF JAPAN'];
   
   const displaySymbols = availableBrokerSymbols.length > 0 ? availableBrokerSymbols : AVAILABLE_SYMBOLS;
 
@@ -75,6 +81,10 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
         await Promise.all(FRED_SERIES.map(async (s) => {
           try {
             const res = await fetch(`/api/fred?series_id=${s.id}`);
+            if (!res.ok) {
+              const text = await res.text();
+              throw new Error(`FRED Error ${res.status}: ${text.substring(0, 50)}`);
+            }
             const data = await res.json();
             if (data && data.observations && data.observations.length >= 2) {
               const current = parseFloat(data.observations[0].value);
@@ -630,7 +640,14 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
                       
                       <div className="p-4 flex flex-col flex-1">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-[8px] font-mono font-bold text-white uppercase tracking-widest px-1.5 py-0.5 bg-white/5 rounded border border-white/10">{item.source}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[8px] font-mono font-bold text-white uppercase tracking-widest px-1.5 py-0.5 bg-white/5 rounded border border-white/10">{item.source}</span>
+                            {HIGH_IMPACT_KW.some(kw => (item.headline || '').toUpperCase().includes(kw) || (item.summary || '').toUpperCase().includes(kw)) && (
+                              <span className="text-[8px] font-mono font-black text-rose-400 uppercase tracking-widest px-1.5 py-0.5 bg-rose-500/20 rounded border border-rose-500/30 flex items-center gap-1 animate-pulse">
+                                <AlertTriangle className="w-2.5 h-2.5" /> HIGH IMPACT
+                              </span>
+                            )}
+                          </div>
                           <span className="text-[8px] font-mono text-slate-500 uppercase tracking-widest">{new Date(item.datetime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
                         </div>
                         <h3 className="text-xs font-bold text-slate-200 mb-2 line-clamp-2 leading-relaxed tracking-tight group-hover:text-white transition-colors">{item.headline}</h3>

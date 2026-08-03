@@ -631,7 +631,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                           style={{ borderColor: 'rgba(255,255,255,0.1)' }}
                           disabled={isLimitReached}
                           value={formData.platform} 
-                          onChange={e => setFormData({...formData, platform: e.target.value})}
+                          onChange={e => setFormData(prev => ({...prev, platform: e.target.value}))}
                         >
                           <option value="4">MT4 Core</option>
                           <option value="5">MT5 Core</option>
@@ -645,7 +645,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                           placeholder={isLimitReached ? "LIMIT REACHED" : "Account_Name"}
                           className={`w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm font-bold h-[52px] ${isLimitReached ? 'opacity-50 cursor-not-allowed' : ''}`}
                           value={formData.name} 
-                          onChange={e => setFormData({...formData, name: e.target.value})} 
+                          onChange={e => setFormData(prev => ({...prev, name: e.target.value}))} 
                         />
                       </div>
                     </div>
@@ -661,7 +661,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                           value={serverSearchQuery} 
                           onChange={e => {
                             setServerSearchQuery(e.target.value);
-                            setFormData({...formData, server: e.target.value});
+                            setFormData(prev => ({...prev, server: e.target.value}));
                           }} 
                         />
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
@@ -676,8 +676,11 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                               {servers.map(srv => (
                                 <button 
                                   key={srv} 
-                                  onClick={() => {
-                                    setFormData({...formData, server: srv});
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setFormData(prev => ({...prev, server: srv}));
                                     setServerSearchQuery(srv);
                                     setDiscoveredServers({});
                                   }}
@@ -696,11 +699,11 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Login ID</label>
-                        <input type="text" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm font-mono h-[52px]" value={formData.login} onChange={e => setFormData({...formData, login: e.target.value})} />
+                        <input type="text" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm font-mono h-[52px]" value={formData.login} onChange={e => setFormData(prev => ({...prev, login: e.target.value}))} />
                       </div>
                       <div className="space-y-2">
                         <label className="text-[9px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Password</label>
-                        <input type="password" placeholder="••••••••" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm h-[52px]" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
+                        <input type="password" placeholder="••••••••" className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 sm:py-3 text-white focus:border-white outline-none text-base sm:text-sm h-[52px]" value={formData.password} onChange={e => setFormData(prev => ({...prev, password: e.target.value}))} />
                       </div>
                     </div>
 

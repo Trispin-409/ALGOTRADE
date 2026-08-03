@@ -31,22 +31,44 @@ export const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, 
 
 export const getVerifiedSession = async () => {
   try {
-    let { data: { session }, error } = await supabase.auth.getSession();
-    if (error || !session) return null;
+    let sessionRes = await supabase.auth.getSession();
+    if (sessionRes.error) {
+      if (sessionRes.error.message?.toLowerCase().includes('refresh token') || sessionRes.error.message?.toLowerCase().includes('invalid')) {
+        console.warn("[AUTH] Invalid refresh token in getSession, clearing stale auth session:", sessionRes.error.message);
+        try { await supabase.auth.signOut(); } catch (e) {}
+        try { localStorage.clear(); } catch (e) {}
+      }
+      return null;
+    }
+    let session = sessionRes.data?.session;
+    if (!session) return null;
     
     if (session.expires_at && Date.now() / 1000 > session.expires_at - 10) {
       // Token is expiring very soon or is expired. Try to refresh.
-      const refresh = await supabase.auth.refreshSession();
-      if (refresh.data.session) {
+      try {
+        const refresh = await supabase.auth.refreshSession();
+        if (refresh.error || !refresh.data?.session) {
+          console.warn("[AUTH] Refresh session failed, clearing stale auth session:", refresh.error?.message);
+          try { await supabase.auth.signOut(); } catch (e) {}
+          try { localStorage.clear(); } catch (e) {}
+          return null;
+        }
         session = refresh.data.session;
-      } else {
+      } catch (refErr: any) {
+        console.warn("[AUTH] Exception during session refresh, clearing stale session:", refErr?.message || refErr);
+        try { await supabase.auth.signOut(); } catch (e) {}
+        try { localStorage.clear(); } catch (e) {}
         return null;
       }
     }
     
     return session;
-  } catch (err) {
+  } catch (err: any) {
     console.error("[AUTH] Error in getVerifiedSession:", err);
+    if (err?.message?.toLowerCase().includes('refresh token') || err?.message?.toLowerCase().includes('invalid')) {
+      try { await supabase.auth.signOut(); } catch (e) {}
+      try { localStorage.clear(); } catch (e) {}
+    }
     return null;
   }
 };
@@ -91,14 +113,25 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
 
   // Always inject fresh auth for internal API routes
   if (url.startsWith('/api/') || !headers['Authorization'] || headers['Authorization'].includes('undefined')) {
-    const session = await getVerifiedSession();
-    if (session) {
-      headers['Authorization'] = `Bearer ${session.access_token}`;
+    try {
+      const session = await getVerifiedSession();
+      if (session) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      }
+    } catch (e) {
+      console.warn("[AUTH] safeFetch session resolution warning:", e);
     }
   }
 
   const fetchUrl = url.startsWith('/') ? `${getApiBaseUrl()}${url}` : url;
-  const res = await fetch(fetchUrl, finalOptions);
+  let res: Response;
+  try {
+    res = await fetch(fetchUrl, finalOptions);
+  } catch (netErr: any) {
+    console.warn(`[NETWORK] Fetch to ${fetchUrl} failed:`, netErr?.message || netErr);
+    throw new Error(`Connection Error: Unable to reach server (${netErr?.message || 'Failed to fetch'}). Please check your network connection.`);
+  }
+
   const text = await res.text();
   
   if (!res.ok) {
@@ -111,7 +144,7 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
     }
     
     // Auto-logout on token invalidation or poisoned giant token (HTTP 413/431)
-    if (res.status === 413 || res.status === 431 || (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token')))) {
+    if (res.status === 413 || res.status === 431 || (res.status === 401 && (errorMsg.includes('Invalid token') || errorMsg.includes('Unauthorized') || errorMsg.includes('No token') || errorMsg.includes('Refresh Token')))) {
        try { 
          await supabase.auth.signOut(); 
          localStorage.clear();

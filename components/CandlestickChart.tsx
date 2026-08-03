@@ -495,6 +495,99 @@ export default function CandlestickChart({
                  </g>
                );
             })}
+
+            {/* High-Fidelity Deterministic Levels & Labels (SMC V10 Upgrade) */}
+            {(marketAnalysis as any).structures && (marketAnalysis as any).structures.map((s: any, idx: number) => {
+              const yStart = getY(s.priceStart);
+              const yEnd = getY(s.priceEnd);
+              const isBullish = s.type.includes('BULLISH') || s.type.includes('EQL') || s.type.includes('DISCOUNT');
+              const color = isBullish ? '#10b981' : '#f43f5e';
+              
+              if (s.type.startsWith('BOS') || s.type.startsWith('CHOCH') || s.type.startsWith('MSS') || s.type.startsWith('SWEEP') || s.type.startsWith('EQ') || s.type.startsWith('PREMIUM') || s.type.startsWith('DISCOUNT')) {
+                return (
+                  <g key={`struct-level-${idx}`} opacity={0.95}>
+                    <line 
+                      x1={0} 
+                      x2={mainW} 
+                      y1={yStart} 
+                      y2={yStart} 
+                      stroke={color} 
+                      strokeWidth={1.5}
+                      strokeDasharray={s.type.startsWith('MSS') ? 'none' : '4 3'}
+                    />
+                    <rect 
+                      x={mainW - 215} 
+                      y={yStart - 18} 
+                      width={205} 
+                      height={30} 
+                      fill="#02040a" 
+                      stroke={color} 
+                      strokeWidth={1} 
+                      rx={3}
+                    />
+                    <text 
+                      x={mainW - 210} 
+                      y={yStart - 5} 
+                      fill={color} 
+                      fontSize="9" 
+                      fontWeight="black" 
+                      className="font-mono uppercase tracking-wider"
+                    >
+                      {s.type.replace('_BULLISH', ' ↗').replace('_BEARISH', ' ↘')} [{s.timeframe}]
+                    </text>
+                    <text x={mainW - 210} y={yStart + 7} fill="#94a3b8" fontSize="8" className="font-mono">
+                      {Number(s.priceStart).toFixed(5)} | {s.source || 'SMC'} | CONF:{s.confidence || 90}%
+                    </text>
+                  </g>
+                );
+              }
+              
+              if (s.type.startsWith('OB') || s.type.startsWith('FVG')) {
+                const heightBox = Math.abs(yStart - yEnd);
+                const yTop = Math.min(yStart, yEnd);
+                return (
+                  <g key={`struct-box-${idx}`}>
+                    <rect 
+                      x={mainW * 0.1} 
+                      y={yTop} 
+                      width={mainW * 0.9} 
+                      height={Math.max(4, heightBox)} 
+                      fill={color} 
+                      fillOpacity={0.08}
+                      stroke={color}
+                      strokeWidth={1}
+                      strokeOpacity={0.4}
+                      strokeDasharray="2 2"
+                    />
+                    <rect
+                      x={mainW * 0.12}
+                      y={yTop - 10}
+                      width={200}
+                      height={24}
+                      fill="#02040a"
+                      rx={2}
+                      opacity={0.9}
+                      stroke={color}
+                      strokeWidth={0.5}
+                    />
+                    <text 
+                      x={mainW * 0.13} 
+                      y={yTop} 
+                      fill={color} 
+                      fontSize="8" 
+                      fontWeight="bold" 
+                      className="font-mono uppercase tracking-widest"
+                    >
+                      {s.type.replace('_BULLISH', '').replace('_BEARISH', '')} [{s.timeframe}] {Number(Math.min(s.priceStart, s.priceEnd)).toFixed(5)}-{Number(Math.max(s.priceStart, s.priceEnd)).toFixed(5)}
+                    </text>
+                    <text x={mainW * 0.13} y={yTop + 10} fill="#94a3b8" fontSize="7" className="font-mono">
+                      CONF:{s.confidence || 90}% | {s.confirmed || 'CONFIRMED'} | {s.source || 'SMC Engine'}
+                    </text>
+                  </g>
+                );
+              }
+              return null;
+            })}
           </g>
         )}
 
@@ -910,68 +1003,6 @@ export default function CandlestickChart({
         </div>
       )}
       
-      {/* Pattern Summary Overlay - Fully Responsive Collapsing badge layout - Hidden when active trade setup exists to prevent clutter */}
-      {showAnalysis && marketAnalysis && !activeSetup && (
-        <div className="absolute top-4 left-4 p-2 sm:p-3 pointer-events-none select-none text-[10px] sm:text-xs flex flex-col gap-1.5 drop-shadow-xl font-mono">
-          <div className="font-extrabold text-slate-100 flex gap-1.5 items-center drop-shadow-[0_1.5px_1.5px_rgba(0,0,0,0.95)]">
-            <span className="tracking-wide">AI CHG DETECTS:</span>
-            <span className="px-1.5 py-0.5 rounded text-[8px] sm:text-[9px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              +{marketAnalysis.detections.filter((d: any) => d.polarity > 0).length} BULL
-            </span>
-            <span className="px-1.5 py-0.5 rounded text-[8px] sm:text-[9px] font-black bg-rose-500/10 text-rose-400 border border-rose-500/20">
-              -{marketAnalysis.detections.filter((d: any) => d.polarity < 0).length} BEAR
-            </span>
-          </div>
-          
-          {/* Detailed Lists only display on larger/desktop viewports */}
-          <div className="hidden sm:flex flex-col sm:flex-row gap-4 sm:gap-6 mt-1 border-t border-white/5 pt-1.5 col-span-2">
-            <div className="flex flex-col gap-1">
-              <span className="text-emerald-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
-                BULLISH ({marketAnalysis.detections.filter((d: any) => d.polarity > 0).length})
-              </span>
-              {Object.entries(
-                marketAnalysis.detections
-                  .filter((d: any) => d.polarity > 0)
-                  .reduce((acc: any, curr: any) => {
-                    acc[curr.pattern] = (acc[curr.pattern] || 0) + 1;
-                    return acc;
-                  }, {})
-              ).map(([pattern, count]: [string, any]) => {
-                const color = getPatternColor(pattern, 1);
-                return (
-                  <div key={pattern} className="flex justify-between items-center gap-4 font-semibold drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]" style={{ color }}>
-                    <span className="uppercase tracking-wide">{pattern}</span>
-                    <span className="px-1.5 py-0.5 rounded text-white bg-slate-900/60 shadow-inner">x{count}</span>
-                  </div>
-                );
-              })}
-            </div>
-            
-            <div className="flex flex-col gap-1 border-l-0 sm:border-l border-white/20 sm:pl-6">
-              <span className="text-rose-400 font-semibold mb-1 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
-                BEARISH ({marketAnalysis.detections.filter((d: any) => d.polarity < 0).length})
-              </span>
-              {Object.entries(
-                marketAnalysis.detections
-                  .filter((d: any) => d.polarity < 0)
-                  .reduce((acc: any, curr: any) => {
-                    acc[curr.pattern] = (acc[curr.pattern] || 0) + 1;
-                    return acc;
-                  }, {})
-              ).map(([pattern, count]: [string, any]) => {
-                const color = getPatternColor(pattern, -1);
-                return (
-                  <div key={pattern} className="flex justify-between items-center gap-4 font-semibold drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]" style={{ color }}>
-                    <span className="uppercase tracking-wide">{pattern}</span>
-                    <span className="px-1.5 py-0.5 rounded text-white bg-slate-900/60 shadow-inner">x{count}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Sleek Floating MT5-style Zoom Buttons */}
       <div 
         className="absolute bottom-4 right-[85px] flex gap-1.5 z-30 select-none pointer-events-auto"

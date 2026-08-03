@@ -591,53 +591,41 @@ const MarketData: React.FC<MarketDataProps> = ({
           </div>
         </button>
 
-        {/* VOLUME CONTROL ADJUSTMENT CAPSULE */}
+        {/* TRADES CONTROL ADJUSTMENT CAPSULE */}
         <div className="flex-1 flex flex-col items-center justify-center bg-black/60 border border-white/5 rounded-xl py-1 px-2 font-mono text-center relative">
-          <span className="text-[7px] text-slate-500 block uppercase font-black tracking-widest mb-0.5 leading-none">VOLUME</span>
+          <span className="text-[7px] text-slate-500 block uppercase font-black tracking-widest mb-0.5 leading-none">TRADES</span>
           <div className="flex items-center justify-between w-full">
             <button 
               type="button"
-              onClick={handleVolumeDecrement}
-              className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg active:scale-95 transition-all cursor-pointer"
+              onClick={() => setStrategySettings({ maxTrades: Math.max(1, (strategySettings.maxTrades || 1) - 1) })}
+              className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg active:scale-95 transition-all cursor-pointer select-none"
             >
               <Minus className="w-3 h-3" />
             </button>
             <input 
-              id="terminal-volume-input"
               type="text"
-              inputMode="decimal"
-              value={lotSizeInput}
+              inputMode="numeric"
+              value={strategySettings.maxTrades ?? 1}
               onChange={(e) => {
                 const text = e.target.value;
-                if (/^[0-9]*\.?[0-9]*$/.test(text)) {
-                  setLotSizeInput(text);
-                  const val = parseFloat(text);
-                  if (!isNaN(val) && val >= 0.001 && val <= 100.0) {
-                    setLotSize(val);
-                  }
+                if (/^[0-9]*$/.test(text)) {
+                  const val = parseInt(text);
+                  setStrategySettings({ maxTrades: isNaN(val) ? 1 : Math.max(1, val) });
                 }
               }}
               onBlur={() => {
-                const val = parseFloat(lotSizeInput);
-                if (isNaN(val) || val < 0.01) {
-                  setLotSize(0.01);
-                  setLotSizeInput("0.01");
-                } else if (val > 10.0) {
-                  setLotSize(10.0);
-                  setLotSizeInput("10.00");
-                } else {
-                  const rounded = Number(val.toFixed(2));
-                  setLotSize(rounded);
-                  setLotSizeInput(rounded.toString());
+                const val = strategySettings.maxTrades;
+                if (!val || val < 1) {
+                  setStrategySettings({ maxTrades: 1 });
                 }
               }}
-              className="w-14 bg-transparent text-xs sm:text-sm font-black text-white text-center outline-none border-0 p-0 focus:ring-0 focus:outline-none placeholder-slate-500"
+              className="w-10 bg-transparent text-xs sm:text-sm font-black text-white text-center outline-none border-0 p-0 focus:ring-0 focus:outline-none"
               style={{ color: 'var(--accent-color)' }}
             />
             <button 
               type="button"
-              onClick={handleVolumeIncrement}
-              className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg active:scale-95 transition-all cursor-pointer"
+              onClick={() => setStrategySettings({ maxTrades: (strategySettings.maxTrades || 1) + 1 })}
+              className="p-1 hover:bg-white/5 text-slate-400 hover:text-white rounded-lg active:scale-95 transition-all cursor-pointer select-none"
             >
               <Plus className="w-3 h-3" />
             </button>
@@ -876,40 +864,13 @@ const MarketData: React.FC<MarketDataProps> = ({
 
                 {/* Volume & Lot allocation setting */}
                 <div className="space-y-2 bg-black/40 p-4 rounded-2xl border border-white/5">
-                  <span className="text-[9px] font-mono font-black text-[#face6f] uppercase tracking-widest block">Volume Settings</span>
+                  <span className="text-[9px] font-mono font-black text-[#face6f] uppercase tracking-widest block">AI-Calculated Volume & Instrument</span>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Lot Size Allocation</label>
-                      <input 
-                        type="text" 
-                        inputMode="decimal"
-                        value={lotSizeInput} 
-                        onChange={(e) => {
-                          const text = e.target.value;
-                          if (/^[0-9]*\.?[0-9]*$/.test(text)) {
-                            setLotSizeInput(text);
-                            const val = parseFloat(text);
-                            if (!isNaN(val) && val >= 0.001 && val <= 100.0) {
-                              setLotSize(val);
-                            }
-                          }
-                        }}
-                        onBlur={() => {
-                          const val = parseFloat(lotSizeInput);
-                          if (isNaN(val) || val < 0.01) {
-                            setLotSize(0.01);
-                            setLotSizeInput("0.01");
-                          } else if (val > 10.0) {
-                            setLotSize(10.0);
-                            setLotSizeInput("10.00");
-                          } else {
-                            const rounded = Number(val.toFixed(2));
-                            setLotSize(rounded);
-                            setLotSizeInput(rounded.toString());
-                          }
-                        }}
-                        className="w-full bg-black border border-white/10 text-xs font-mono text-white rounded-xl px-3 py-2 outline-none focus:border-[#face6f]/40" 
-                      />
+                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase font-black">AI Lot Size Allocation (Auto)</label>
+                      <div className="w-full bg-black/40 border border-white/5 text-xs font-mono text-emerald-400 rounded-xl px-3 py-2 font-black select-none">
+                        {lotSize ? lotSize.toFixed(2) : "Calculating..."} Lots
+                      </div>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Underlying Symbol</label>
@@ -918,31 +879,6 @@ const MarketData: React.FC<MarketDataProps> = ({
                         value={symbol} 
                         readOnly
                         className="w-full bg-black/40 border border-white/5 text-xs font-mono text-slate-400 rounded-xl px-3 py-2 outline-none" 
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Risk Management Setting */}
-                <div className="space-y-2 bg-black/40 p-4 rounded-2xl border border-white/5">
-                  <span className="text-[9px] font-mono font-black text-[#face6f] uppercase tracking-widest block">Risk Management</span>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Max Trades Limit</label>
-                      <input 
-                        type="number"
-                        value={strategySettings.maxTrades ?? 1}
-                        onChange={(e) => setStrategySettings({ maxTrades: Math.max(1, parseInt(e.target.value) || 1) })}
-                        className="w-full bg-black border border-white/10 text-xs font-mono text-white rounded-xl px-3 py-2 outline-none focus:border-[#face6f]/40"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-mono font-bold text-slate-500 uppercase">Broker Comment</label>
-                      <input 
-                        type="text"
-                        value="ALGOTRADE"
-                        className="w-full bg-[#070b13] border border-white/10 text-xs font-mono text-slate-400 rounded-xl px-3 py-2 outline-none cursor-not-allowed opacity-50"
-                        readOnly
                       />
                     </div>
                   </div>

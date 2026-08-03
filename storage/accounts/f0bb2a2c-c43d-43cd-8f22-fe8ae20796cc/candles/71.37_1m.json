@@ -1,0 +1,53 @@
+[
+  {
+    "symbol": "EURUSD",
+    "timeframe": "15m",
+    "time": "2026-07-29T16:15:00.000Z",
+    "brokerTime": "2026-07-29 19:15:00.000",
+    "endTime": "2026-07-29T16:29:59.999Z",
+    "endBrokerTime": "2026-07-29 19:29:59.999",
+    "lastUpdateTime": "2026-07-29T16:24:20.619Z",
+    "lastUpdateBrokerTime": "2026-07-29 19:24:20.619",
+    "state": "intermediate",
+    "open": 1.13768,
+    "close": 1.13798,
+    "high": 1.13803,
+    "low": 1.13758,
+    "tickVolume": 558,
+    "spread": 0.00019999999999997797
+  },
+  {
+    "symbol": "EURUSD",
+    "timeframe": "5m",
+    "time": "2026-07-29T16:20:00.000Z",
+    "brokerTime": "2026-07-29 19:20:00.000",
+    "endTime": "2026-07-29T16:24:59.999Z",
+    "endBrokerTime": "2026-07-29 19:24:59.999",
+    "lastUpdateTime": "2026-07-29T16:24:59.999Z",
+    "lastUpdateBrokerTime": "2026-07-29 19:24:59.999",
+    "state": "complete",
+    "open": 1.13775,
+    "close": 1.13794,
+    "high": 1.13803,
+    "low": 1.13774,
+    "tickVolume": 293,
+    "spread": 0.000180000000000069
+  },
+  {
+    "symbol": "EURUSD",
+    "timeframe": "5m",
+    "time": "2026-07-29T16:25:00.000Z",
+    "brokerTime": "2026-07-29 19:25:00.000",
+    "endTime": "2026-07-29T16:29:59.999Z",
+    "endBrokerTime": "2026-07-29 19:29:59.999",
+    "lastUpdateTime": "2026-07-29T16:25:59.410Z",
+    "lastUpdateBrokerTime": "2026-07-29 19:25:59.410",
+    "state": "intermediate",
+    "open": 1.13794,
+    "close": 1.13801,
+    "high": 1.13804,
+    "low": 1.13794,
+    "tickVolume": 93,
+    "spread": 0.00021000000000004349
+  }
+]
