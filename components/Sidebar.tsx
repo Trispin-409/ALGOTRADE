@@ -53,6 +53,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
     { id: 'accounts', label: 'Accounts', icon: Users },
     { id: 'settings', label: 'Chart Settings', icon: Settings },
     { id: 'news', label: 'Fundamentals Analysis', icon: Newspaper },
+    { id: 'pricing', label: 'Subscription Plans', icon: Layers },
   ];
 
   const menuItems = [...baseMenuItems];

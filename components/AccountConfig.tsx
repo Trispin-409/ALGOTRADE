@@ -242,8 +242,8 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
   // Calculate limit based on plan
   const planLimits: Record<string, number> = {
     'Starter': 1,
-    'Pro': 2,
-    'Elite': 3,
+    'Pro': 1,
+    'Elite': 2,
     'Developer': 100 // No limit for developer
   };
   

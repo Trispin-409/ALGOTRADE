@@ -2871,7 +2871,16 @@ app.post("/api/chatrade/analyze", async (req, res) => {
       return res.status(403).json({ error: "Access Denied: Chatrade AI is not part of the Starter plan." });
     }
 
-    const { accountId, symbol, direction, isDeepRequest = false, evidenceData = [] } = req.body || {};
+    const { 
+      accountId, 
+      symbol, 
+      direction, 
+      isDeepRequest = false, 
+      evidenceData = [],
+      newsContext = null,
+      newsImpactAssessment = null,
+      driverBreakdown = null
+    } = req.body || {};
     if (!accountId || !symbol || !direction) {
       return res.status(400).json({ error: "accountId, symbol, and direction are required" });
     }
@@ -3034,6 +3043,39 @@ app.post("/api/chatrade/analyze", async (req, res) => {
 
     const realContext = accountId ? await fetchAccountRealContext(accountId, userId) : null;
 
+    // Real-Time 'News-to-Sentiment' Correlation Engine Injection
+    let groundedNewsContext = "";
+    if (newsImpactAssessment) {
+      const headlinesStr = Array.isArray(newsImpactAssessment.parsedHeadlines)
+        ? newsImpactAssessment.parsedHeadlines.map((h: any) => `- [${h.impactLevel}] [Direction: ${h.directionalBias}] ${h.headline} (${h.summary || ''}) [Source: ${h.source || 'Grounded Search'}]`).join('\n')
+        : "No parsed headlines available.";
+
+      const driversStr = Array.isArray(newsImpactAssessment.driverBreakdown || driverBreakdown)
+        ? (newsImpactAssessment.driverBreakdown || driverBreakdown).map((d: any) => `- Driver: ${d.name}\n  Role: ${d.role || d.description || 'Asset influence'}\n  Volatility Impact: ${d.impact || d.impactLevel || 'Medium'}\n  Sentiment: ${d.sentiment || 'Neutral'}`).join('\n')
+        : "No driver definitions found.";
+
+      const correlationStr = newsImpactAssessment.correlationRatingBUY || newsImpactAssessment.correlationRatingSELL
+        ? `* Correlation Alignment Rating BUY: Net Weight ${newsImpactAssessment.correlationRatingBUY?.netWeight}%, Volatility Rating: ${newsImpactAssessment.correlationRatingBUY?.volatilityAlignmentRating}\n  Predictive Catalyst Prediction: ${newsImpactAssessment.correlationRatingBUY?.predictionContribution}\n* Correlation Alignment Rating SELL: Net Weight ${newsImpactAssessment.correlationRatingSELL?.netWeight}%, Volatility Rating: ${newsImpactAssessment.correlationRatingSELL?.volatilityAlignmentRating}\n  Predictive Catalyst Prediction: ${newsImpactAssessment.correlationRatingSELL?.predictionContribution}\n* Explanation: ${newsImpactAssessment.correlationRatingBUY?.explanation || newsImpactAssessment.correlationRatingSELL?.explanation || 'Aligned.'}`
+        : "No pre-calculated news-to-sentiment correlation rating.";
+
+      groundedNewsContext = `
+=== REAL-TIME GROUNDED NEWS-TO-SENTIMENT CORRELATION CONTEXT ===
+* Overall Grounded News Sentiment: ${newsImpactAssessment.overallSentiment} (Score: ${newsImpactAssessment.sentimentScore}/100, Impact: ${newsImpactAssessment.impactScore})
+* Macro Context Summary: ${newsImpactAssessment.macroContextSummary || 'Stable'}
+* High Volatility Risk: ${newsImpactAssessment.highVolatilityRisk ? "YES (HIGH IMPACT EVENTS ACTIVE)" : "NO (STABLE BACKDROP)"}
+
+* Breaking High-Impact Economic Headlines (Google Grounded):
+${headlinesStr}
+
+* Primary Symbol Drivers & Macro Variables:
+${driversStr}
+
+* Dynamic News-to-Sentiment Volatility Correlation weights:
+${correlationStr}
+================================================================
+`;
+    }
+
     // 3. LOW QUOTA MODE: Automatically adapt prompt for extreme token compression
     const lowQuotaIndicatorText = quotaInfo.lowQuotaMode
       ? `\n[LOW QUOTA MODE ACTIVE] Compress reasoning and explanation (mentorVoice) to 1 short sentence max. Simplify SL/TP logic. Keep token overhead minimal.`
@@ -3064,6 +3106,7 @@ AGENTIC LOOP REASONING & DEBATE INSTRUCTIONS:
 REAL-TIME DATA ACCESSED & CONTEXT PARAMETERS:
 - Instrument: ${symbol}
 - Direction: ${direction}
+${groundedNewsContext}
 - Deterministic Structure Evidence (Single Source of Truth): ${JSON.stringify(evidenceData)}
 - Fundamental summary (FRED Indicators): ${fredSummary}
 - Sentiment & News feeds: ${newsSummary}
@@ -3195,14 +3238,24 @@ app.post("/api/chatrade/evolve-strategies", async (req, res) => {
       return res.status(400).json({ error: "symbol and evidence are required" });
     }
 
-    const prompt = `You are the ALGOTRADE Institutional Strategy Laboratory Engine. Your objective is to design entirely new, highly custom, institutional-grade trading strategies that fit the current live market context perfectly.
-These strategies must be invented specifically for this market, going beyond standard template strategies.
+    const prompt = `You are the ALGOTRADE Institutional Strategy Laboratory Engine running on enterprise-grade Vertex AI.
+Your objective is to design entirely new, highly adaptive, institutional-grade trading strategies by scanning the provided market evidence and recent candlestick data.
+You must perform high-intelligence predictive modeling to find high-probability entry setups for ${symbol}.
+
+STRICT RECOGNITION & PATTERN SCANNING REQUISITES:
+1. Candlestick Patterns: Calculate, scan, and retrieve patterns from the provided recent 20 candles (OHLCV). Look for:
+   - Reversal signals: Pinbars, Hammer, Shooting Star, Bullish/Bearish Engulfing, Morning/Evening Star, Harami, or Doji.
+   - Indecision signals at key structural limits.
+2. Breakout and Fakeout (Liquidity Hunt) Detection: Compare recent highs/lows and candle closes:
+   - True breakout: Strong volume expansion closing firmly beyond structure boundaries.
+   - Fakeout (Liquidity hunt): Candle pierces a swing high or low, hunts stop liquidity, and closes back inside the range with a long rejection wick (wick rejection).
+3. Live Google Search Grounding Analysis: Retrieve and integrate the absolute latest breaking news, central bank announcements (Fed, ECB, BoE), CPI, NFP schedules, and fundamental sentiment for ${symbol}. Combine this with your technical and candle scans to determine if fundamental consensus backs the trade direction.
 
 STRICT RISK & RISK-FIRST COGNITION RULES:
-1. Capital Preservation Priority: Your primary rule is never to lose capital. If indicators are mixed or the market is highly uncertain, urge patience (WAIT).
-2. Trend Confluence Filter: Always verify if the expectedDirection aligns with the higher timeframe trend. Counter-trend trades are highly prone to false breakouts and should be penalized heavily, leading to conservative confidence ratings.
-3. No-Trade Zone (WAIT): If we are in a tight, choppy sideways range or low-volume sideways session, do not force a breakout trade. Propose "WAIT" or recommend waiting for a liquidity sweep of the range boundaries.
-4. Mathematically Rigorous Confidence Rating: Assign a realistic, institutional-grade confidence score (0 to 100). Do NOT assign a high rating (>= 80%) unless there is perfect confluence across Multi-Timeframe Structure, Session Volume, Technical indicators (RSI/EMAs), and News Sentiment. If there is any structural conflict or macro news divergence, the confidence rating MUST be below 75%.
+1. Capital Preservation Priority: Never lose capital. If indicators are mixed or the market is highly uncertain, urge patience ("WAIT").
+2. Trend Confluence Filter: Verify if the expectedDirection aligns with the higher timeframe trend.
+3. No-Trade Zone ("WAIT"): If we are in a tight, choppy sideways range, do not force a breakout. Recommend a liquidity sweep wait.
+4. Balanced Confidence Rating: Assign a realistic score (0 to 100). Strong confluences get 78-92%. Minor conflicts get 68-77%. High uncertainty gets below 65% or suggest "WAIT".
 
 CURRENT MARKET ENVIRONMENT EVIDENCE:
 - Symbol: ${symbol}
@@ -3210,16 +3263,17 @@ CURRENT MARKET ENVIRONMENT EVIDENCE:
 - Technical Indicators: ${JSON.stringify(evidence.indicators)}
 - Market Structure (SMC): ${JSON.stringify(evidence.structure)}
 - Liquidity Mapping: ${JSON.stringify(evidence.liquidity)}
-- News Sentiment: ${JSON.stringify(evidence.news)}
+- News Sentiment Context: ${JSON.stringify(evidence.news)}
+- Recent 20 Candlesticks: ${JSON.stringify(evidence.candles || [])}
 
 Task:
-Generate 1 or 2 entirely new, creative, custom trading strategies designed precisely for these current conditions. Do not output standard SMA or basic RSI crossover strategies. Design advanced SMC, multi-timeframe liquidity hunt, session-range traps, high-volatility news-fades, or other institutional concepts that are highly relevant to this specific asset and moment.
+Generate 1 or 2 entirely new, creative, custom trading strategies designed precisely for these conditions. Do not output standard SMA or basic RSI crossover strategies. Design advanced SMC, multi-timeframe liquidity hunt, session-range traps, high-volatility news-fades, or other institutional concepts that are highly relevant to this specific asset and moment.
 
 For EACH strategy, you must output exactly the following fields in a flat JSON structure:
 1. strategyName: A professional, sophisticated, institutional name (e.g., "London Session Liquidity Sweep & Order Block Rebound", "Asia Consolidation Expansion Trap", "News-Driven Volatility Fade Protocol"). Do NOT include rank prefixes.
 2. marketThesis: The underlying financial/structural thesis for why this strategy works.
 3. marketNarrative: The market narrative of buyers vs. sellers.
-4. whyFits: A short explanation of why this strategy fits the current live environment.
+4. whyFits: A short explanation of why this strategy fits the current live environment (referencing the scanned candlesticks, patterns, breakouts/fakeouts, and search-grounded news).
 5. expectedDirection: Expected direction: "BUY", "SELL", or "WAIT".
 6. entryPhilosophy: The precise trigger or entry philosophy (e.g., retest of order block with dynamic candle confirmation).
 7. buyZone: Specific description of the buy zone or levels.
@@ -3234,7 +3288,9 @@ For EACH strategy, you must output exactly the following fields in a flat JSON s
 
 CRITICAL OUTPUT FORMATTING INSTRUCTION: Respond ONLY with a clean JSON array of objects. Do NOT wrap output in markdown codeblocks or HTML. Each object in the array must strictly contain all the 15 fields listed above. Ensure the response is valid JSON.`;
 
-    const result = await callAIWithFallback(prompt);
+    const result = await callAIWithFallback(prompt, {
+      tools: [{ googleSearch: {} }]
+    });
     let text = result.text || "";
     text = text.replace(/```json/g, "").replace(/```/g, "").trim();
     let strategies = [];
@@ -3471,6 +3527,42 @@ ${tradesSummary}
     const cacheUnrealizedLoss = marketContext?.account?.unrealizedLoss;
     const cacheTotalSessionLoss = marketContext?.account?.totalSessionLoss;
 
+    const newsContext = marketContext?.newsContext;
+    const newsImpactAssessment = marketContext?.newsImpactAssessment;
+    const driverBreakdown = marketContext?.driverBreakdown;
+
+    let groundedNewsAndDriversContextText = "";
+    if (newsImpactAssessment) {
+      const headlinesStr = Array.isArray(newsImpactAssessment.parsedHeadlines)
+        ? newsImpactAssessment.parsedHeadlines.map((h: any) => `- [${h.impactLevel}] [Bias: ${h.directionalBias}] ${h.headline} (${h.summary || ''})`).join('\n')
+        : "No parsed headlines.";
+
+      const driversStr = Array.isArray(newsImpactAssessment.driverBreakdown || driverBreakdown)
+        ? (newsImpactAssessment.driverBreakdown || driverBreakdown).map((d: any) => `- Driver: ${d.name}\n  Influence: ${d.role || d.description || 'Asset influence'}\n  Volatility Impact: ${d.impact || 'Medium'}\n  Sentiment: ${d.sentiment || 'Neutral'}`).join('\n')
+        : "No driver definitions.";
+
+      const correlationStr = newsImpactAssessment.correlationRatingBUY || newsImpactAssessment.correlationRatingSELL
+        ? `* Correlation BUY Weight: ${newsImpactAssessment.correlationRatingBUY?.netWeight}%, Volatility Alignment: ${newsImpactAssessment.correlationRatingBUY?.volatilityAlignmentRating}\n  Predictive Catalyst Prediction: ${newsImpactAssessment.correlationRatingBUY?.predictionContribution}\n* Correlation SELL Weight: ${newsImpactAssessment.correlationRatingSELL?.netWeight}%, Volatility Alignment: ${newsImpactAssessment.correlationRatingSELL?.volatilityAlignmentRating}\n  Predictive Catalyst Prediction: ${newsImpactAssessment.correlationRatingSELL?.predictionContribution}`
+        : "No correlation weights.";
+
+      groundedNewsAndDriversContextText = `
+=== REAL-TIME GROUNDED NEWS-TO-SENTIMENT CORRELATION CONTEXT ===
+* Overall News Sentiment: ${newsImpactAssessment.overallSentiment} (Score: ${newsImpactAssessment.sentimentScore}/100, Impact Score: ${newsImpactAssessment.impactScore})
+* Summary: ${newsImpactAssessment.macroContextSummary || 'Stable'}
+* High Volatility Risk: ${newsImpactAssessment.highVolatilityRisk ? "YES (HIGH IMPACT EVENTS ACTIVE)" : "NO (STABLE BACKDROP)"}
+
+* Grounded Economic Headlines (Google Grounded):
+${headlinesStr}
+
+* Primary Asset Drivers & Macro Variables:
+${driversStr}
+
+* Volatility-to-Sentiment Alignment Weights:
+${correlationStr}
+================================================================
+`;
+    }
+
     const prompt = `You are Chatrade AI - Institutional trading mentor and conversational agentic decision engine.
 Style: Professional, calm, patient, analytical, disciplined, transparent. Never emotional, never overconfident. Always explain your reasoning, discuss probabilities, and justify any changes in recommendations based on real-time data.
 
@@ -3517,6 +3609,8 @@ Connected Account Live Data:
 - Yesterday's Realized Profit: ${realContext ? realContext.currency + ' ' + realContext.yesterdayProfit : 'N/A'}
 
 ${marketContextText}
+
+${groundedNewsAndDriversContextText}
 
 FRED Live Economic Indicators: ${chatFredSummary}
 - Finnhub Real-Time news:
@@ -4333,7 +4427,7 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
         { type: 'candles', timeframe }
       ]);
       console.log(`[STREAM] Subscribed successfully to ${symbol} on ${accountId}`);
-      return;
+      return symbol;
     } catch (err: any) {
       const errorMsg = err.message?.toLowerCase() || "";
       const isNotConnected = errorMsg.includes('not connected to broker') || 
@@ -4892,7 +4986,7 @@ app.post("/api/subscription/activate-device", async (req, res) => {
 
     // Retain legacy behaviors for automation logic compat
     const planType = keyData.plan || inferredPlan || userRecord?.plan || 'Starter';
-    const metaapiAccountLimit = planType === 'Elite' ? 3 : planType === 'Pro' ? 2 : 1;
+    const metaapiAccountLimit = planType === 'Elite' ? 2 : 1;
 
     if (userRecord) {
         await adminSupabase.from("users").update({
@@ -5577,9 +5671,9 @@ app.post("/api/accounts", async (req, res) => {
         const leases = await TradingController.getActiveLeases(userId);
         
         let limit = 1;
-        if (plan === 'Pro') limit = 2;
-        else if (plan === 'Elite') limit = 3;
-        else if (plan === 'Developer') limit = 100;
+        if (plan === 'Pro') limit = 1;
+        else if (plan === 'Elite') limit = 2;
+        else if (plan === 'Developer' || plan === 'admin') limit = 100;
 
         if (leases.length >= limit) {
            return res.status(403).json({ error: `Subscription limit reached for ${plan} plan. Please upgrade to add more accounts. Limit: ${limit}, Current: ${leases.length}` });
@@ -6640,7 +6734,7 @@ app.post('/api/trade/close', async (req, res) => {
 
   try {
     const userId = await getUserIdFromRequest(req);
-    const { accountId, positionId } = req.body || {};
+    const { accountId, positionId, volume } = req.body || {};
     
     if (!accountId) {
       return res.status(400).json({ error: "Account ID is required" });
@@ -6654,9 +6748,14 @@ app.post('/api/trade/close', async (req, res) => {
     // Ensure synchronization before trade
     await connection.waitSynchronized();
 
-    const result = await connection.closePosition(positionId);
+    const options: any = {};
+    if (volume && Number(volume) > 0) {
+      options.volume = Number(volume);
+    }
 
-    logMessage(accountId, 'SUCCESS', `Closed position #${positionId} successfully`, result);
+    const result = await connection.closePosition(positionId, options);
+
+    logMessage(accountId, 'SUCCESS', `Closed position #${positionId}${volume ? ` (Volume: ${volume})` : ''} successfully`, result);
     console.log("[TRADE] CLOSE SUCCESS", result);
     res.json({ success: true, result });
   } catch (err: any) {
@@ -8059,12 +8158,13 @@ async function startServer() {
                 }
 
                 // 2. Start Subscriptions (SDK ONLY - NO REST)
-                await safeSubscribe(connection, symbol, timeframe, accountId).catch(err => {
+                const normalizedSymbol = await safeSubscribe(connection, symbol, timeframe, accountId).catch(err => {
                    console.error(`[STREAM_SUBSCRIBE_ERROR] Failed for ${symbol} on ${accountId}:`, err);
                    try {
                      ws.send(JSON.stringify({ type: 'log:trade', accountId, level: 'ERROR', message: `Subscription failed: ${err.message}`, data: { symbol } }));
                    } catch (e) {}
-                });
+                   return symbol;
+                }) || symbol;
                 
                 // Immediately push account info so UI unblocks even if history is slow/fails
                 const info = connection.terminalState?.accountInformation;
@@ -8086,12 +8186,12 @@ async function startServer() {
                 
                 // 3. Hydrate candles on stream connect
                 let history: any[] = [];
-                const isShortSymbol = !symbol || symbol.length < 3;
+                const isShortSymbol = !normalizedSymbol || normalizedSymbol.length < 3;
                 
                 if (isShortSymbol) {
-                    console.log(`[SDK_RPC] Skipping history for short/incomplete symbol: ${symbol}`);
+                    console.log(`[SDK_RPC] Skipping history for short/incomplete symbol: ${normalizedSymbol}`);
                 } else {
-                    let finalSymbol = symbol;
+                    let finalSymbol = normalizedSymbol;
                     let cachedCandles = candleCache.load(accountId, finalSymbol, timeframe);
                     
                     if (cachedCandles.length > 20) {
@@ -8103,7 +8203,33 @@ async function startServer() {
                                   if (typeof (account as any).getHistoricalCandles === 'function') return await (account as any).getHistoricalCandles(s, timeframe, undefined, 100);
                                   return [];
                               };
-                              let recent = await fetchCandles(finalSymbol);
+                              let recent: any[] = [];
+                              try {
+                                  recent = await fetchCandles(finalSymbol);
+                              } catch (err: any) {
+                                  const getBaseSymbol = (sym: string): string => {
+                                    const u = sym.toUpperCase();
+                                    if (u.startsWith("XAU") || u.startsWith("XAG")) {
+                                      return u.substring(0, 6);
+                                    }
+                                    const forexMatch = u.match(/^([A-Z]{6})/);
+                                    if (forexMatch) {
+                                      return forexMatch[1];
+                                    }
+                                    const baseMatch = u.match(/^([A-Z0-9]+?)([^A-Z0-9]+.*|[a-z]+.*)?$/);
+                                    if (baseMatch) {
+                                      return baseMatch[1];
+                                    }
+                                    return u;
+                                  };
+                                  const baseSym = getBaseSymbol(finalSymbol);
+                                  if (baseSym !== finalSymbol.toUpperCase()) {
+                                      console.log(`[SDK_RPC] Recent delta fetch failed for ${finalSymbol} (${err.message}). Retrying with base symbol: ${baseSym}...`);
+                                      recent = await fetchCandles(baseSym);
+                                  } else {
+                                      throw err;
+                                  }
+                              }
                               history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, recent);
                          } catch (e: any) {
                               console.warn(`[SDK_RPC] Fallback to cache. Delta sync failed: ${e.message}`);
@@ -8132,58 +8258,76 @@ async function startServer() {
                                     history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, history);
                                 }
                             } catch (err: any) {
-                                if (err.message.includes('not exist') || err.message.includes('invalid')) {
-                                    console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
+                                const getBaseSymbol = (sym: string): string => {
+                                  const u = sym.toUpperCase();
+                                  if (u.startsWith("XAU") || u.startsWith("XAG")) {
+                                    return u.substring(0, 6);
+                                  }
+                                  const forexMatch = u.match(/^([A-Z]{6})/);
+                                  if (forexMatch) {
+                                    return forexMatch[1];
+                                  }
+                                  const baseMatch = u.match(/^([A-Z0-9]+?)([^A-Z0-9]+.*|[a-z]+.*)?$/);
+                                  if (baseMatch) {
+                                    return baseMatch[1];
+                                  }
+                                  return u;
+                                };
+
+                                const baseSym = getBaseSymbol(finalSymbol);
+                                let retrySucceeded = false;
+                                if (baseSym !== finalSymbol.toUpperCase()) {
+                                    console.log(`[SDK_RPC] Full history fetch failed for ${finalSymbol} (${err.message}). Retrying with base symbol: ${baseSym}...`);
                                     try {
-                                        const specifications = await getSymbolsCached(metaapi, accountId);
-                                        const upperSym = symbol.toUpperCase();
-                                        const candidates = specifications.filter((s: string) => s.toUpperCase() !== upperSym);
-
-                                        const getBaseSymbol = (sym: string): string => {
-                                          const u = sym.toUpperCase();
-                                          if (u.startsWith("XAU") || u.startsWith("XAG")) {
-                                            return u.substring(0, 6);
-                                          }
-                                          const forexMatch = u.match(/^([A-Z]{6})/);
-                                          if (forexMatch) {
-                                            return forexMatch[1];
-                                          }
-                                          const baseMatch = u.match(/^([A-Z0-9]+?)([^A-Z0-9]+.*|[a-z]+.*)?$/);
-                                          if (baseMatch) {
-                                            return baseMatch[1];
-                                          }
-                                          return u;
-                                        };
-
-                                        const baseSym = getBaseSymbol(upperSym);
-                                        let match = candidates.find((s: string) => {
-                                          const u = s.toUpperCase();
-                                          return u === baseSym || u.startsWith(baseSym) || baseSym.startsWith(u);
-                                        });
-
-                                        if (!match) {
-                                          match = candidates.find((s: string) => s.toUpperCase().startsWith(upperSym) || s.toUpperCase().endsWith(upperSym));
+                                        history = await fetchCandles(baseSym);
+                                        if (history && history.length > 0) {
+                                            finalSymbol = baseSym;
+                                            history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, history);
+                                            retrySucceeded = true;
                                         }
+                                    } catch (baseErr: any) {
+                                        console.warn(`[SDK_RPC] Retry with base symbol ${baseSym} also failed (${baseErr.message}). Continuing with specifications suffix search...`);
+                                    }
+                                }
 
-                                        if (!match) {
-                                          match = candidates.find((s: string) => s.toUpperCase().includes(upperSym) || upperSym.includes(s.toUpperCase()));
-                                        }
+                                if (!retrySucceeded) {
+                                    const errStr = (err.message || "").toLowerCase();
+                                    if (errStr.includes('not exist') || errStr.includes('invalid') || errStr.includes('unexpectederror')) {
+                                        console.log(`[SDK_RPC] Symbol ${symbol} not found. Attempting suffix search...`);
+                                        try {
+                                            const specifications = await getSymbolsCached(metaapi, accountId);
+                                            const upperSym = symbol.toUpperCase();
+                                            const candidates = specifications.filter((s: string) => s.toUpperCase() !== upperSym);
 
-                                        if (match) {
-                                            console.log(`[SDK_RPC] Found fuzzy match: ${match}. Retrying...`);
-                                            finalSymbol = match;
-                                            history = await fetchCandles(finalSymbol);
-                                            if (history && history.length > 0) {
-                                                history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, history);
+                                            let match = candidates.find((s: string) => {
+                                              const u = s.toUpperCase();
+                                              return u === baseSym || u.startsWith(baseSym) || baseSym.startsWith(u);
+                                            });
+
+                                            if (!match) {
+                                              match = candidates.find((s: string) => s.toUpperCase().startsWith(upperSym) || s.toUpperCase().endsWith(upperSym));
                                             }
-                                        } else {
+
+                                            if (!match) {
+                                              match = candidates.find((s: string) => s.toUpperCase().includes(upperSym) || upperSym.includes(s.toUpperCase()));
+                                            }
+
+                                            if (match) {
+                                                console.log(`[SDK_RPC] Found fuzzy match: ${match}. Retrying...`);
+                                                finalSymbol = match;
+                                                history = await fetchCandles(finalSymbol);
+                                                if (history && history.length > 0) {
+                                                    history = candleCache.mergeAndSave(accountId, finalSymbol, timeframe, history);
+                                                }
+                                            } else {
+                                                throw err;
+                                            }
+                                        } catch (matchErr) {
                                             throw err;
                                         }
-                                    } catch (matchErr) {
+                                    } else {
                                         throw err;
                                     }
-                                } else {
-                                    throw err;
                                 }
                             }
                         } catch (histErr: any) {

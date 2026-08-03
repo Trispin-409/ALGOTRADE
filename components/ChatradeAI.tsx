@@ -387,7 +387,7 @@ export default function ChatradeAI({
   });
 
   // Client-side tracked protection states for active running positions
-  const [protectedPositions, setProtectedPositions] = useState<Record<string, { breakEven: boolean, partialLocked: boolean, trailing: boolean }>>({});
+  const [protectedPositions, setProtectedPositions] = useState<Record<string, { breakEven: boolean, partialLocked: boolean, trailing: boolean, autoScaled50?: boolean }>>({});
 
   // Auto trade mode state
   const isAutoTrade = useStore(state => state.isAutoTrade);
@@ -1041,7 +1041,7 @@ export default function ChatradeAI({
     });
 
     // --- 7. Multi-Factor Consensus Weighting Engine (News + Technical Structure Confluence) ---
-    const newsImpactAssessment = assessNewsImpact(symbol, newsData);
+    const newsImpactAssessment = assessNewsImpact(symbol, newsData, atr14, lastCandle.close);
     const gNewsSentiment = newsImpactAssessment.overallSentiment;
     const gNewsScore = newsImpactAssessment.sentimentScore;
     const newsImpactScore = newsImpactAssessment.impactScore;
@@ -1094,6 +1094,17 @@ export default function ChatradeAI({
         consensusNotes.push(`+[${totalConfluenceBoost}%] Grounded Macro Confluence: ${c.type} structure backed by ${gNewsSentiment} headline context`);
       } else if (newsEval.isOpposed) {
         consensusNotes.push(`[${totalConfluenceBoost}%] Macro Headwind Warning: Opposes ${gNewsSentiment} breaking headlines`);
+      }
+
+      // 6. News-to-Sentiment Correlation & Volatility Alignment Integration
+      const correlationRating = c.direction === 'BUY' ? newsImpactAssessment.correlationRatingBUY : newsImpactAssessment.correlationRatingSELL;
+      if (correlationRating) {
+        conf += correlationRating.netWeight;
+        if (correlationRating.netWeight > 0) {
+          consensusNotes.push(`+[${correlationRating.netWeight}%] Volatility-News Catalyst Alignment`);
+        } else if (correlationRating.netWeight < 0) {
+          consensusNotes.push(`[${correlationRating.netWeight}%] Volatility-News Catalyst Conflict`);
+        }
       }
 
       const finalConf = Math.min(98, Math.max(20, Math.round(conf)));
@@ -1412,6 +1423,7 @@ export default function ChatradeAI({
 
   // Profit Protection Engine: Monitors live positions and triggers break-even / profit locking 
   useEffect(() => {
+    if (subscriptionPlan?.toLowerCase() === 'starter') return;
     if (globalPositions.length === 0) return;
     
     globalPositions.forEach((pos: any) => {
@@ -1426,11 +1438,41 @@ export default function ChatradeAI({
       const profitPoints = isBuy ? (currentPrice - pos.openPrice) : (pos.openPrice - currentPrice);
       const R = profitPoints / riskAmt;
       
-      const currentProtection = protectedPositions[id] || { breakEven: false, partialLocked: false, trailing: false };
+      const currentProtection = protectedPositions[id] || { breakEven: false, partialLocked: false, trailing: false, autoScaled50: false };
       
       let updated = false;
       const nextProtection = { ...currentProtection };
       let newSL = null;
+
+      // 1. Auto-Position Scaling: upon hitting +1.5% profit, close 50% volume and move stop loss to break-even
+      const activeAcc = accounts.find(a => a.id === selectedAccountId);
+      const currentBalance = activeAcc ? Number(activeAcc.balance) : (globalAccount?.balance ?? 196532.10);
+      const pctProfitOfBalance = currentBalance > 0 ? (pos.profit / currentBalance) * 100 : 0;
+      if (pctProfitOfBalance >= 1.5 && !currentProtection.autoScaled50) {
+        nextProtection.autoScaled50 = true;
+        nextProtection.breakEven = true;
+        updated = true;
+        newSL = pos.openPrice;
+        
+        const halfVolume = Number((pos.volume / 2).toFixed(2));
+        if (halfVolume >= 0.01) {
+          fetch('/api/trade/close', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ accountId: selectedAccountId, positionId: pos.id, volume: halfVolume })
+          })
+          .then(res => res.json())
+          .then(data => {
+            console.log("[VERTEX AI AUTO-SCALE] Partial close executed successfully:", data);
+          })
+          .catch(err => console.error("[VERTEX AI AUTO-SCALE] Partial close failed", err));
+        }
+
+        addMessage({
+          sender: 'system',
+          text: `⚡ **[VERTEX AI TRAILING ENGINE: AUTO-POSITION SCALING]** Position **${pos.symbol}** has attained a brilliant **+1.5%** account growth target ($${pos.profit.toFixed(2)} / ${pctProfitOfBalance.toFixed(2)}%).\n\n* **Engine Action:** Auto-Position Scaling activated.\n* **Volume Reduction:** 50% closed (${halfVolume} lots scaled out) to secure profits.\n* **Stop Protection:** Moved remaining 50% position stop loss to Break-even (**${pos.openPrice}**).\n* **Vertex AI Status:** Secure Capital Lock Active.`
+        });
+      }
 
       if (R >= 1.0 && !currentProtection.breakEven) {
         nextProtection.breakEven = true;
@@ -1506,7 +1548,7 @@ export default function ChatradeAI({
         }));
       }
     });
-  }, [globalPositions, protectedPositions]);
+  }, [globalPositions, protectedPositions, accounts, globalAccount]);
 
   // DYNAMIC LEARNING & STRATEGY EVOLUTION SYNCHRONIZATION ENGINE
   const historyTrades = useStore(state => state.history) || [];
@@ -1956,7 +1998,7 @@ export default function ChatradeAI({
       try {
         newsData = await safeFetch(`/api/news/search-sentiment?symbol=${encodeURIComponent(symbol)}`, { headers: { 'Authorization': `Bearer ${token}` } });
       } catch (err) { console.warn("News fetch error", err); }
-      const newsImpactAssessment = assessNewsImpact(symbol, newsData);
+      const newsImpactAssessment = assessNewsImpact(symbol, newsData, atr14, lastCandle?.close || 0);
       
       const nInput = newsData?.usageMetadata?.promptTokenCount || 1250;
       const nOutput = newsData?.usageMetadata?.candidatesTokenCount || 420;
@@ -1970,7 +2012,9 @@ export default function ChatradeAI({
         bias: newsImpactAssessment.overallSentiment,
         score: newsImpactAssessment.impactScore,
         articleCount: newsImpactAssessment.parsedHeadlines.length || (newsData?.articles ? newsData.articles.length : 0),
-        sentimentScore: newsImpactAssessment.sentimentScore || newsData?.sentimentScore || 50
+        sentimentScore: newsImpactAssessment.sentimentScore || newsData?.sentimentScore || 50,
+        fullAssessment: newsImpactAssessment,
+        rawNewsData: newsData
       });
 
       useStore.getState().setAgentStatus('news', {
@@ -1981,6 +2025,7 @@ export default function ChatradeAI({
       
       // LOG PRIMARY SUMMARY LINE
       useStore.getState().addAgentLog('news', `[${timeStr}] News Agent: ${newsImpactAssessment.parsedHeadlines.length} headlines parsed for ${symbol}. Macro Bias: ${newsImpactAssessment.overallSentiment} (${newsImpactAssessment.impactScore} impact). High Volatility Risk: ${newsImpactAssessment.highVolatilityRisk ? 'YES' : 'NO'}. [Cost: $${newsCostUSD}]`);
+      useStore.getState().addAgentLog('news', `[${timeStr}] • News-to-Sentiment Correlation Engine: Volatility Alignment [${newsImpactAssessment.correlationRatingBUY?.volatilityAlignmentRating || 'STABLE'}]. Net BUY Correlation Weight: ${newsImpactAssessment.correlationRatingBUY?.netWeight}%, Net SELL Correlation Weight: ${newsImpactAssessment.correlationRatingSELL?.netWeight}%.`);
       
       // DYNAMICALLY LOG GROUNDED DRIVER HEADLINES
       if (newsImpactAssessment.parsedHeadlines && newsImpactAssessment.parsedHeadlines.length > 0) {
@@ -2071,6 +2116,14 @@ export default function ChatradeAI({
         fvgGaps: smc.mtfEvidence?.fvgGapsAllTF || [],
         liquiditySweeps: smc.mtfEvidence?.sweepsAllTF || [],
         structureBreaks: smc.mtfEvidence?.structureBreaksAllTF || [],
+        candles: currentCandles.slice(-20).map(c => ({
+          time: c.time,
+          open: Number(c.open || 0),
+          high: Number(c.high || 0),
+          low: Number(c.low || 0),
+          close: Number(c.close || 0),
+          volume: Number(c.tickVolume || c.volume || 0)
+        })),
         news: newsData || { sentimentBias: 'NEUTRAL', sentimentScore: 50, explanation: 'News evaluated.' }
       };
 
@@ -2219,13 +2272,18 @@ export default function ChatradeAI({
         liquidityScore = Math.max(10, Math.min(100, liquidityScore));
 
         let newsScore = 50;
-        const newsSentimentUpper = gNewsSentiment.toUpperCase();
-        if (c.direction === 'BUY') {
-          newsScore += (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE' ? 25 : (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE' ? -25 : 0));
+        const correlationRating = c.direction === 'BUY' ? newsImpactAssessment.correlationRatingBUY : newsImpactAssessment.correlationRatingSELL;
+        if (correlationRating) {
+          newsScore = Math.max(10, Math.min(100, 50 + correlationRating.netWeight * 1.5));
         } else {
-          newsScore += (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE' ? 25 : (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE' ? -25 : 0));
+          const newsSentimentUpper = gNewsSentiment.toUpperCase();
+          if (c.direction === 'BUY') {
+            newsScore += (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE' ? 25 : (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE' ? -25 : 0));
+          } else {
+            newsScore += (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE' ? 25 : (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE' ? -25 : 0));
+          }
+          newsScore = Math.max(10, Math.min(100, newsScore));
         }
-        newsScore = Math.max(10, Math.min(100, newsScore));
 
         const isSessionAligned = !activeSessionName.includes('Sideways');
         const sessionScore = isSessionAligned ? 90 : 60;
@@ -2237,37 +2295,62 @@ export default function ChatradeAI({
         let overallFit = 0;
         if (c.type === 'ai_generated') {
           // Subject AI-generated custom strategies to our rigorous market alignment audit!
-          let score = Number(c.confidence);
+          let score = Number(c.confidence || 75);
           
           // 1. Higher Timeframe Trend Alignment Check
           if (c.direction === 'BUY' && !isDailyBullish) {
-            score -= 12; // trend penalty
+            score -= 10; // slightly softer trend penalty
           } else if (c.direction === 'SELL' && isDailyBullish) {
-            score -= 12; // trend penalty
+            score -= 10; // slightly softer trend penalty
           } else {
-            score += 5; // trend alignment bonus
+            score += 6; // trend alignment bonus
           }
           
           // 2. Volatility Session Check
           if (!isSessionAligned) {
-            score -= 15; // low volume chop penalty
+            score -= 10; // low volume chop penalty
           } else {
-            score += 5; // session volume bonus
+            score += 6; // session volume bonus
           }
           
           // 3. RSI Overbought/Oversold Guardrails
           if (c.direction === 'BUY' && rsi14 > 68) {
-            score -= 18; // overbought penalty to prevent chasing peaks
+            score -= 12; // overbought penalty
           } else if (c.direction === 'SELL' && rsi14 < 32) {
-            score -= 18; // oversold penalty to prevent chasing bottoms
+            score -= 12; // oversold penalty
+          } else if (c.direction === 'BUY' && rsi14 > 45 && rsi14 < 65) {
+            score += 5; // RSI sweet-spot bonus
+          } else if (c.direction === 'SELL' && rsi14 > 35 && rsi14 < 55) {
+            score += 5; // RSI sweet-spot bonus
           }
           
-          // 4. Drawdown Penalty
+          // 4. Drawdown Penalty / Bonus
           if (liveDrawdownPct > 5.0) {
-            score -= 15; // risk reduction penalty
+            score -= 12; // drawdown penalty
+          } else {
+            score += 4; // low drawdown safety bonus
+          }
+
+          // 5. Structure Alignment (SMC)
+          const smcAligned = (c.direction === 'BUY' && (smc.bosBullish || smc.chochBullish || smc.fvgBullish || smc.liquiditySweepBullish)) ||
+                              (c.direction === 'SELL' && (smc.bosBearish || smc.chochBearish || smc.fvgBearish || smc.liquiditySweepBearish));
+          if (smcAligned) {
+            score += 8; // structural alignment bonus
           }
           
-          overallFit = Math.max(20, Math.min(100, Math.round(score)));
+          // 6. News Alignment (News-to-Sentiment Volatility Correlation)
+          if (correlationRating) {
+            score += correlationRating.netWeight;
+          } else {
+            const newsSentimentUpper = gNewsSentiment.toUpperCase();
+            const newsAligned = (c.direction === 'BUY' && (newsSentimentUpper === 'BULLISH' || newsSentimentUpper === 'POSITIVE')) ||
+                                (c.direction === 'SELL' && (newsSentimentUpper === 'BEARISH' || newsSentimentUpper === 'NEGATIVE'));
+            if (newsAligned) {
+              score += 8; // news alignment bonus
+            }
+          }
+          
+          overallFit = Math.max(25, Math.min(100, Math.round(score)));
         } else {
           overallFit = Math.round(
               (technicalScore * 0.15) +
@@ -2298,8 +2381,23 @@ export default function ChatradeAI({
       validCandidates.sort((a, b) => b.confidence - a.confidence);
       const topCandidate = validCandidates[0];
 
-      // Rigid safety: Setups must have high probability fit to execute autonomously or propose signals
-      const MIN_CONFIDENCE_THRESHOLD = autoTradeMode ? 85 : 80;
+      // Map execution thresholds dynamically based on user-selected risk profiles (tradingMode)
+      let MIN_CONFIDENCE_THRESHOLD = 75; // Default for balanced
+      if (tradingMode === 'conservative') {
+        MIN_CONFIDENCE_THRESHOLD = 82; // Strict, high probability only
+      } else if (tradingMode === 'prop') {
+        MIN_CONFIDENCE_THRESHOLD = 78; // Protect prop firm challenges
+      } else if (tradingMode === 'balanced') {
+        MIN_CONFIDENCE_THRESHOLD = 72; // Good balance of active entries and filters
+      } else if (tradingMode === 'aggressive') {
+        MIN_CONFIDENCE_THRESHOLD = 65; // Highly active trading, relies on stoploss & dual-close recovery protections
+      }
+
+      // If in manual trading mode (non-autonomous), lower threshold slightly to provide more trade suggestions
+      if (!autoTradeMode) {
+        MIN_CONFIDENCE_THRESHOLD = Math.max(60, MIN_CONFIDENCE_THRESHOLD - 5);
+      }
+
       const hasValidMatch = !!topCandidate && 
                            topCandidate.direction !== 'WAIT' && 
                            topCandidate.confidence >= MIN_CONFIDENCE_THRESHOLD;
@@ -2508,7 +2606,20 @@ export default function ChatradeAI({
               symbol, 
               direction: topCandidate ? topCandidate.direction : 'BUY', 
               isDeepRequest: false,
-              evidenceData: smc.mtfEvidence?.allStructuresCombined || []
+              evidenceData: smc.mtfEvidence?.allStructuresCombined || [],
+              newsContext: newsData,
+              newsImpactAssessment: {
+                overallSentiment: newsImpactAssessment.overallSentiment,
+                impactScore: newsImpactAssessment.impactScore,
+                sentimentScore: newsImpactAssessment.sentimentScore,
+                parsedHeadlines: newsImpactAssessment.parsedHeadlines,
+                macroContextSummary: newsImpactAssessment.macroContextSummary,
+                highVolatilityRisk: newsImpactAssessment.highVolatilityRisk,
+                driverBreakdown: newsImpactAssessment.driverBreakdown,
+                correlationRatingBUY: newsImpactAssessment.correlationRatingBUY,
+                correlationRatingSELL: newsImpactAssessment.correlationRatingSELL
+              },
+              driverBreakdown: getSymbolDriverBreakdown(symbol)
             })
           });
           let analyzeIn = 2400;
@@ -2844,6 +2955,8 @@ export default function ChatradeAI({
     // Background cascade simulation matching UI design
     const cascadePromise = runAgentCascade();
 
+    const newsState = useStore.getState().newsImpact;
+
     try {
       const res = await safeFetch('/api/chatrade/analyze', {
         method: 'POST',
@@ -2856,7 +2969,10 @@ export default function ChatradeAI({
           symbol,
           direction: 'BUY',
           email: currentUserEmail,
-          isDeepRequest: true
+          isDeepRequest: true,
+          newsContext: newsState?.rawNewsData || null,
+          newsImpactAssessment: newsState?.fullAssessment || null,
+          driverBreakdown: getSymbolDriverBreakdown(symbol)
         })
       });
       const data = res;
@@ -3297,6 +3413,7 @@ export default function ChatradeAI({
       const unrealizedLoss = activeBalance - activeEquity;
       const totalSessionLoss = originalBalance - activeEquity;
 
+      const newsState = useStore.getState().newsImpact;
       const marketContext = {
         currentSymbol: internalSymbol,
         currentTimeframe: selectedTimeframe,
@@ -3316,7 +3433,10 @@ export default function ChatradeAI({
           totalSessionLoss
         },
         openTrades: globalPositions,
-        marketAnalysis: useStore.getState().marketAnalysis || {}
+        marketAnalysis: useStore.getState().marketAnalysis || {},
+        newsContext: newsState?.rawNewsData || null,
+        newsImpactAssessment: newsState?.fullAssessment || null,
+        driverBreakdown: getSymbolDriverBreakdown(internalSymbol)
       };
 
       const res = await safeFetch('/api/chatrade/chat', {

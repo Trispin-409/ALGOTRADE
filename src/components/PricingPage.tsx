@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { Shield, Zap, Crown, Check, ArrowRight, X, Loader2, Lock, Terminal, Key, RefreshCw } from 'lucide-react';
+import { Shield, Zap, Crown, Check, ArrowRight, X, Loader2, Lock, Terminal, Key, RefreshCw, LayoutDashboard, CheckCircle2 } from 'lucide-react';
 import { safeFetch, generateFingerprint } from '../lib/utils';
 
 interface PricingPageProps {
   session: any;
   bootData: any;
+  setActiveTab?: (tab: string) => void;
 }
 
-export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) => {
+export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData, setActiveTab }) => {
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
   const [step, setStep] = useState<'checkout' | 'activate' | null>(null);
   const [activationKey, setActivationKey] = useState('');
@@ -71,7 +72,14 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
       price: 'R550',
       period: '/month',
       icon: <Shield className="w-8 h-8 text-blue-500" />,
-      features: ['1 Live Account Connection', 'Standard Trade Execution', 'Basic Priority Support', 'Secure Broker Integration'],
+      features: [
+        '1 Live Account Connection',
+        'Standard Manual Trade Execution',
+        'No ChatradeAI Chatbot Included',
+        'No TP, SL or Trailing Engine Protection',
+        'Basic Priority Support',
+        'Secure Broker Integration'
+      ],
       color: 'blue',
       gradient: 'from-blue-600/20 to-transparent'
     },
@@ -80,7 +88,14 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
       price: 'R899',
       period: '/month',
       icon: <Zap className="w-8 h-8 text-amber-500" />,
-      features: ['2 Live Account Connections', 'Priority Execution Speed', 'Real-time Analytics', 'Standard Support Plus'],
+      features: [
+        '1 Live Account Connection Only',
+        'Includes ChatradeAI Chatbot',
+        'Active TP, SL & Trailing Engine',
+        'Priority Execution Speed',
+        'Real-time Market Analytics',
+        'Standard Support Plus'
+      ],
       color: 'amber',
       gradient: 'from-amber-600/20 to-transparent'
     },
@@ -89,7 +104,14 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
       price: 'R1199',
       period: '/month',
       icon: <Crown className="w-8 h-8 text-emerald-500" />,
-      features: ['3 Live Account Connections', 'Ultra-fast Execution', '24/7 Dedicated Support', 'Alpha Analytics Suite'],
+      features: [
+        '2 Live Account Connections Only',
+        'Includes ChatradeAI Chatbot',
+        'Active TP, SL & Trailing Engine',
+        'Ultra-fast Execution Speed',
+        '24/7 Dedicated Priority Support',
+        'Alpha Analytics Suite & Veto Agents'
+      ],
       color: 'emerald',
       gradient: 'from-emerald-600/20 to-transparent'
     }
@@ -100,6 +122,25 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
       {/* Background Pattern */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f1a_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f1a_1px,transparent_1px)] bg-[size:20px_30px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_110%)]"></div>
       
+      {/* Back to Dashboard Button */}
+      {bootData?.has_active_subscription && (
+        <div className="absolute top-6 right-6 z-20">
+          <button 
+            onClick={() => {
+              if (setActiveTab) {
+                setActiveTab('dashboard');
+              } else {
+                window.location.replace('/');
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl transition-all duration-200 font-bold text-xs shadow-lg active:scale-95"
+          >
+            <LayoutDashboard className="w-4 h-4 text-slate-400" />
+            Back to Dashboard
+          </button>
+        </div>
+      )}
+
       {!session || (bootData && !bootData.has_active_subscription) ? (
          <div className="relative z-10 w-full max-w-6xl mb-8 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl text-center">
              <h2 className="text-rose-500 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2">
@@ -118,42 +159,62 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData }) =
       </div>
 
       <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 max-w-6xl w-full mx-auto px-2">
-        {plans.map((plan) => (
-          <div key={plan.name} className={`bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-3xl p-6 md:p-8 flex flex-col transition-all duration-300 hover:bg-slate-800/40 hover:border-white/10 relative overflow-hidden group shadow-2xl`}>
-            {/* Ambient Background Gradient */}
-            <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500`} style={{ background: 'var(--accent-color)' }}></div>
-            
-            <div className="relative z-10">
-              <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`}>
-                {plan.icon}
+        {plans.map((plan) => {
+          const isActivePlan = bootData?.has_active_subscription && bootData?.subscription_plan?.toLowerCase() === plan.name.toLowerCase();
+          return (
+            <div key={plan.name} className={`bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-3xl p-6 md:p-8 flex flex-col transition-all duration-300 hover:bg-slate-800/40 hover:border-white/10 relative overflow-hidden group shadow-2xl`}>
+              {/* Ambient Background Gradient */}
+              <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500`} style={{ background: 'var(--accent-color)' }}></div>
+              
+              <div className="relative z-10">
+                <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`}>
+                  {plan.icon}
+                </div>
+                
+                <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{plan.name}</h3>
+                
+                <div className="mb-6 flex items-baseline">
+                  <span className="text-3xl md:text-4xl font-black text-white">{plan.price}</span>
+                  <span className="text-slate-500 ml-1 font-medium italic">{plan.period}</span>
+                </div>
+                
+                <ul className="space-y-4 mb-8 flex-1">
+                  {plan.features.map((feature, i) => (
+                    <li key={i} className="flex items-start text-sm text-slate-300 leading-relaxed">
+                      <Check className={`w-5 h-5 mr-3 mt-0.5 shrink-0`} style={{ color: 'var(--accent-color)' }} />
+                      <span>{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+                
+                <button
+                  onClick={() => {
+                    if (isActivePlan) {
+                      if (setActiveTab) {
+                        setActiveTab('dashboard');
+                      } else {
+                        window.location.replace('/');
+                      }
+                    } else {
+                      handleSubscribe(plan);
+                    }
+                  }}
+                  className="w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 text-black hover:opacity-90 active:scale-[0.98] shadow-lg"
+                  style={{ 
+                    backgroundColor: isActivePlan ? '#10B981' : 'var(--accent-color)', 
+                    boxShadow: isActivePlan ? '0 10px 20px -5px rgba(16, 185, 129, 0.3)' : '0 10px 20px -5px rgba(var(--accent-color-rgb), 0.3)' 
+                  }}
+                >
+                  {isActivePlan ? (
+                    <>Active - Enter <CheckCircle2 className="w-5 h-5" /></>
+                  ) : (
+                    <>Activate with Key <ArrowRight className="w-5 h-5" /></>
+                  )}
+                </button>
               </div>
-              
-              <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{plan.name}</h3>
-              
-              <div className="mb-6 flex items-baseline">
-                <span className="text-3xl md:text-4xl font-black text-white">{plan.price}</span>
-                <span className="text-slate-500 ml-1 font-medium italic">{plan.period}</span>
-              </div>
-              
-              <ul className="space-y-4 mb-8 flex-1">
-                {plan.features.map((feature, i) => (
-                  <li key={i} className="flex items-start text-sm text-slate-300 leading-relaxed">
-                    <Check className={`w-5 h-5 mr-3 mt-0.5 shrink-0`} style={{ color: 'var(--accent-color)' }} />
-                    <span>{feature}</span>
-                  </li>
-                ))}
-              </ul>
-              
-              <button
-                onClick={() => handleSubscribe(plan)}
-                className="w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 text-black hover:opacity-90 active:scale-[0.98] shadow-lg"
-                style={{ backgroundColor: 'var(--accent-color)', boxShadow: '0 10px 20px -5px rgba(var(--accent-color-rgb), 0.3)' }}
-              >
-                Subscribe <ArrowRight className="w-5 h-5" />
-              </button>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {step === 'checkout' && (

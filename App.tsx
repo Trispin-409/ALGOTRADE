@@ -785,6 +785,16 @@ const App: React.FC = () => {
        return;
     }
 
+    // Save current symbol for previous account if any
+    const prevId = selectedAccountIdRef.current;
+    if (prevId && selectedSymbol) {
+      localStorage.setItem(`selectedSymbol:${prevId}`, selectedSymbol);
+    }
+
+    // Load symbol for the new active account
+    const nextSymbol = localStorage.getItem(`selectedSymbol:${id}`) || localStorage.getItem('selectedSymbol') || 'XAUUSDm';
+    setSelectedSymbol(nextSymbol);
+
     // 2. RESOLVE: The WebSocket connection must go to our own server, not MetaApi domain
     const serverUrl = window.location.origin;
     
@@ -822,8 +832,8 @@ const App: React.FC = () => {
          }
          
          try {
-           // 3. EXECUTE: Single entry point to connection manager
-           connectionManager.bootOnce(id, serverUrl, session.access_token);
+           // 3. EXECUTE: Single entry point to connection manager - Force restart connection on switch!
+           connectionManager.forceReconnect(id, serverUrl, session.access_token);
          } catch (err: any) {
            addLog(`FATAL: ${err.message}`);
            setTradingStatus('CONFIG_ERROR');
@@ -833,7 +843,7 @@ const App: React.FC = () => {
        }
     };
     fetchAlgoStatus();
-  }, [bootData, addLog, session]);
+  }, [bootData, addLog, session, selectedSymbol]);
 
   // Helper to determine if trading is ready
   const isTradingReady = useCallback((status: string) => {
@@ -1050,10 +1060,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     localStorage.setItem('activeTab', activeTab);
-  }, [activeTab]);
-
-
-  // Handle Available Symbols fetch
+  }, [activeTab]);  // Handle Available Symbols fetch
   useEffect(() => {
     if (!selectedAccountId || !session) return;
 
@@ -1064,12 +1071,15 @@ const App: React.FC = () => {
         });
         setAvailableBrokerSymbols(brokerSymbols);
         
+        // Load symbol for the selected account specifically
+        const currentAccountSymbol = localStorage.getItem(`selectedSymbol:${selectedAccountId}`) || selectedSymbol;
+
         // AUTO-NORMALIZATION: If current symbol is invalid for new broker, fix it
-        if (brokerSymbols.length > 0 && selectedSymbol) {
-          const normSelected = selectedSymbol.toUpperCase();
+        if (brokerSymbols.length > 0 && currentAccountSymbol) {
+          const normSelected = currentAccountSymbol.toUpperCase();
           const cleanBase = normSelected.replace(/[M\.#+\.\$]/g, ''); // Extract base like XAUUSD
           
-          if (!brokerSymbols.includes(selectedSymbol)) {
+          if (!brokerSymbols.includes(currentAccountSymbol)) {
              // Look for fuzzy match
              const match = brokerSymbols.find((s: string) => {
                 const su = s.toUpperCase();
@@ -1077,11 +1087,19 @@ const App: React.FC = () => {
              });
              
              if (match) {
-                console.log(`[AUTO-FIX] Switching symbol ${selectedSymbol} -> ${match} for new broker context`);
+                console.log(`[AUTO-FIX] Switching symbol ${currentAccountSymbol} -> ${match} for new broker context`);
                 setSelectedSymbol(match);
+                localStorage.setItem(`selectedSymbol:${selectedAccountId}`, match);
+                localStorage.setItem('selectedSymbol', match);
              } else {
                 setSelectedSymbol(brokerSymbols[0]);
+                localStorage.setItem(`selectedSymbol:${selectedAccountId}`, brokerSymbols[0]);
+                localStorage.setItem('selectedSymbol', brokerSymbols[0]);
              }
+          } else {
+             setSelectedSymbol(currentAccountSymbol);
+             localStorage.setItem(`selectedSymbol:${selectedAccountId}`, currentAccountSymbol);
+             localStorage.setItem('selectedSymbol', currentAccountSymbol);
           }
         }
       } catch (err: any) {
@@ -1099,7 +1117,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     localStorage.setItem('selectedSymbol', selectedSymbol);
-  }, [selectedSymbol]);
+    if (selectedAccountId) {
+      localStorage.setItem(`selectedSymbol:${selectedAccountId}`, selectedSymbol);
+    }
+  }, [selectedSymbol, selectedAccountId]);
 
   useEffect(() => {
     localStorage.setItem('selectedTimeframe', selectedTimeframe);
@@ -1503,8 +1524,8 @@ const App: React.FC = () => {
   if (loadingAuth) return <FullScreenLoader message="Checking authentication..." />;
   
   const path = window.location.pathname;
-  if (path === '/pricing') {
-    return <PricingPage session={session} bootData={bootData} />;
+  if (path === '/pricing' || activeTab === 'pricing') {
+    return <PricingPage session={session} bootData={bootData} setActiveTab={setActiveTab} />;
   }
   
   if (path === '/reset-password') {

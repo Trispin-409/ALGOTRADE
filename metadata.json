@@ -1,6 +1,6 @@
 {
   "name": "ALGOTRADE",
-  "description": "Enterprise-grade MetaTrader automation hub",
+  "description": "Enterprise-grade MetaTrader automation hub with Vertex AI Trailing Engine, Auto-Position Scaling, and real-time grounded News-to-Sentiment correlation.",
   "requestFramePermissions": [
     "geolocation"
   ],

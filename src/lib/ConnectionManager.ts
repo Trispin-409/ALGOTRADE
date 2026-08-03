@@ -185,6 +185,45 @@ class ConnectionManager {
 
   private tokens: Map<string, string> = new Map();
 
+  public forceReconnect(accountId: string, baseUrl: string, token: string = '') {
+      if (!baseUrl || baseUrl === 'undefined') {
+          throw new Error(`[CRITICAL] MetaApi base URL missing for ${accountId}. Reconnect aborted.`);
+      }
+
+      if (token) {
+        this.tokens.set(accountId, token);
+      }
+
+      this.selectedAccountId = accountId;
+      console.log(`[LIFECYCLE] 🔄 FORCE RESTART: Reconnecting Engine for Account ${accountId}...`);
+
+      // Close existing socket for this account if any
+      const existingSocket = this.connections.get(accountId);
+      if (existingSocket) {
+          try {
+              existingSocket.close();
+          } catch(e) {}
+          this.connections.delete(accountId);
+      }
+
+      // Reset state for this account
+      this.brokerConnectedState.delete(accountId);
+      this.terminalSyncedState.delete(accountId);
+
+      // Clear stream registry for this account
+      for (const key of Array.from(this.streamRegistry.keys())) {
+          if (key.startsWith(`${accountId}:`)) {
+              this.streamRegistry.delete(key);
+          }
+      }
+
+      // Add to active lifecycles
+      ConnectionManager.ACTIVE_LIFECYCLES.add(accountId);
+
+      // Connect fresh
+      this.connectAccount(accountId, baseUrl);
+  }
+
   public bootOnce(accountId: string, baseUrl: string, token: string = '') {
       if (!baseUrl || baseUrl === 'undefined') {
           throw new Error(`[CRITICAL] MetaApi base URL missing for ${accountId}. Boot aborted.`);

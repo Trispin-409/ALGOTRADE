@@ -32,12 +32,14 @@ export interface NewsImpactAssessment {
     scoreAdjustment: number;
     reasoning: string;
   };
+  correlationRatingBUY?: any;
+  correlationRatingSELL?: any;
 }
 
 /**
  * Dynamically parses breaking news headlines and macro indicators against an active pair symbol.
  */
-export function assessNewsImpact(symbol: string, newsData: any): NewsImpactAssessment {
+export function assessNewsImpact(symbol: string, newsData: any, atr14 = 0, lastPrice = 0): NewsImpactAssessment {
   const cleanSymbol = symbol.replace(/[-._]/g, '').toUpperCase();
   
   let baseCurrency = 'USD';
@@ -179,6 +181,139 @@ export function assessNewsImpact(symbol: string, newsData: any): NewsImpactAsses
     macroContextSummary,
     highVolatilityRisk: detectedHighVolatility,
     driverBreakdown,
-    alignmentForDirection
+    alignmentForDirection,
+    // Dynamic pre-calculated correlations if volatility params are provided
+    correlationRatingBUY: atr14 > 0 ? correlateNewsToVolatility(cleanSymbol, 'BUY', overallSentiment, rawSentimentScore, rawImpactScore, detectedHighVolatility, driverBreakdown, atr14, lastPrice) : undefined,
+    correlationRatingSELL: atr14 > 0 ? correlateNewsToVolatility(cleanSymbol, 'SELL', overallSentiment, rawSentimentScore, rawImpactScore, detectedHighVolatility, driverBreakdown, atr14, lastPrice) : undefined
+  };
+}
+
+/**
+ * Calculates a dynamic correlation coefficient and trade conviction weighting based on news-sentiment vs. volatility alignment.
+ */
+export function correlateNewsToVolatility(
+  symbol: string,
+  direction: 'BUY' | 'SELL',
+  overallSentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL',
+  sentimentScore: number,
+  impactScore: number,
+  highVolatilityRisk: boolean,
+  driverBreakdown: any[],
+  atr14: number,
+  lastPrice: number
+) {
+  const cleanSymbol = symbol.replace(/[-._]/g, '').toUpperCase();
+  const drivers = Array.isArray(driverBreakdown) && driverBreakdown.length > 0 ? driverBreakdown : [];
+
+  let correlationScore = 0;
+  
+  // 1. Core Sentiment Direction Alignment
+  const isAligned = (direction === 'BUY' && overallSentiment === 'BULLISH') || (direction === 'SELL' && overallSentiment === 'BEARISH');
+  const isOpposed = (direction === 'BUY' && overallSentiment === 'BEARISH') || (direction === 'SELL' && overallSentiment === 'BULLISH');
+  
+  if (isAligned) {
+    correlationScore += Math.round(15 * (sentimentScore / 100));
+  } else if (isOpposed) {
+    correlationScore -= Math.round(25 * (sentimentScore / 100));
+  }
+
+  // 2. Historical Volatility & ATR Alignment
+  const volPctOfPrice = lastPrice > 0 ? (atr14 / lastPrice) * 100 : 0.05;
+  const isVolatilityElevated = highVolatilityRisk || volPctOfPrice > 0.12;
+  
+  let volWeight = 0;
+  let volatilityAlignmentRating = "STABLE CONFLUENCE";
+  
+  if (isVolatilityElevated) {
+    if (isAligned) {
+      // Elevated volatility boosts aligned momentum entries
+      volWeight = Math.round(12 * (1 + volPctOfPrice * 1.5));
+      volatilityAlignmentRating = "HIGH MOMENTUM CONFLUENCE (VOLATILITY ALIGNED)";
+    } else if (isOpposed) {
+      // Extremely risky: trading against prevailing news sentiment in a volatile market
+      volWeight = -Math.round(20 * (1 + volPctOfPrice * 2));
+      volatilityAlignmentRating = "HAZARDOUS VOLATILITY HEADWIND (DANGEROUS MISALIGNMENT)";
+    } else {
+      volWeight = -Math.round(5 * (1 + volPctOfPrice));
+      volatilityAlignmentRating = "CHOPPY VOLATILITY OVERLAY (STANDBY ADVISED)";
+    }
+  } else {
+    if (isAligned) {
+      volWeight = 4;
+      volatilityAlignmentRating = "STABLE ALIGNED BIAS";
+    } else if (isOpposed) {
+      volWeight = -8;
+      volatilityAlignmentRating = "STABLE OPPOSING BIAS";
+    }
+  }
+  
+  correlationScore += volWeight;
+
+  // 3. Driver/Entity Contributions (contributing predicting force)
+  const driverWeights: Array<{ name: string; score: number; bias: string }> = [];
+  let driverTotalScore = 0;
+  
+  drivers.forEach((driver: any) => {
+    const dName = driver.name || "Macro Catalyst";
+    const dSentiment = (driver.sentiment || "NEUTRAL").toUpperCase();
+    const dImpact = (driver.impact || driver.impactLevel || "MEDIUM").toUpperCase();
+    
+    let multiplier = 1.0;
+    if (dImpact === "CRITICAL") multiplier = 1.8;
+    else if (dImpact === "HIGH") multiplier = 1.3;
+    else if (dImpact === "MEDIUM") multiplier = 1.0;
+    
+    let dScore = 0;
+    if (direction === 'BUY') {
+      if (dSentiment === 'BULLISH' || dSentiment === 'POSITIVE') {
+        dScore = Math.round(5 * multiplier);
+      } else if (dSentiment === 'BEARISH' || dSentiment === 'NEGATIVE') {
+        dScore = -Math.round(8 * multiplier);
+      }
+    } else {
+      if (dSentiment === 'BEARISH' || dSentiment === 'NEGATIVE') {
+        dScore = Math.round(5 * multiplier);
+      } else if (dSentiment === 'BULLISH' || dSentiment === 'POSITIVE') {
+        dScore = -Math.round(8 * multiplier);
+      }
+    }
+    
+    driverWeights.push({
+      name: dName,
+      score: dScore,
+      bias: dSentiment
+    });
+    driverTotalScore += dScore;
+  });
+
+  correlationScore += driverTotalScore;
+
+  // Clamp dynamic weight adjustment bounds
+  const netWeight = Math.max(-40, Math.min(40, correlationScore));
+  
+  let predictionContribution = "NEUTRAL";
+  if (netWeight >= 12) {
+    predictionContribution = `BUY (Strong Catalyst Correlation: +${netWeight}% weight boost)`;
+  } else if (netWeight > 3) {
+    predictionContribution = `BUY (Mild Catalyst Correlation: +${netWeight}% weight boost)`;
+  } else if (netWeight <= -12) {
+    predictionContribution = `SELL (Strong Catalyst Deficit: ${netWeight}% weight penalty)`;
+  } else if (netWeight < -3) {
+    predictionContribution = `SELL (Mild Catalyst Deficit: ${netWeight}% weight penalty)`;
+  } else {
+    predictionContribution = `STANDBY (Neutral driver feedback: ${netWeight}% weight adjustment)`;
+  }
+
+  const explanation = `[NEWS-TO-SENTIMENT CORRELATION] Evaluated ${drivers.length} asset drivers. ` +
+    `${driverWeights.filter(w => w.score > 0).length}/${drivers.length} drivers in active alignment with the proposed ${direction} entry. ` +
+    `Historical Volatility Alignment is [${volatilityAlignmentRating}] (ATR: ${atr14.toFixed(5)}). ` +
+    `Net Correlation Weight Adjustment is ${netWeight > 0 ? '+' : ''}${netWeight}%.`;
+
+  return {
+    netWeight,
+    volatilityAlignmentRating,
+    predictionContribution,
+    explanation,
+    driverWeights
   };
 }
