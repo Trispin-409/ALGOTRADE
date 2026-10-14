@@ -86,7 +86,22 @@ export default function LeanStrategyLab({ token }: { token: string }) {
       if (!response.ok) {
         throw new Error(data?.error || data?.message || `Backtest request failed (${response.status}).`);
       }
-      setResult(data);
+      const jobId = typeof data?.jobId === "string" ? data.jobId : (typeof data?.id === "string" ? data.id : "");
+      if (!jobId || ["completed", "complete", "succeeded", "failed", "error"].includes(String(data?.status || "").toLowerCase())) {
+        setResult(data);
+      } else {
+        setResult(data);
+        for (let attempt = 0; attempt < 15; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const poll = await fetch(`/api/lean/backtests/${encodeURIComponent(jobId)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const next = await poll.json();
+          if (!poll.ok) throw new Error(next?.error || "Could not retrieve backtest status.");
+          setResult(next);
+          if (["completed", "complete", "succeeded", "failed", "error"].includes(String(next?.status || "").toLowerCase())) break;
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Backtest request failed.");
     } finally {
