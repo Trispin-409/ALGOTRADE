@@ -97,6 +97,7 @@ import { adminSupabase } from "./src/lib/supabaseAdmin.ts";
 import { ChatradeMemory } from "./src/lib/memorySystem.ts";
 import { getSymbolsCached } from "./src/lib/symbolCache.ts";
 import * as candleCache from "./services/candleCache.ts";
+import { createLeanBacktestRouter } from "./services/leanBacktestRoutes.ts";
 import { scanChartStructure, getActiveTradingSession, calculateAccountLotSize } from "./src/lib/chartScanner.ts";
 import { aiProvider } from "./services/aiProvider.ts";
 import { marketAnalysisEngine } from "./services/marketAnalysisEngine.ts";
@@ -443,6 +444,13 @@ const globalApiLimiter = rateLimit({
   validate: false
 });
 
+const leanBacktestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: "Backtest request limit reached. Please try again later." },
+  validate: false
+});
+
 app.use(cors());
 
 // Apply global API rate limiter to all API endpoints for security
@@ -673,6 +681,10 @@ async function enforceOwnership(req: express.Request, res: express.Response, nex
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+ // Keep LEAN research traffic isolated from normal market-data polling.
+app.use("/api/lean/backtests", leanBacktestLimiter);
+app.use("/api/lean", createLeanBacktestRouter(getUserIdFromRequest, getUserEmailFromRequest));
 
 // ENFORCE OWNERSHIP ON ALL ACCOUNT ROUTES
 app.use("/api/account/:accountId", enforceOwnership);
