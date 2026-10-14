@@ -29,6 +29,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { PlatformType, TradingAccount } from './types';
 import Dashboard from './components/Dashboard';
+import LeanStrategyLab from './components/LeanStrategyLab';
 import Sidebar from './components/Sidebar';
 import AccountConfig from './components/AccountConfig';
 import News from './components/News';
@@ -1945,6 +1946,11 @@ const App: React.FC = () => {
                       selectedAccountId={selectedAccountId || ''}
                       selectedTimeframe={selectedTimeframe}
                     />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'lean-lab' && session?.user?.email?.toLowerCase() === 'trispinblackops@gmail.com' && (
+                  <ErrorBoundary>
+                    <LeanStrategyLab token={session?.access_token || ''} />
                   </ErrorBoundary>
                 )}
                 {activeTab === 'admin' && (
