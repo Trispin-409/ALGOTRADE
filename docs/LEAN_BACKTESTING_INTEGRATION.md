@@ -47,7 +47,7 @@ The runner must return a job identifier, then expose status/results through the 
 1. Deploy an isolated LEAN runner using the official [QuantConnect/Lean](https://github.com/QuantConnect/Lean) engine and supported CLI/container workflow.
 2. Implement an approved strategy registry; do not run user-supplied arbitrary code.
 3. Export MetaApi historical candles to a LEAN-compatible data format and document bid/ask, timestamps, gaps, symbol mapping and transaction-cost assumptions. Do not substitute unrelated public data silently.
-4. Add a Strategy Lab UI that submits backtests and polls job results.
-5. Add tests and run demo-only validation before enabling any live signals.
+4. Finish the Strategy Lab UI with metric-specific result cards, persisted run history and parameter-optimisation controls.
+5. Add the isolated runner, MetaApi historical-candle adapter, strategy registry, automated tests and demo-only validation before enabling any live signals.
 
 LEAN backtests are research results, not a guarantee of future returns. The backtest service must never place live orders. MetaApi remains the source of truth for live broker data and execution.
