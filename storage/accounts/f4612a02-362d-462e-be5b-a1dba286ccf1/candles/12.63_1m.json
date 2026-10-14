@@ -1,0 +1,19 @@
+[
+  {
+    "symbol": "GOLD",
+    "timeframe": "4h",
+    "time": "2026-10-14T09:00:00.000Z",
+    "brokerTime": "2026-10-14 12:00:00.000",
+    "endTime": "2026-10-14T12:59:59.999Z",
+    "endBrokerTime": "2026-10-14 15:59:59.999",
+    "lastUpdateTime": "2026-10-14T12:58:23.039Z",
+    "lastUpdateBrokerTime": "2026-10-14 15:58:23.039",
+    "state": "intermediate",
+    "open": 4142.91,
+    "close": 4098.31,
+    "high": 4155.51,
+    "low": 4085.26,
+    "tickVolume": 48662,
+    "spread": 0.5499999999992724
+  }
+]

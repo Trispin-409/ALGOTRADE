@@ -4,6 +4,8 @@ import { Activity, AlertTriangle, FlaskConical, Loader2, Play, RefreshCw } from 
 type RunnerHealth = {
   ok?: boolean;
   configured?: boolean;
+  status?: string;
+  backendConnected?: boolean;
   engine?: string;
   message?: string;
   runner?: unknown;
@@ -34,10 +36,104 @@ export default function LeanStrategyLab({ token }: { token: string }) {
       const response = await fetch("/api/lean/health", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      const data = await response.json();
-      setHealth(data);
-    } catch {
-      setHealth({ ok: false, configured: false, message: "Could not contact the ALGOTRADE backend." });
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("application/json")) {
+        setHealth({
+          ok: false,
+          configured: false,
+          backendConnected: false,
+          status: "invalid_response",
+          message: `Backend or proxy returned non-JSON response (HTTP ${response.status}, Content-Type: ${contentType || "none"}). Expected application/json.`,
+        });
+        return;
+      }
+
+      let data: any = null;
+      try {
+        data = await response.json();
+      } catch {
+        setHealth({
+          ok: false,
+          configured: false,
+          backendConnected: false,
+          status: "malformed_json",
+          message: `Malformed JSON received from health check endpoint (HTTP ${response.status}).`,
+        });
+        return;
+      }
+
+      if (response.status === 401 || data.status === "unauthorized") {
+        setHealth({
+          ok: false,
+          configured: false,
+          backendConnected: true,
+          status: "unauthorized",
+          message: data.message || "Sign in with your workspace owner account to access Strategy Lab."
+        });
+        return;
+      }
+
+      if (response.status === 403 || data.status === "forbidden") {
+        setHealth({
+          ok: false,
+          configured: false,
+          backendConnected: true,
+          status: "forbidden",
+          message: data.message || "Strategy Lab is restricted to the workspace owner account (trispinblackops@gmail.com)."
+        });
+        return;
+      }
+
+      if (data.status === "not_configured" || (!data.configured && !data.ok)) {
+        setHealth({
+          ok: false,
+          configured: false,
+          backendConnected: true,
+          status: "not_configured",
+          message: data.message || "Backend connected — LEAN runner not configured (Set LEAN_BACKTEST_SERVICE_URL and LEAN_BACKTEST_SERVICE_TOKEN on the server)."
+        });
+        return;
+      }
+
+      if (data.status === "unreachable" || (data.configured && !data.ok)) {
+        setHealth({
+          ok: false,
+          configured: true,
+          backendConnected: true,
+          status: "unreachable",
+          message: data.message || "Runner configured but unreachable."
+        });
+        return;
+      }
+
+      if (data.ok === true || data.status === "healthy") {
+        setHealth({
+          ok: true,
+          configured: true,
+          backendConnected: true,
+          status: "healthy",
+          engine: data.engine || "QuantConnect LEAN",
+          message: data.message || "QuantConnect LEAN runner is connected and healthy.",
+          runner: data.runner
+        });
+        return;
+      }
+
+      setHealth({
+        ok: false,
+        configured: false,
+        backendConnected: true,
+        status: data.status || "error",
+        message: data.message || `Backend health check returned HTTP ${response.status}.`
+      });
+    } catch (networkErr: any) {
+      setHealth({
+        ok: false,
+        configured: false,
+        backendConnected: false,
+        message: networkErr?.message || "Could not contact the ALGOTRADE backend."
+      });
     } finally {
       setChecking(false);
     }
@@ -111,7 +207,9 @@ export default function LeanStrategyLab({ token }: { token: string }) {
     ? "Runner connected"
     : health?.configured
       ? "Runner configured but unreachable"
-      : "Runner not configured";
+      : health?.backendConnected
+        ? "Backend connected — LEAN runner not configured"
+        : "Runner not configured";
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-5 p-3 sm:p-6">

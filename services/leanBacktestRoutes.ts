@@ -39,39 +39,81 @@ export function createLeanBacktestRouter(resolveUserId: UserIdResolver, resolveU
   const router = Router();
 
   router.get("/health", async (req, res) => {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     try {
-      const email = await resolveUserEmail(req);
-      if (email.toLowerCase() !== OWNER_EMAIL) return res.status(403).json({ error: "Forbidden" });
-    } catch {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    const { baseUrl, token } = runnerConfig();
-    if (!baseUrl || !token) {
-      return res.status(503).json({
+      let email = "";
+      try {
+        email = await resolveUserEmail(req);
+        if (!email) {
+          return res.status(401).json({
+            ok: false,
+            configured: false,
+            status: "unauthorized",
+            error: "Unauthorized",
+            message: "Sign in with your workspace owner account to access Strategy Lab.",
+          });
+        }
+      } catch (authErr: any) {
+        return res.status(401).json({
+          ok: false,
+          configured: false,
+          status: "unauthorized",
+          error: "Unauthorized",
+          message: authErr?.message || "Sign in with your workspace owner account to access Strategy Lab.",
+        });
+      }
+
+      if (email.toLowerCase() !== OWNER_EMAIL) {
+        return res.status(403).json({
+          ok: false,
+          configured: false,
+          status: "forbidden",
+          error: "Forbidden",
+          message: `Strategy Lab is restricted to the workspace owner account (${OWNER_EMAIL}).`,
+        });
+      }
+
+      const { baseUrl, token } = runnerConfig();
+      if (!baseUrl || !token) {
+        return res.status(503).json({
+          ok: false,
+          configured: false,
+          status: "not_configured",
+          engine: "QuantConnect LEAN",
+          message: "Backend reachable — LEAN runner not configured (Set LEAN_BACKTEST_SERVICE_URL and LEAN_BACKTEST_SERVICE_TOKEN on the server).",
+        });
+      }
+
+      try {
+        const response = await axios.get(`${baseUrl}/health`, {
+          headers: runnerHeaders(token),
+          timeout: 5000,
+        });
+        return res.status(200).json({
+          ok: true,
+          configured: true,
+          status: "healthy",
+          engine: "QuantConnect LEAN",
+          message: "QuantConnect LEAN runner is connected and healthy.",
+          runner: response.data,
+        });
+      } catch (error) {
+        return res.status(503).json({
+          ok: false,
+          configured: true,
+          status: "unreachable",
+          engine: "QuantConnect LEAN",
+          message: safeRunnerError(error),
+        });
+      }
+    } catch (unexpectedErr: any) {
+      console.error("[LEAN_HEALTH_FATAL]", unexpectedErr);
+      return res.status(500).json({
         ok: false,
         configured: false,
-        engine: "QuantConnect LEAN",
-        message: "Set LEAN_BACKTEST_SERVICE_URL and LEAN_BACKTEST_SERVICE_TOKEN on the server.",
-      });
-    }
-
-    try {
-      const response = await axios.get(`${baseUrl}/health`, {
-        headers: runnerHeaders(token),
-        timeout: 5000,
-      });
-      return res.json({
-        ok: true,
-        configured: true,
-        engine: "QuantConnect LEAN",
-        runner: response.data,
-      });
-    } catch (error) {
-      return res.status(503).json({
-        ok: false,
-        configured: true,
-        engine: "QuantConnect LEAN",
-        message: safeRunnerError(error),
+        status: "error",
+        error: "Internal Server Error",
+        message: unexpectedErr?.message || "Unexpected backend error checking LEAN health.",
       });
     }
   });
