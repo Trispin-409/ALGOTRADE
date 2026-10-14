@@ -1,4 +1,4 @@
-import { useStore } from '../store';
+import { useStore, calculateDynamicLotSize } from '../store';
 import { getSymbolDriverBreakdown } from './symbolDrivers';
 
 // ADVANCED CANDLESTICK PATTERN PROCESSING ENGINE
@@ -352,7 +352,7 @@ export const discoverStrategyForSymbol = (symbol: string, newsData?: any) => {
   // Populate news impact state in store
   if (newsData) {
     useStore.getState().setNewsImpact({
-      title: newsData.explanation || newsData.title || `Vertex AI Grounded Intel for ${symbol}`,
+      title: newsData.explanation || newsData.title || `Real-Time Grounded Intel for ${symbol}`,
       impact: Math.abs(newsImpactScore) > 50 ? 'HIGH' : (Math.abs(newsImpactScore) > 20 ? 'MEDIUM' : 'LOW'),
       bias: newsData.sentiment || (newsImpactScore > 0 ? 'BULLISH' : (newsImpactScore < 0 ? 'BEARISH' : 'NEUTRAL')),
       score: newsImpactScore,
@@ -626,18 +626,22 @@ export const discoverStrategyForSymbol = (symbol: string, newsData?: any) => {
   const stopLoss = entry - directionMultiplier * slPips * pipSize;
   const takeProfit = entry + directionMultiplier * tpPips * pipSize;
 
-  // Lot sizes conforming with vertex risk-percentage calculations
+  // Dynamic AI Lot size based on account balance, margin, and user's maxTrades input
   const strategySettings = useStore.getState().strategySettings;
   const riskPercentageVal = strategySettings?.riskConfig?.riskPercentage || 1.0;
-  const accountVal = useStore.getState().account?.balance || 10000;
+  const accountState = useStore.getState().account;
+  const accountVal = accountState?.balance || 10000;
+  const freeMarginVal = accountState?.freeMargin ?? accountVal;
+  const maxTradesLimit = strategySettings?.maxTrades || 1;
+  const calculatedLotSize = calculateDynamicLotSize(
+    accountVal,
+    freeMarginVal,
+    maxTradesLimit,
+    symbol,
+    riskPercentageVal,
+    slPips
+  );
   const maxRiskCapital = accountVal * (riskPercentageVal / 100);
-  
-  // Calculation: Lot size = risk capital / (stop loss pips * pip value per standard lot)
-  // For standard lots, 1 pip value in EURUSD is $10. For XAUUSD, 1 pip value is $10.
-  const pipValuePerStandardLot = isGold ? 10 : 10;
-  let calculatedLotSize = maxRiskCapital / (slPips * pipValuePerStandardLot);
-  if (calculatedLotSize < 0.01) calculatedLotSize = 0.01;
-  if (calculatedLotSize > 5.0) calculatedLotSize = 5.0; // institutional safety ceiling
 
   // Build Asset Driver Breakdown & Grounded Intelligence for symbol
   const symbolDrivers = getSymbolDriverBreakdown(symbol);
@@ -692,7 +696,7 @@ export const discoverStrategyForSymbol = (symbol: string, newsData?: any) => {
     marketState: marketRegime,
     technicalAlignment: `Technical Agent: Multi-timeframe trend is ${macroBias}. RSI is stable at ${rsi14.toFixed(1)} with ${candleAnalysis.patterns.join(', ') || 'neutral'} candle formations.`,
     fundamentalAlignment: `Liquidity Agent: Map supply/demand complete. Found ${sdMap.zones.filter(z => z.type === (selectedStrategy.direction === 'BUY' ? 'DEMAND' : 'SUPPLY')).length} holding zones. Structure: ${sdMap.structures.join(', ') || 'Protected'}.`,
-    newsImpact: `News Agent: Sentiment score ${fundamentalBiasScore}/100. Global macro impact is ${newsImpactScore > 50 ? 'EXPANSIVE' : 'STABLE'}. ${newsData?.explanation ? 'Vertex Grounded Driver: ' + newsData.explanation : ''}`,
+    newsImpact: `News Agent: Sentiment score ${fundamentalBiasScore}/100. Global macro impact is ${newsImpactScore > 50 ? 'EXPANSIVE' : 'STABLE'}. ${newsData?.explanation ? 'Grounded Driver: ' + newsData.explanation : ''}`,
     leverageSafety: `Risk Agent: Portfolio risk percentage constraint strictly held at ${riskPercentageVal}%. Account balance: $${accountVal.toFixed(2)}.`,
     driverBreakdown: symbolDrivers,
     preNewsPrediction: {

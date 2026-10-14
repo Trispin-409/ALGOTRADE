@@ -34,18 +34,32 @@ interface Props {
   activeSetup?: {
     symbol: string;
     strategyName: string;
-    direction: 'BUY' | 'SELL';
+    direction: 'BUY' | 'SELL' | 'WAIT';
     entry: number;
     stopLoss: number;
     takeProfit: number;
     confidence: number;
-    sessionName: string;
+    sessionName?: string;
     horizon?: string;
     riskZone?: { low: number; high: number };
     rewardZone?: { low: number; high: number };
     liquidityAreas?: { price: number; label: string }[];
     support?: number;
     resistance?: number;
+    pdh?: number;
+    pdl?: number;
+    prev4hHigh?: number;
+    prev4hLow?: number;
+    fibLevels?: Array<{ ratio: number; price: number; label: string }>;
+    goldenPocket?: { low: number; high: number };
+    targetLiquidity?: number;
+    targetLiquidityType?: 'BSL' | 'SSL';
+    detectedPatterns?: string[];
+    primaryPattern?: string;
+    newsAlignment?: string;
+    riskRewardRatio?: string;
+    recommendedLotSize?: number;
+    lotSize?: number;
   } | null;
   lotSize?: number;
   setLotSize?: (val: number) => void;
@@ -92,7 +106,7 @@ export default function CandlestickChart({
   const activeLotSize = lotSize !== undefined ? lotSize : storeLotSize;
 
   const handleChg = useCallback((val: number) => {
-    const clamped = Math.max(0.01, Math.min(10.0, Number(val.toFixed(2)) || 0.01));
+    const clamped = Math.max(0.01, Math.min(10.0, Number((val || 0).toFixed(2)) || 0.01));
     if (setLotSize) {
       setLotSize(clamped);
     } else {
@@ -114,11 +128,14 @@ export default function CandlestickChart({
 
   const effectiveHeight = dynamicHeight || height;
 
-  // Merge latest tick into final candle for live updating
+  // Merge latest tick into final candle for live updating & ensure strictly continuous single price series
   const chartData = useMemo(() => {
-    console.log("[CHART_RENDER_DATA]", data?.length);
     if (!data || !data.length) return [];
-    const arr = [...data];
+    const valid = data.filter(c => c && typeof c.close === 'number' && !isNaN(c.close) && c.close > 0)
+      .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    if (!valid.length) return [];
+
+    let arr = [...valid];
     if (latestTick?.bid) {
       const last = { ...arr[arr.length - 1] };
       last.close = latestTick.bid;
@@ -126,7 +143,24 @@ export default function CandlestickChart({
       last.low = Math.min(last.low, latestTick.bid);
       arr[arr.length - 1] = last;
     }
-    return arr;
+
+    // Backwards contiguous scan: strip out any stale historical data separated by long time gaps (> 96h) or sharp price jumps (> 2.5%)
+    let startIndex = 0;
+    for (let i = arr.length - 1; i >= 1; i--) {
+      const cur = arr[i];
+      const prev = arr[i - 1];
+      const curTime = new Date(cur.time).getTime();
+      const prevTime = new Date(prev.time).getTime();
+      const gapHours = (curTime - prevTime) / (1000 * 3600);
+      const priceChangeRatio = Math.abs(cur.close - prev.close) / prev.close;
+
+      if (gapHours > 96 || priceChangeRatio > 0.025) {
+        startIndex = i;
+        break;
+      }
+    }
+
+    return arr.slice(startIndex);
   }, [data, latestTick]);
 
   const rightPadding = 65;
@@ -913,6 +947,94 @@ export default function CandlestickChart({
                     );
                   })()}
 
+                  {/* PDH (Previous Day High) Line & Pill */}
+                  {activeSetup.pdh && activeSetup.pdh > 0 && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.pdh)} y2={getY(activeSetup.pdh)} stroke="#38bdf8" strokeWidth={1} strokeDasharray="4 4" opacity={0.75} />
+                      <rect x={mainW + 2} y={getY(activeSetup.pdh) - 7} width={rightPadding - 4} height={14} fill="#0284c7" rx={2} />
+                      <text x={mainW + rightPadding / 2} y={getY(activeSetup.pdh) + 3} textAnchor="middle" fill="#ffffff" fontSize="7" fontWeight="bold" fontFamily="monospace">
+                        PDH {formatPrice(activeSetup.pdh)}
+                      </text>
+                      <text x={8} y={getY(activeSetup.pdh) - 4} fill="#38bdf8" fontSize="8" fontWeight="bold" className="font-mono tracking-wider opacity-85 uppercase select-none pointer-events-none">
+                        PDH [PREV DAY HIGH]
+                      </text>
+                    </g>
+                  )}
+
+                  {/* PDL (Previous Day Low) Line & Pill */}
+                  {activeSetup.pdl && activeSetup.pdl > 0 && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.pdl)} y2={getY(activeSetup.pdl)} stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" opacity={0.75} />
+                      <rect x={mainW + 2} y={getY(activeSetup.pdl) - 7} width={rightPadding - 4} height={14} fill="#d97706" rx={2} />
+                      <text x={mainW + rightPadding / 2} y={getY(activeSetup.pdl) + 3} textAnchor="middle" fill="#ffffff" fontSize="7" fontWeight="bold" fontFamily="monospace">
+                        PDL {formatPrice(activeSetup.pdl)}
+                      </text>
+                      <text x={8} y={getY(activeSetup.pdl) + 11} fill="#f59e0b" fontSize="8" fontWeight="bold" className="font-mono tracking-wider opacity-85 uppercase select-none pointer-events-none">
+                        PDL [PREV DAY LOW]
+                      </text>
+                    </g>
+                  )}
+
+                  {/* 4H High & 4H Low Boundaries */}
+                  {activeSetup.prev4hHigh && activeSetup.prev4hHigh > 0 && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.prev4hHigh)} y2={getY(activeSetup.prev4hHigh)} stroke="#c084fc" strokeWidth={0.8} strokeDasharray="3 3" opacity={0.65} />
+                      <text x={Math.max(12, mainW - 130)} y={getY(activeSetup.prev4hHigh) - 4} fill="#c084fc" fontSize="7" fontWeight="bold" className="font-mono tracking-wider opacity-85 uppercase select-none pointer-events-none">
+                        4H HIGH {formatPrice(activeSetup.prev4hHigh)}
+                      </text>
+                    </g>
+                  )}
+
+                  {activeSetup.prev4hLow && activeSetup.prev4hLow > 0 && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.prev4hLow)} y2={getY(activeSetup.prev4hLow)} stroke="#c084fc" strokeWidth={0.8} strokeDasharray="3 3" opacity={0.65} />
+                      <text x={Math.max(12, mainW - 130)} y={getY(activeSetup.prev4hLow) + 9} fill="#c084fc" fontSize="7" fontWeight="bold" className="font-mono tracking-wider opacity-85 uppercase select-none pointer-events-none">
+                        4H LOW {formatPrice(activeSetup.prev4hLow)}
+                      </text>
+                    </g>
+                  )}
+
+                  {/* Fibonacci Retracement Levels */}
+                  {activeSetup.fibLevels && activeSetup.fibLevels.length > 0 && (
+                    <g>
+                      {activeSetup.fibLevels.map((fib, idx) => {
+                        const yFib = getY(fib.price);
+                        const isGolden = fib.ratio === 0.618;
+                        const isEq = fib.ratio === 0.500;
+                        const strokeColor = isGolden ? '#facc15' : isEq ? '#60a5fa' : '#94a3b8';
+                        return (
+                          <g key={`fib-${idx}`}>
+                            <line x1={xBoxStart} x2={mainW} y1={yFib} y2={yFib} stroke={strokeColor} strokeWidth={isGolden ? 1.2 : 0.6} strokeDasharray={isGolden ? "4 2" : "2 4"} opacity={isGolden ? 0.8 : 0.4} />
+                            <text x={mainW - 140} y={yFib - 3} fill={strokeColor} fontSize="7" fontWeight={isGolden ? "black" : "bold"} className="font-mono uppercase select-none pointer-events-none">
+                              FIB {fib.label} ({formatPrice(fib.price)})
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </g>
+                  )}
+
+                  {/* Target Liquidity Level */}
+                  {activeSetup.targetLiquidity && activeSetup.targetLiquidity > 0 && (
+                    <g>
+                      <line x1={0} x2={mainW} y1={getY(activeSetup.targetLiquidity)} y2={getY(activeSetup.targetLiquidity)} stroke="#ffffff" strokeWidth={1} strokeDasharray="3 2" opacity={0.8} />
+                      <circle cx={mainW - 18} cy={getY(activeSetup.targetLiquidity)} r={4} fill="#ffffff" className="animate-pulse" />
+                      <text x={mainW - 160} y={getY(activeSetup.targetLiquidity) - 4} fill="#ffffff" fontSize="8" fontWeight="black" className="font-mono tracking-widest uppercase select-none pointer-events-none">
+                        🎯 TARGET LIQUIDITY ({formatPrice(activeSetup.targetLiquidity)})
+                      </text>
+                    </g>
+                  )}
+
+                  {/* Detected Pattern Label (Double Top, Double Bottom, Liquidity Sweep) */}
+                  {activeSetup.primaryPattern && (
+                    <g>
+                      <rect x={xBoxStart} y={Math.max(10, Math.min(yEntry, ySL) - 24)} width={210} height={18} fill="#030712" stroke="#d4af37" strokeWidth={1} rx={4} opacity={0.92} />
+                      <text x={xBoxStart + 8} y={Math.max(10, Math.min(yEntry, ySL) - 24) + 12} fill="#facc15" fontSize="8" fontWeight="black" className="font-mono uppercase tracking-wider select-none pointer-events-none">
+                        ⚡ {activeSetup.primaryPattern.toUpperCase()}
+                      </text>
+                    </g>
+                  )}
+
                   {/* Stop Loss label - thin guiding boundary only, no thick solid lines */}
                   <line x1={xBoxStart} x2={mainW} y1={ySL} y2={ySL} stroke={slColor} strokeWidth={0.5} strokeDasharray="3 6" opacity={0.4} />
                   <text x={8} y={ySL - 4} textAnchor="start" fill={slColor} fontSize="8" fontWeight="black" className="font-mono tracking-widest opacity-90 uppercase select-none pointer-events-none">
@@ -991,15 +1113,52 @@ export default function CandlestickChart({
         <line x1={mainW} x2={mainW} y1={0} y2={effectiveHeight} stroke="#1e293b" />
       </svg>
       
-      {/* Strategy Header in top-left corner - Very small, minimal, professional */}
+      {/* Strategy Header in top-left corner - Clean, High Confluence Institutional Badge */}
       {showAnalysis && activeSetup && (
-        <div className="absolute top-4 left-4 z-20 bg-slate-950/95 border border-white/5 rounded p-2 shadow-2xl backdrop-blur-sm select-none font-sans text-[8px] sm:text-[9px] text-slate-400 flex flex-col gap-0.5 pointer-events-none">
-          <div className="font-black text-slate-100 text-[9px] sm:text-[10px] uppercase tracking-wider mb-0.5">
+        <div className="absolute top-4 left-4 z-20 bg-slate-950/95 border border-[#d4af37]/30 rounded-xl p-3 shadow-2xl backdrop-blur-md select-none font-sans text-[8px] sm:text-[9px] text-slate-400 flex flex-col gap-1.5 pointer-events-none max-w-xs sm:max-w-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className={`px-2 py-0.5 rounded font-black text-[9px] uppercase tracking-wider ${
+              activeSetup.direction === 'BUY' 
+                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                : activeSetup.direction === 'SELL' 
+                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' 
+                  : 'bg-slate-500/20 text-slate-300 border border-slate-500/30'
+            }`}>
+              AI SIGNAL: {activeSetup.direction}
+            </span>
+            <span className="font-mono font-bold text-amber-400">{activeSetup.confidence}% CONFIDENCE</span>
+          </div>
+
+          <div className="font-black text-slate-100 text-[10px] sm:text-[11px] uppercase tracking-wider truncate">
             {activeSetup.strategyName.replace(/\[RANKED #1\]/gi, '').split('[')[0].trim()}
           </div>
-          <div>Confidence: <span className="font-bold text-[#face6f]">{activeSetup.confidence}%</span></div>
-          <div>Session: <span className="font-bold text-slate-100 uppercase">{activeSetup.sessionName || 'London'}</span></div>
-          <div>Timeframe: <span className="font-bold text-slate-100 uppercase">H1 → M15 → M5</span></div>
+
+          {activeSetup.primaryPattern && (
+            <div className="text-yellow-400/90 font-mono text-[8px] flex items-center gap-1">
+              <span>Pattern:</span>
+              <span className="font-bold text-slate-200">{activeSetup.primaryPattern}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[8px] font-mono text-slate-400 border-y border-white/5 py-1">
+            <div>PDH: <span className="text-sky-400 font-bold">{activeSetup.pdh ? (activeSetup.pdh < 10 ? activeSetup.pdh.toFixed(5) : activeSetup.pdh.toFixed(2)) : 'N/A'}</span></div>
+            <div>PDL: <span className="text-amber-400 font-bold">{activeSetup.pdl ? (activeSetup.pdl < 10 ? activeSetup.pdl.toFixed(5) : activeSetup.pdl.toFixed(2)) : 'N/A'}</span></div>
+            <div>4H H: <span className="text-purple-400 font-bold">{activeSetup.prev4hHigh ? (activeSetup.prev4hHigh < 10 ? activeSetup.prev4hHigh.toFixed(5) : activeSetup.prev4hHigh.toFixed(2)) : 'N/A'}</span></div>
+            <div>4H L: <span className="text-purple-400 font-bold">{activeSetup.prev4hLow ? (activeSetup.prev4hLow < 10 ? activeSetup.prev4hLow.toFixed(5) : activeSetup.prev4hLow.toFixed(2)) : 'N/A'}</span></div>
+          </div>
+
+          <div className="flex items-center justify-between text-[8px] text-slate-400 font-mono">
+            <span>Session: <strong className="text-slate-200 uppercase">{activeSetup.sessionName || 'London/NY'}</strong></span>
+            {activeSetup.lotSize !== undefined && (
+              <span>Sizing: <strong className="text-amber-300">{activeSetup.lotSize} lots</strong></span>
+            )}
+          </div>
+
+          {activeSetup.newsAlignment && (
+            <div className="text-[7.5px] text-slate-400 font-mono truncate">
+              Macro/News: <span className="text-emerald-300 font-bold">{activeSetup.newsAlignment}</span>
+            </div>
+          )}
         </div>
       )}
       

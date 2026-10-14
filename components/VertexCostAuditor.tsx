@@ -109,8 +109,8 @@ export default function VertexCostAuditor({ className = '', isAlgoTradeRunning =
           <div className="flex items-center gap-1.5">
             <Cpu className={`w-4 h-4 ${isAlgoTradeRunning ? 'text-emerald-400 animate-spin' : 'text-amber-500'}`} style={{ animationDuration: '6s' }} />
             <div>
-              <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-200">Vertex AI Enterprise</h4>
-              <p className="text-[8px] text-slate-500 uppercase tracking-tighter">Token Cost Auditor</p>
+              <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-200">AI Enterprise Engine</h4>
+              <p className="text-[8px] text-slate-500 uppercase tracking-tighter">Token & Compute Auditor</p>
             </div>
           </div>
           
@@ -146,7 +146,7 @@ export default function VertexCostAuditor({ className = '', isAlgoTradeRunning =
             <span className="text-[10px] text-slate-400 font-bold">USD</span>
           </div>
           <p className="text-[8px] text-slate-400 max-w-xs mx-auto mt-1 leading-normal">
-            Real-time microsecond-level calculation of Gemini & Vertex grounding costs per inference cycle.
+            Real-time microsecond-level calculation of neural model and search grounding costs per inference cycle.
           </p>
         </div>
 
@@ -182,11 +182,11 @@ export default function VertexCostAuditor({ className = '', isAlgoTradeRunning =
               </div>
             ))}
             <div className="flex justify-between items-center text-slate-500 pt-1">
-              <span>Vertex Grounding Fee</span>
+              <span>Live Grounding Fee</span>
               <span className="text-slate-300 font-bold">{formatPreciseUSD(tokenMetrics.totalGroundingQueries * 0.000015)}</span>
             </div>
             <div className="flex justify-between items-center text-slate-500">
-              <span>Gemini Compute Charge</span>
+              <span>Neural Compute Charge</span>
               <span className="text-slate-300 font-bold">{formatPreciseUSD(tokenMetrics.estimatedTotalCostUSD - (tokenMetrics.totalGroundingQueries * 0.000015))}</span>
             </div>
           </div>

@@ -1,5 +1,37 @@
 import { create } from 'zustand';
 
+export const calculateDynamicLotSize = (
+  balance: number = 10000,
+  freeMargin?: number,
+  maxTrades: number = 1,
+  symbol: string = 'EURUSD',
+  riskPercentage: number = 1.0,
+  stopLossPips: number = 35
+): number => {
+  const activeTrades = Math.max(1, Number(maxTrades) || 1);
+  const safeBalance = Math.max(100, Number(balance) || 1000);
+  const safeFreeMargin = Math.max(50, Number(freeMargin ?? safeBalance));
+  
+  const isGold = (symbol || '').toLowerCase().includes('xau') || (symbol || '').toLowerCase().includes('gold');
+  const pipValuePerStandardLot = 10; // $10 per pip standard (0.10 pt on Gold)
+  
+  // 1. Total Portfolio Risk Budget distributed across user-specified number of trades
+  const totalRiskBudgetUSD = safeBalance * (Math.max(0.1, Math.min(10.0, Number(riskPercentage) || 1.0)) / 100);
+  const riskBudgetPerTradeUSD = totalRiskBudgetUSD / activeTrades;
+  const pipRiskPerLot = Math.max(10, Number(stopLossPips) || 35) * pipValuePerStandardLot;
+  const riskBasedLot = riskBudgetPerTradeUSD / pipRiskPerLot;
+  
+  // 2. Margin Safety Check (distribute available margin capacity across active trades)
+  const marginRequirementPerLot = isGold ? 2000 : 1000;
+  const marginAvailablePerTrade = (safeFreeMargin * 0.70) / activeTrades;
+  const marginBasedLot = marginAvailablePerTrade / marginRequirementPerLot;
+  
+  // Choose the safest lot size that adheres to both risk budget and margin capacity
+  const optimalLot = Math.min(riskBasedLot, marginBasedLot);
+  const clampedLot = Math.max(0.01, Math.min(optimalLot, 5.0));
+  return Math.round(clampedLot * 100) / 100;
+};
+
 export interface PushNotification {
   id: string;
   title: string;
@@ -14,6 +46,8 @@ export interface PushNotification {
   category?: string;
   impactScore?: number;
 }
+
+export type AIStrategyMode = 'Adaptive All-Modes' | 'Predictive Trend Following' | 'Mean Reversion' | 'Breakout Momentum';
 
 export interface TokenMetrics {
   totalInputTokens: number;
@@ -51,6 +85,7 @@ interface AccountStore {
     lotSize: number;
     maxTrades: number;
     timeframe: string;
+    strategyMode: AIStrategyMode;
     riskConfig: {
       fundedAmount: number;
       riskPercentage: number;
@@ -112,6 +147,7 @@ interface AccountStore {
     lotSize?: number; 
     maxTrades?: number; 
     timeframe?: string;
+    strategyMode?: AIStrategyMode;
     riskConfig?: Partial<{
       fundedAmount: number;
       riskPercentage: number;
@@ -232,11 +268,26 @@ export const useStore = create<AccountStore>((set) => ({
     }
   })(),
   strategySettings: (() => {
-    const defaults = {
+    const defaults: {
+      symbol: string;
+      lotSize: number;
+      maxTrades: number;
+      timeframe: string;
+      strategyMode: AIStrategyMode;
+      riskConfig: {
+        fundedAmount: number;
+        riskPercentage: number;
+        stopLossPips: number;
+        usePreferredLotSize: boolean;
+        preferredLotSize: number;
+        currency: string;
+      };
+    } = {
       symbol: 'XAUUSDm',
       lotSize: 0.1,
       maxTrades: 3,
       timeframe: '1m',
+      strategyMode: 'Predictive Trend Following',
       riskConfig: {
         fundedAmount: 1000,
         riskPercentage: 1,
@@ -253,6 +304,7 @@ export const useStore = create<AccountStore>((set) => ({
       return {
         ...defaults,
         ...parsed,
+        strategyMode: parsed.strategyMode || defaults.strategyMode,
         riskConfig: {
           ...defaults.riskConfig,
           ...(parsed.riskConfig || {})
@@ -378,38 +430,45 @@ export const useStore = create<AccountStore>((set) => ({
         ? { ...state.strategySettings.riskConfig, ...settings.riskConfig }
         : state.strategySettings.riskConfig
     };
-    if (newSettings.riskConfig && !newSettings.riskConfig.usePreferredLotSize) {
-      const { fundedAmount, riskPercentage, stopLossPips, currency } = newSettings.riskConfig;
-      const activeRiskPercent = riskPercentage || 1;
-      if (!riskPercentage) newSettings.riskConfig.riskPercentage = 1;
-      const exchangeRate = currency === 'ZAR' ? 18.5 : 1.0;
-      const riskAmount = (fundedAmount * activeRiskPercent) / 100;
-      const riskAmountUSD = riskAmount / exchangeRate;
-      const calculatedLot = riskAmountUSD / (stopLossPips * 10); 
-      newSettings.lotSize = Math.max(0.01, Math.round(calculatedLot * 100) / 100);
-      
-      if (settings.maxTrades !== undefined) {
-        newSettings.maxTrades = settings.maxTrades;
-      } else if (state.strategySettings.maxTrades !== undefined && state.strategySettings.maxTrades !== null) {
-        newSettings.maxTrades = state.strategySettings.maxTrades;
-      } else {
-        const fundedAmountUSD = fundedAmount / exchangeRate;
-        newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200)); 
-      }
-    } else if (newSettings.riskConfig?.usePreferredLotSize) {
-      newSettings.lotSize = newSettings.riskConfig.preferredLotSize;
-      if (settings.maxTrades !== undefined) {
-        newSettings.maxTrades = settings.maxTrades;
-      } else if (state.strategySettings.maxTrades !== undefined && state.strategySettings.maxTrades !== null) {
-        newSettings.maxTrades = state.strategySettings.maxTrades;
-      } else {
-        const exchangeRate = newSettings.riskConfig.currency === 'ZAR' ? 18.5 : 1.0;
-        const fundedAmountUSD = newSettings.riskConfig.fundedAmount / exchangeRate;
-        newSettings.maxTrades = Math.max(1, Math.floor(fundedAmountUSD / 200));
-      }
+
+    if (settings.maxTrades !== undefined) {
+      newSettings.maxTrades = Math.max(1, Number(settings.maxTrades));
     }
+
+    // Dynamic AI Lot Sizing based on account balance, free margin, symbol, and user's inputted number of trades (maxTrades)
+    if (settings.lotSize !== undefined && settings.lotSize !== null) {
+      newSettings.lotSize = Math.max(0.01, Number(settings.lotSize));
+    } else {
+      const balance = state.account?.balance || newSettings.riskConfig?.fundedAmount || 10000;
+      const freeMargin = state.account?.freeMargin ?? state.account?.equity ?? balance;
+      const riskPct = newSettings.riskConfig?.riskPercentage || 1.0;
+      const slPips = newSettings.riskConfig?.stopLossPips || 35;
+      const dynamicLot = calculateDynamicLotSize(
+        balance,
+        freeMargin,
+        newSettings.maxTrades || 1,
+        newSettings.symbol || 'EURUSD',
+        riskPct,
+        slPips
+      );
+      newSettings.lotSize = dynamicLot;
+    }
+
     if (newSettings.lotSize !== undefined) newSettings.lotSize = Math.max(0.01, newSettings.lotSize);
     if (newSettings.maxTrades !== undefined) newSettings.maxTrades = Math.max(1, newSettings.maxTrades);
+
+    // Prevent redundant update if settings are identical
+    if (
+      state.strategySettings.symbol === newSettings.symbol &&
+      state.strategySettings.lotSize === newSettings.lotSize &&
+      state.strategySettings.maxTrades === newSettings.maxTrades &&
+      state.strategySettings.timeframe === newSettings.timeframe &&
+      state.strategySettings.strategyMode === newSettings.strategyMode &&
+      JSON.stringify(state.strategySettings.riskConfig) === JSON.stringify(newSettings.riskConfig)
+    ) {
+      return state;
+    }
+
     try {
       localStorage.setItem('strategySettings', JSON.stringify(newSettings));
       if (state.currentUserEmail) {
@@ -421,7 +480,19 @@ export const useStore = create<AccountStore>((set) => ({
     return { strategySettings: newSettings };
   }),
   setMarketAnalysis: (analysis) => set({ marketAnalysis: analysis }),
-  setActiveSetup: (setup) => set({ activeSetup: setup }),
+  setActiveSetup: (setup) => set((state) => {
+    if (!setup && !state.activeSetup) return state;
+    if (setup && state.activeSetup && 
+        setup.symbol === state.activeSetup.symbol &&
+        setup.direction === state.activeSetup.direction &&
+        setup.entry === state.activeSetup.entry &&
+        setup.stopLoss === state.activeSetup.stopLoss &&
+        setup.takeProfit === state.activeSetup.takeProfit &&
+        setup.confidence === state.activeSetup.confidence) {
+      return state;
+    }
+    return { activeSetup: setup };
+  }),
   setIsAutoTrade: (isAutoTrade) => set({ isAutoTrade }),
   setAutoTradeConfirmationOpen: (open) => set({ autoTradeConfirmationOpen: open }),
   setEngineState: (state) => set({ engineState: state, isAutoTrade: state === 'RUNNING' }),

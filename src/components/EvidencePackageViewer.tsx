@@ -46,7 +46,7 @@ export const EvidencePackageViewer: React.FC<EvidencePackageViewerProps> = ({
   const direction = activeSetup.direction || 'BUY';
 
   // Format AI decision reason
-  const aiExplanation = activeSetup.aiExplanation || pkg.approvedReason || activeSetup.approvedReason || 'Vertex AI has validated the structural confluences and approved the signal.';
+  const aiExplanation = activeSetup.aiExplanation || pkg.approvedReason || activeSetup.approvedReason || 'The AI Supervisor has validated structural confluences and approved the signal.';
 
   const renderStructuresTab = () => {
     return (
@@ -252,7 +252,7 @@ export const EvidencePackageViewer: React.FC<EvidencePackageViewerProps> = ({
         
         <div className="bg-black/40 border border-white/5 rounded-lg p-4 space-y-4">
           <div className="flex justify-between items-center text-[11px] text-slate-400 bg-white/5 p-2 rounded">
-            <span><strong>Model:</strong> Vertex AI Supervisor</span>
+            <span><strong>Model:</strong> Enterprise AI Supervisor</span>
             <span><strong>Evidence Version:</strong> V10.Registry</span>
           </div>
 

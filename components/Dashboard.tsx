@@ -153,15 +153,6 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [totalBalance, totalEquity, totalMargin, totalFreeMargin, avgMarginLevel, resolvedCurrency]);
 
-  const isInitialLoad = useRef(true);
-  const [, forceUpdate] = useState({});
-  useEffect(() => {
-    if (readyAccounts.length > 0 && isInitialLoad.current) {
-      isInitialLoad.current = false;
-      forceUpdate({});
-    }
-  }, [readyAccounts]);
-
   const displayBalance = activeAccount ? Number(activeAccount.balance) : lastValidValues.current.balance;
   const displayEquity = computedEquity > 0 ? computedEquity : (activeAccount ? Number(activeAccount.equity) : lastValidValues.current.equity);
   const displayMargin = (activeAccount && Number(activeAccount.margin) > 0) 

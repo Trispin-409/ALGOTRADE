@@ -319,7 +319,7 @@ export default function News({ activeSymbol, onSymbolChange, availableBrokerSymb
             <div className="flex items-center gap-2">
               <Search className="w-4 h-4 text-[#face6f]" />
               <h3 className="text-[11px] font-mono font-black text-[#face6f] uppercase tracking-widest">
-                Vertex AI real-time search radar ({activeSymbol})
+                Institutional real-time search radar ({activeSymbol})
               </h3>
             </div>
             

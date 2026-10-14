@@ -149,26 +149,62 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData, set
          </div>
       ) : null}
 
-      <div className="relative z-10 max-w-6xl w-full mx-auto text-center mb-12 md:mb-16">
+      <div className="relative z-10 max-w-6xl w-full mx-auto text-center mb-8">
         <h1 className="text-3xl md:text-6xl font-black text-white tracking-tighter uppercase mb-4 md:mb-6 drop-shadow-[0_0_15px_rgba(255,255,255,0.15)] px-4">
           Unleash Your Trading Potential
         </h1>
-        <p className="text-lg md:text-xl text-slate-400 max-w-2xl mx-auto px-4">
+        <p className="text-lg md:text-xl text-slate-400 max-w-2xl mx-auto px-4 mb-6">
           Institutional-grade automation infrastructure designed for the modern retail trader.
         </p>
+
+        {/* ALWAYS ACCESSIBLE INLINE KEY ACTIVATION BOX */}
+        <div className="w-full max-w-xl mx-auto p-5 sm:p-6 bg-slate-900/80 border border-emerald-500/30 rounded-3xl shadow-xl shadow-emerald-950/20 text-center relative overflow-hidden backdrop-blur-xl">
+          <div className="flex items-center justify-center gap-2 mb-2 text-emerald-400 font-black uppercase text-xs tracking-widest">
+            <Key className="w-4 h-4" /> Enter / Redeem Access Key
+          </div>
+          <p className="text-slate-400 text-xs mb-4">
+            Have an access key? Enter it below to activate, upgrade, or renew your plan instantly.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 items-center">
+            <input 
+              type="text" 
+              value={activationKey}
+              onChange={(e) => setActivationKey(e.target.value)}
+              placeholder="ALGO-PRO-XXXX-XXXX"
+              className="w-full bg-black/60 border border-white/10 rounded-2xl px-4 py-3.5 font-mono text-emerald-400 text-sm focus:outline-none focus:border-emerald-500 uppercase tracking-[0.15em] text-center"
+            />
+            <button 
+              onClick={handleActivate}
+              disabled={activating}
+              className="w-full sm:w-auto px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-widest rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 shrink-0 disabled:opacity-50 active:scale-95"
+            >
+              {activating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Activate Key'}
+            </button>
+          </div>
+          {activationError && (
+            <p className="text-rose-500 text-xs font-bold mt-2 animate-pulse">{activationError}</p>
+          )}
+        </div>
       </div>
 
       <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 max-w-6xl w-full mx-auto px-2">
         {plans.map((plan) => {
           const isActivePlan = bootData?.has_active_subscription && bootData?.subscription_plan?.toLowerCase() === plan.name.toLowerCase();
           return (
-            <div key={plan.name} className={`bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-3xl p-6 md:p-8 flex flex-col transition-all duration-300 hover:bg-slate-800/40 hover:border-white/10 relative overflow-hidden group shadow-2xl`}>
+            <div key={plan.name} className={`bg-slate-900/40 backdrop-blur-xl border ${isActivePlan ? 'border-emerald-500/50' : 'border-white/5'} rounded-3xl p-6 md:p-8 flex flex-col transition-all duration-300 hover:bg-slate-800/40 hover:border-white/10 relative overflow-hidden group shadow-2xl`}>
               {/* Ambient Background Gradient */}
               <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-500`} style={{ background: 'var(--accent-color)' }}></div>
               
               <div className="relative z-10">
-                <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-6 md:mb-8 border border-white/10`}>
-                  {plan.icon}
+                <div className="flex items-center justify-between mb-6 md:mb-8">
+                  <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-white/5 flex items-center justify-center border border-white/10`}>
+                    {plan.icon}
+                  </div>
+                  {isActivePlan && (
+                    <span className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full">
+                      Current Active
+                    </span>
+                  )}
                 </div>
                 
                 <h3 className="text-xl md:text-2xl font-bold text-white mb-2">{plan.name}</h3>
@@ -189,24 +225,16 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData, set
                 
                 <button
                   onClick={() => {
-                    if (isActivePlan) {
-                      if (setActiveTab) {
-                        setActiveTab('dashboard');
-                      } else {
-                        window.location.replace('/');
-                      }
-                    } else {
-                      handleSubscribe(plan);
-                    }
+                    handleSubscribe(plan);
                   }}
-                  className="w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 text-black hover:opacity-90 active:scale-[0.98] shadow-lg"
+                  className="w-full py-4 px-6 rounded-2xl font-black uppercase tracking-widest transition-all duration-300 flex items-center justify-center gap-3 text-black hover:opacity-90 active:scale-[0.98] shadow-lg text-xs"
                   style={{ 
                     backgroundColor: isActivePlan ? '#10B981' : 'var(--accent-color)', 
                     boxShadow: isActivePlan ? '0 10px 20px -5px rgba(16, 185, 129, 0.3)' : '0 10px 20px -5px rgba(var(--accent-color-rgb), 0.3)' 
                   }}
                 >
                   {isActivePlan ? (
-                    <>Active - Enter <CheckCircle2 className="w-5 h-5" /></>
+                    <>Re-Enter / Upgrade Key <Key className="w-4 h-4" /></>
                   ) : (
                     <>Activate with Key <ArrowRight className="w-5 h-5" /></>
                   )}
@@ -387,25 +415,29 @@ export const PricingPage: React.FC<PricingPageProps> = ({ session, bootData, set
       )}
 
       <div className="relative z-10 mt-12 md:mt-16 text-center px-4 space-y-6 flex flex-col items-center">
-        {session && bootData && bootData.has_active_subscription ? (
-          <button 
-            onClick={() => window.location.href = '/'}
-            className="text-slate-400 hover:text-white transition-colors font-semibold uppercase tracking-widest text-xs border-b border-transparent hover:border-white pb-1"
-          >
-            Return to Dashboard
-          </button>
-        ) : session ? (
+        {session ? (
           <div className="flex flex-col items-center gap-4">
             <div className="flex flex-wrap justify-center gap-4">
               <button 
                 onClick={() => setStep('activate')}
-                className="text-emerald-400 hover:text-emerald-300 transition-colors font-black uppercase tracking-widest text-sm flex items-center gap-2 bg-emerald-500/10 px-6 py-3 rounded-xl border border-emerald-500/20"
+                className="text-emerald-400 hover:text-emerald-300 transition-colors font-black uppercase tracking-widest text-sm flex items-center gap-2 bg-emerald-500/10 px-6 py-3 rounded-xl border border-emerald-500/20 hover:bg-emerald-500/20 shadow-lg"
               >
-                <Key className="w-4 h-4" /> I have an Activation Key
+                <Key className="w-4 h-4" /> Enter / Redeem Activation Key
               </button>
+              {bootData && bootData.has_active_subscription && (
+                <button 
+                  onClick={() => {
+                    if (setActiveTab) setActiveTab('dashboard');
+                    else window.location.href = '/';
+                  }}
+                  className="text-slate-300 hover:text-white transition-colors font-black uppercase tracking-widest text-sm flex items-center gap-2 bg-white/5 px-6 py-3 rounded-xl border border-white/10 hover:bg-white/10"
+                >
+                  <LayoutDashboard className="w-4 h-4 text-slate-400" /> Return to Dashboard
+                </button>
+              )}
               <button 
                 onClick={() => window.location.reload()}
-                className="text-indigo-400 hover:text-indigo-300 transition-colors font-black uppercase tracking-widest text-sm flex items-center gap-2 bg-indigo-500/10 px-6 py-3 rounded-xl border border-indigo-500/20"
+                className="text-indigo-400 hover:text-indigo-300 transition-colors font-black uppercase tracking-widest text-sm flex items-center gap-2 bg-indigo-500/10 px-6 py-3 rounded-xl border border-indigo-500/20 hover:bg-indigo-500/20"
               >
                 <RefreshCw className="w-4 h-4" /> Refresh Status
               </button>

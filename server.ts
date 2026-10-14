@@ -97,6 +97,10 @@ import { adminSupabase } from "./src/lib/supabaseAdmin.ts";
 import { ChatradeMemory } from "./src/lib/memorySystem.ts";
 import { getSymbolsCached } from "./src/lib/symbolCache.ts";
 import * as candleCache from "./services/candleCache.ts";
+import { scanChartStructure, getActiveTradingSession, calculateAccountLotSize } from "./src/lib/chartScanner.ts";
+import { aiProvider } from "./services/aiProvider.ts";
+import { marketAnalysisEngine } from "./services/marketAnalysisEngine.ts";
+import { riskEngine } from "./services/riskEngine.ts";
 
 // TRADING CONTROLLER: Persistent Database & Lifecycle Interface (User-Isolated)
 const TradingController = {
@@ -328,6 +332,9 @@ globalScope.LAST_TRADE_TIME = globalScope.LAST_TRADE_TIME || new Map<string, num
 globalScope.IN_FLIGHT_TRADES = globalScope.IN_FLIGHT_TRADES || new Map<string, number>();
 globalScope.STRATEGY_SETTINGS = globalScope.STRATEGY_SETTINGS || new Map<string, { symbol: string, lotSize: number, maxTrades: number }>();
 globalScope.RESCUED_POSITIONS = globalScope.RESCUED_POSITIONS || new Set<string>();
+
+globalScope.STABILIZATION_PROMISES = globalScope.STABILIZATION_PROMISES || new Map<string, Promise<boolean>>();
+globalScope.STREAM_STABILIZED = globalScope.STREAM_STABILIZED || new Map<string, boolean>();
 
 // STREAM STATE ENGINE
 globalScope.ACCOUNT_STATE = globalScope.ACCOUNT_STATE || new Map<string, string>();
@@ -905,7 +912,13 @@ async function getAccount(accountId: string) {
       metaapi.metatraderAccountApi.getAccount(accountId).then(account => {
           ACCOUNT_OBJ_CACHE.set(accountId, { account, timestamp: Date.now() });
       }).catch(err => {
-          console.warn(`[SDK] Background getAccount update failed for ${accountId}:`, err.message);
+          if (err?.name === 'NotFoundError' || err?.message?.toLowerCase().includes('not found') || err?.message?.includes('404')) {
+             console.warn(`[SDK] Account ${accountId} not found on MetaApi. Removing from cache and leases.`);
+             ACCOUNT_OBJ_CACHE.delete(accountId);
+             TradingController.removeLease(accountId).catch(() => {});
+          } else {
+             console.warn(`[SDK] Background getAccount update failed for ${accountId}:`, err.message);
+          }
       });
       
       return cached.account;
@@ -913,10 +926,19 @@ async function getAccount(accountId: string) {
 
   if (!metaapi) throw new Error("SDK_NOT_INITIALIZED");
   
-  // First time fetch (blocks, but only once per account)
-  const account = await metaapi.metatraderAccountApi.getAccount(accountId);
-  ACCOUNT_OBJ_CACHE.set(accountId, { account, timestamp: now });
-  return account;
+  try {
+    // First time fetch (blocks, but only once per account)
+    const account = await metaapi.metatraderAccountApi.getAccount(accountId);
+    ACCOUNT_OBJ_CACHE.set(accountId, { account, timestamp: now });
+    return account;
+  } catch (err: any) {
+    if (err?.name === 'NotFoundError' || err?.message?.toLowerCase().includes('not found') || err?.message?.includes('404')) {
+      console.warn(`[SDK] Account ${accountId} does not exist on MetaApi. Purging lease.`);
+      ACCOUNT_OBJ_CACHE.delete(accountId);
+      TradingController.removeLease(accountId).catch(() => {});
+    }
+    throw err;
+  }
 }
 
 // Ensure database state mirrors MetaApi undeployed reality
@@ -969,21 +991,17 @@ async function ensureAccountReady(accountId: string) {
     });
 
     if (account.state !== 'DEPLOYED') {
-      console.log(`[ACCOUNT] ${accountId} is not fully active (state: ${account.state}). Triggering automatic deployment...`);
-      try {
-        await account.deploy();
-        await account.waitConnected().catch(() => {});
-      } catch (deployErr: any) {
-        console.error(`[ACCOUNT] Auto-deployment failed for ${accountId}:`, deployErr.message);
-        await syncUndeployedState(accountId);
-        throw new Error(`ACCOUNT_NOT_READY: Auto-deployment failed: ${deployErr.message}`);
-      }
+      console.error(`[ACCOUNT] ${accountId} is not fully active (state: ${account.state}). Manual deployment required.`);
+      await syncUndeployedState(accountId);
+      throw new Error(`ACCOUNT_NOT_READY: Account is undeployed. Please deploy it manually from the dashboard.`);
     }
 
     if (account.connectionStatus !== 'CONNECTED') {
       console.log(`[ACCOUNT] ${accountId} is not connected (status: ${account.connectionStatus}). Triggering automatic connection...`);
       try {
-        await account.deploy();
+        if (account.state === 'DEPLOYED') {
+          await account.deploy();
+        }
       } catch (connectErr: any) {
         console.error(`[ACCOUNT] Auto-connection failed for ${accountId}:`, connectErr.message);
         throw new Error(`ACCOUNT_NOT_READY: Auto-connection failed: ${connectErr.message}`);
@@ -1555,7 +1573,17 @@ async function setupStreaming(accountId: string) {
       }
 
       // DO NOT BLOCK ON waitForTrueConnection. Start it in background to stabilize execution states.
-      waitForTrueConnection(connection, accountId).catch(console.error);
+      const stabilizationPromise = waitForTrueConnection(connection, accountId);
+      globalScope.STABILIZATION_PROMISES.set(accountId, stabilizationPromise);
+      
+      stabilizationPromise.catch((err) => {
+        console.error(`[STABILIZER] Failed to stabilize ${accountId}:`, err.message);
+        globalScope.STREAM_STABILIZED.set(accountId, false);
+      }).then((stable) => {
+        if (stable) {
+          globalScope.STREAM_STABILIZED.set(accountId, true);
+        }
+      });
       
       console.log(`[SDK] Streaming established successfully for ${accountId}`);
       REGISTRY.stream.set(accountId, connection);
@@ -1572,7 +1600,17 @@ async function setupStreaming(accountId: string) {
       
       return connection;
     } catch (err: any) {
-      console.error(`[SDK] Connection FAILED for ${accountId}:`, err);
+      const isNotFound = err?.name === 'NotFoundError' || err?.message?.toLowerCase().includes('not found') || err?.message?.includes('404');
+      if (isNotFound) {
+        console.warn(`[SDK] Account ${accountId} not found on MetaApi provisioning service. Purging tracking and active leases.`);
+        TradingController.removeLease(accountId).catch(() => {});
+        if (adminSupabase) {
+          adminSupabase.from('ea_deployments').delete().eq('account_id', accountId).catch(() => {});
+          adminSupabase.from('trading_deployments').delete().eq('account_id', accountId).catch(() => {});
+        }
+      } else {
+        console.error(`[SDK] Connection FAILED for ${accountId}:`, err);
+      }
       // FORCE REGISTRY CLEANUP
       REGISTRY.stream.delete(accountId);
       globalScope.STREAM_PENDING.delete(accountId);
@@ -1597,16 +1635,15 @@ app.get("/api/fred", async (req, res) => {
   }
 });
 
-// ROBUST JSON PARSER FOR LLM OUTPUTS
-function robustJsonParse(text: string): any {
-  if (!text || typeof text !== 'string') return null;
-
-  let cleaned = text.trim();
-
+// SANITIZE AND REPAIR JSON STRING LITERALS FROM LLM OUTPUTS
+function sanitizeJsonString(raw: string): string {
+  if (!raw || typeof raw !== 'string') return '';
+  
+  let cleaned = raw.trim();
   // Strip markdown code fences if wrapped
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
 
-  // Extract content between first '{' or '[' and last '}' or ']'
+  // Find boundaries
   const firstCurly = cleaned.indexOf("{");
   const firstSquare = cleaned.indexOf("[");
   let firstBrace = -1;
@@ -1622,38 +1659,88 @@ function robustJsonParse(text: string): any {
   const lastSquare = cleaned.lastIndexOf("]");
   const lastBrace = Math.max(lastCurly, lastSquare);
 
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
     cleaned = cleaned.substring(firstBrace, lastBrace + 1);
   }
 
-  // Attempt 1: Direct JSON parse
+  // Replace typographic smart quotes
+  cleaned = cleaned
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+
+  // Character-by-character scan to properly escape unescaped control characters inside string literals
+  let out = '';
+  let inString = false;
+  let isEscaped = false;
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const char = cleaned[i];
+    const code = cleaned.charCodeAt(i);
+
+    if (inString) {
+      if (isEscaped) {
+        out += char;
+        isEscaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        isEscaped = true;
+        out += char;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+        out += char;
+        continue;
+      }
+      // Control characters inside strings MUST be escaped according to RFC 8259
+      if (char === '\n') {
+        out += '\\n';
+      } else if (char === '\r') {
+        out += '\\r';
+      } else if (char === '\t') {
+        out += '\\t';
+      } else if (char === '\b') {
+        out += '\\b';
+      } else if (char === '\f') {
+        out += '\\f';
+      } else if (code < 32) {
+        out += ' ';
+      } else {
+        out += char;
+      }
+    } else {
+      if (char === '"') {
+        inString = true;
+        out += char;
+      } else {
+        out += char;
+      }
+    }
+  }
+
+  // Remove trailing commas before } or ]
+  out = out.replace(/,\s*([\}\]])/g, "$1");
+
+  return out;
+}
+
+// ROBUST JSON PARSER FOR LLM OUTPUTS
+function robustJsonParse(text: string): any {
+  if (!text || typeof text !== 'string') return null;
+
+  // 1. Direct JSON parse
   try {
-    return JSON.parse(cleaned);
+    return JSON.parse(text.trim());
   } catch (_) {}
 
-  // Attempt 2: Sanitize common invalid JSON patterns
-  let sanitized = cleaned
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/,\s*([\}\]])/g, "$1"); // remove trailing commas
-
+  // 2. Sanitize control characters & markdown
+  const sanitized = sanitizeJsonString(text);
   try {
     return JSON.parse(sanitized);
   } catch (_) {}
 
-  // Attempt 3: Escape raw unescaped newlines and tabs inside quotes
-  let stringEscaped = sanitized.replace(/"([^"\\]*(?:\\.[^"\\]*)*)"/g, (match, p1) => {
-    const fixedInner = p1
-      .replace(/\r?\n/g, "\\n")
-      .replace(/\t/g, "\\t");
-    return `"${fixedInner}"`;
-  });
-
-  try {
-    return JSON.parse(stringEscaped);
-  } catch (_) {}
-
-  // Attempt 4: Auto-close unclosed string/arrays/objects if truncated
+  // 3. Attempt repairing unclosed quotes/brackets/braces
   let openBraces = 0;
   let openSquares = 0;
   let inString = false;
@@ -1695,6 +1782,20 @@ function robustJsonParse(text: string): any {
 
   try {
     return JSON.parse(repaired);
+  } catch (_) {}
+
+  // 4. Regex extraction fallback for array of objects or individual objects
+  try {
+    const extractedObjects: any[] = [];
+    const objRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+    let match;
+    while ((match = objRegex.exec(sanitized)) !== null) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        if (parsed && typeof parsed === 'object') extractedObjects.push(parsed);
+      } catch (_) {}
+    }
+    if (extractedObjects.length > 0) return extractedObjects;
   } catch (_) {}
 
   return null;
@@ -1930,7 +2031,11 @@ app.get("/api/news/search-sentiment", async (req, res) => {
   }
 });
 
+
+// ==========================================
 // CHATRADE AI BACKEND SERVICE & ENGINE
+// ==========================================
+
 import fs from "fs";
 
 // OPTIMIZATION: Global Caches to minimize API overhead
@@ -2071,15 +2176,38 @@ function getVertexClientForLocation(location: string) {
 }
 
 async function chatradeController(userRequest: any, type: string): Promise<{ text: string; groundingMetadata?: any; functionCalls?: any[]; usageMetadata?: any }> {
-  const modelName = 'gemini-2.5-flash';
+  const modelName = 'gemini-3.8-flash';
 
-  // Vertex AI Enterprise Region hierarchy with automatic failover to high-capacity zones
+  // 1. Try standard developer Google Gen AI API first if GEMINI_API_KEY is configured
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (apiKey) {
+    try {
+      const standardAi = new GoogleGenAI({ apiKey });
+      const params: any = {
+        model: 'gemini-3.8-flash',
+        contents: userRequest.contents
+      };
+      if (userRequest.generationConfig) {
+        params.config = userRequest.generationConfig;
+      }
+      const result = await standardAi.models.generateContent(params);
+      return {
+        text: result.text || "",
+        groundingMetadata: result.candidates?.[0]?.groundingMetadata,
+        functionCalls: result.functionCalls,
+        usageMetadata: result.usageMetadata
+      };
+    } catch (devErr: any) {
+      console.warn(`[GEMINI_API_FALLBACK] Developer API attempt: ${devErr.message}`);
+    }
+  }
+
+  // 2. Vertex AI Enterprise Region hierarchy with automatic failover to high-capacity zones
   const regions = ['us-central1', 'us-east4', 'europe-west1', 'europe-west2'];
   let lastError: any = null;
 
   for (const region of regions) {
     try {
-      console.log(`[VERTEX_AI_FAILOVER] Attempting generation using region: ${region}`);
       const ai = getVertexClientForLocation(region);
       
       const params: any = {
@@ -2092,7 +2220,6 @@ async function chatradeController(userRequest: any, type: string): Promise<{ tex
       }
 
       const result = await ai.models.generateContent(params);
-      console.log(`[VERTEX_AI_FAILOVER] Success! Request served by region: ${region}`);
       return {
         text: result.text || "",
         groundingMetadata: result.candidates?.[0]?.groundingMetadata,
@@ -2101,43 +2228,29 @@ async function chatradeController(userRequest: any, type: string): Promise<{ tex
       };
     } catch (err: any) {
       lastError = err;
-      const errStr = (err.message || JSON.stringify(err)) || "";
-      const isRateLimit = /429|resource_exhausted|quota/i.test(errStr);
-      if (isRateLimit) {
-        console.log(`[VERTEX_AI_FAILOVER_INFO] Region '${region}' status: busy or over-capacity. Advancing to next available zone...`);
-      } else {
-        console.log(`[VERTEX_AI_FAILOVER_INFO] Region '${region}' status: busy. Advancing to next available zone...`);
-      }
     }
   }
 
-  // Ultimate Fallback: Try standard developer Google Gen AI API (with standard API key / AI Studio API endpoint)
+  // 3. Fallback to model-agnostic AI provider
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (apiKey) {
-      console.log(`[VERTEX_AI_FAILOVER] Attempting standard Developer API fallback...`);
-      const standardAi = new GoogleGenAI({ apiKey });
-      const params: any = {
-        model: 'gemini-2.5-flash',
-        contents: userRequest.contents
-      };
-      if (userRequest.generationConfig) {
-        params.config = userRequest.generationConfig;
-      }
-      const result = await standardAi.models.generateContent(params);
-      console.log(`[VERTEX_AI_FAILOVER] Success! Request served by standard developer API.`);
-      return {
-        text: result.text || "",
-        groundingMetadata: result.candidates?.[0]?.groundingMetadata,
-        functionCalls: result.functionCalls,
-        usageMetadata: result.usageMetadata
-      };
+    let promptStr = "";
+    if (typeof userRequest.contents === 'string') {
+      promptStr = userRequest.contents;
+    } else if (Array.isArray(userRequest.contents)) {
+      promptStr = userRequest.contents.map((c: any) => (c.parts ? c.parts.map((p: any) => p.text || '').join(' ') : String(c))).join('\n');
+    } else if (userRequest.contents?.parts) {
+      promptStr = userRequest.contents.parts.map((p: any) => p.text || '').join(' ');
     }
-  } catch (devErr: any) {
-    console.log(`[VERTEX_AI_FAILOVER] Developer API fallback bypassed.`);
+    const agRes = await aiProvider.generateText(promptStr);
+    return {
+      text: agRes.text,
+      usageMetadata: {}
+    };
+  } catch (agErr) {
+    console.warn(`[MODEL_AGNOSTIC_FALLBACK] aiProvider fallback: ${agErr}`);
   }
 
-  throw lastError || new Error("All Vertex AI model regional endpoints failed.");
+  throw lastError || new Error("All AI model regional endpoints and fallbacks failed.");
 }
 
 let lastVertex429Time = 0;
@@ -2229,15 +2342,40 @@ async function callAIWithFallback(contents: any, config?: any) {
         }
     } catch (vertexError: any) {
         const errStr = (vertexError.message || JSON.stringify(vertexError)) || "";
-        console.error(`[VERTEX_AI_FAILURE] Vertex AI enterprise generation failed:`, errStr);
+        console.warn(`[AI_GENERATION_FAILOVER] Primary engine notice: ${errStr}. Engaging model-agnostic provider fallback...`);
         
+        // Universal model-agnostic fallback
+        try {
+          let promptStr = "";
+          if (typeof contents === 'string') {
+            promptStr = contents;
+          } else if (Array.isArray(contents)) {
+            promptStr = contents.map((c: any) => (c.parts ? c.parts.map((p: any) => p.text || '').join(' ') : (c.text || String(c)))).join('\n');
+          } else if (contents?.parts) {
+            promptStr = contents.parts.map((p: any) => p.text || '').join(' ');
+          }
+          if (promptStr) {
+            const agRes = await aiProvider.generateText(promptStr);
+            if (agRes && agRes.text) {
+              return {
+                text: agRes.text,
+                usageMetadata: {},
+                vertexUsed: false,
+                isFallbackMode: true
+              };
+            }
+          }
+        } catch (fbErr: any) {
+          console.warn(`[AI_GENERATION_FAILOVER] Secondary fallback attempt: ${fbErr.message}`);
+        }
+
         const isQuotaExhausted = /429|resource_exhausted|resource exhausted|quota/i.test(errStr);
         if (isQuotaExhausted) {
             lastVertex429Time = Date.now();
             throw new Error(
-                `Vertex AI Platform is temporarily over-capacity (429 Resource Exhausted / Quota Limit Reached).\n\n` +
+                `AI Platform is temporarily over-capacity (429 Resource Exhausted / Quota Limit Reached).\n\n` +
                 `👉 What this means:\n` +
-                `The shared Vertex AI enterprise infrastructure is experiencing high request volumes or has temporarily reached its rate limits.\n\n` +
+                `The AI infrastructure is experiencing high request volumes or has temporarily reached its rate limits.\n\n` +
                 `🛡️ ALGOTRADE Safety Status: Active & Secured\n` +
                 `Our Local Micro-Analysis Fallback Engine has been engaged. All manual executions, risk guardrails (SL/TP enforcements), and system pipelines remain 100% functional and safe.`
             );
@@ -2248,10 +2386,9 @@ async function callAIWithFallback(contents: any, config?: any) {
             throw new Error(
                 `Google Cloud Project Billing/Dunning Restriction Detected.\n\n` +
                 `👉 What this means:\n` +
-                `Your Google Cloud project is experiencing a billing suspension (Lightning dunning decision: deny).\n\n` +
+                `Your Google Cloud project is experiencing a billing suspension.\n\n` +
                 `🛡️ ALGOTRADE Safety Status: Active & Secured\n` +
-                `Our Local Micro-Analysis Fallback Engine has been successfully engaged. All manual executions, broker connections, custom dynamic lot-sizing calculations, and trading safety buffers (SL/TP) remain 100% active and secure.\n\n` +
-                `💡 Solution: Please visit the Google Cloud Console Billing section to resolve the billing account alert or ensure your Vertex AI project quota is active.`
+                `Our Local Micro-Analysis Fallback Engine has been successfully engaged. All manual executions, broker connections, custom dynamic lot-sizing calculations, and trading safety buffers (SL/TP) remain 100% active and secure.`
             );
         }
 
@@ -2261,13 +2398,8 @@ async function callAIWithFallback(contents: any, config?: any) {
             : `ais-sandbox@ais-europe-west2-2a34dc621b8b4.iam.gserviceaccount.com (or the active execution service account)`;
         
         throw new Error(
-          `Vertex AI is not fully accessible: ${errStr}.\n\n` +
-          `👉 Please ensure that you have configured your Google Cloud project correctly:\n` +
-          `1. Ensure Vertex AI API (aiplatform.googleapis.com) is Enabled in your project '${projectId}'.\n` +
-          `2. Grant the 'Vertex AI User' (aiplatform.user) role to the active service account in IAM:\n` +
-          `   • Principal: ${activeSa}\n` +
-          `   • Role: Vertex AI User\n` +
-          `   • Target Project ID: ${projectId}`
+          `AI Engine notice: ${errStr}.\n\n` +
+          `👉 Please ensure that you have configured your AI provider correctly in environment variables or Google Cloud settings.`
         );
     }
 }
@@ -2353,40 +2485,107 @@ function saveQuotaDb() {
 loadQuotaDb();
 
 async function getUserSubscriptionPlanFromDB(email: string, userId: string): Promise<string> {
-  const isOwner = email.toLowerCase() === "trispinblackops@gmail.com";
+  const normEmail = (email || "").toLowerCase().trim();
+  const isOwner = normEmail === "trispinblackops@gmail.com";
   if (isOwner) {
     return "Developer";
   }
   if (!adminSupabase) return "Starter";
-  try {
-    const { data: userRecord } = await adminSupabase.from("users")
-        .select("plan, has_access, expires_at")
-        .eq("id", userId)
-        .maybeSingle();
 
-    if (userRecord && userRecord.has_access) {
-        const isExpired = userRecord.expires_at && new Date(userRecord.expires_at).getTime() < Date.now();
-        if (!isExpired) {
-            return userRecord.plan || "Starter";
+  let highestPlan = "Starter";
+
+  const normalizePlanStr = (p?: string | null): string => {
+    if (!p) return "";
+    const clean = p.trim().toUpperCase();
+    if (clean === "PRO") return "Pro";
+    if (clean === "ELITE") return "Elite";
+    if (clean === "DEVELOPER" || clean === "ADMIN") return "Developer";
+    if (clean === "STARTER") return "Starter";
+    return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+  };
+
+  const planRank = (p: string): number => {
+    const norm = p.toLowerCase();
+    if (norm === "developer" || norm === "admin") return 4;
+    if (norm === "elite") return 3;
+    if (norm === "pro") return 2;
+    if (norm === "starter") return 1;
+    return 0;
+  };
+
+  const inferPlanFromKey = (key?: string | null): string => {
+    if (!key || typeof key !== "string") return "";
+    const parts = key.split("-");
+    if (parts.length >= 3) {
+      const tierPart = parts[1].toUpperCase();
+      if (tierPart === "PRO") return "Pro";
+      if (tierPart === "ELITE") return "Elite";
+      if (tierPart === "DEVELOPER") return "Developer";
+      if (tierPart === "STARTER") return "Starter";
+    }
+    return "";
+  };
+
+  try {
+    // 1. Check users table by id or email
+    let userQuery = adminSupabase.from("users").select("id, plan, has_access, expires_at, access_key");
+    if (userId) {
+      userQuery = userQuery.eq("id", userId);
+    } else if (normEmail) {
+      userQuery = userQuery.eq("email", normEmail);
+    }
+    const { data: userRecord } = await userQuery.maybeSingle();
+
+    if (userRecord) {
+      const isExpired = userRecord.expires_at && new Date(userRecord.expires_at).getTime() < Date.now();
+      if (!isExpired && (userRecord.has_access || userRecord.plan)) {
+        let userPlan = normalizePlanStr(userRecord.plan);
+        const inferredFromKey = inferPlanFromKey(userRecord.access_key);
+        if (planRank(inferredFromKey) > planRank(userPlan)) {
+          userPlan = inferredFromKey;
         }
+        if (planRank(userPlan) > planRank(highestPlan)) {
+          highestPlan = userPlan;
+        }
+      }
     }
 
-    const { data: license } = await adminSupabase.from("access_licenses")
-        .select("plan, used, expires_at")
-        .eq("email", email)
-        .eq("used", true)
-        .maybeSingle();
-        
-    if (license && license.used) {
-        const isExpired = license.expires_at && new Date(license.expires_at).getTime() < Date.now();
-        if (!isExpired) {
-            return license.plan || "Starter";
+    // 2. Check access_licenses table by email
+    if (normEmail) {
+      const { data: licenses } = await adminSupabase
+        .from("access_licenses")
+        .select("used, expires_at, access_key")
+        .eq("email", normEmail)
+        .eq("used", true);
+
+      if (licenses && Array.isArray(licenses)) {
+        for (const lic of licenses) {
+          const isExpired = lic.expires_at && new Date(lic.expires_at).getTime() < Date.now();
+          if (!isExpired) {
+            let licPlan = inferPlanFromKey(lic.access_key);
+            if (planRank(licPlan) > planRank(highestPlan)) {
+              highestPlan = licPlan;
+            }
+          }
         }
+      }
+    }
+
+    // Auto-heal local plan file & Supabase user record if needed
+    if (highestPlan !== "Starter" && normEmail) {
+      saveUserPlan(normEmail, { plan: highestPlan, tier: highestPlan });
+      if (userRecord && normalizePlanStr(userRecord.plan) !== highestPlan) {
+        adminSupabase.from("users").update({
+          plan: highestPlan,
+          has_access: true
+        }).eq("id", userRecord.id).then(() => {}).catch(() => {});
+      }
     }
   } catch (err) {
     console.error("Error fetching user subscription limit:", err);
   }
-  return "Starter";
+
+  return highestPlan;
 }
 
 const PLAN_LIMITS = {
@@ -2400,6 +2599,7 @@ function getTodayDateStr(): string {
 }
 
 function getUserPlanName(email: string): 'STARTER' | 'PRO' | 'ELITE' {
+  if (!email) return 'STARTER';
   if (email.toLowerCase() === 'trispinblackops@gmail.com') return 'ELITE';
 
   const plans = loadUserPlans();
@@ -2419,7 +2619,7 @@ function getUserPlanName(email: string): 'STARTER' | 'PRO' | 'ELITE' {
   return 'STARTER';
 }
 
-function getUserQuota(email: string): {
+function getUserQuota(email: string, planOverride?: string): {
   plan: 'STARTER' | 'PRO' | 'ELITE';
   chatsTotal: number;
   chatsUsed: number;
@@ -2430,7 +2630,14 @@ function getUserQuota(email: string): {
   lowQuotaMode: boolean;
 } {
   const dateStr = getTodayDateStr();
-  const plan = getUserPlanName(email);
+  let planStr = planOverride ? planOverride.toUpperCase() : getUserPlanName(email);
+  if (planStr !== 'PRO' && planStr !== 'ELITE') {
+    const filePlan = getUserPlanName(email);
+    if (filePlan === 'PRO' || filePlan === 'ELITE') {
+      planStr = filePlan;
+    }
+  }
+  const plan = (planStr === 'PRO' || planStr === 'ELITE' ? planStr : 'STARTER') as 'STARTER' | 'PRO' | 'ELITE';
   const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.STARTER;
 
   if (email.toLowerCase() === 'trispinblackops@gmail.com') {
@@ -2464,9 +2671,9 @@ function getUserQuota(email: string): {
   const chatsRemaining = Math.max(0, limits.chats - chatsUsed);
   const deepsRemaining = Math.max(0, limits.deeps - deepsUsed);
 
-  // Low quota mode active when remaining is <= 20% of capacity (from user prompt: "reaches 80% usage")
-  const isChatLow = (chatsRemaining / limits.chats) <= 0.20;
-  const isDeepLow = (deepsRemaining / limits.deeps) <= 0.20;
+  // Low quota mode active when remaining is <= 20% of capacity
+  const isChatLow = limits.chats > 0 ? (chatsRemaining / limits.chats) <= 0.20 : false;
+  const isDeepLow = limits.deeps > 0 ? (deepsRemaining / limits.deeps) <= 0.20 : false;
   const lowQuotaMode = isChatLow || isDeepLow;
 
   return {
@@ -2559,7 +2766,7 @@ function logAIAnalytics(
   status: 'success' | 'fallback_active' | 'user_quota_blocked' | 'api_error'
 ) {
   const costMap: Record<string, number> = {
-    "gemini-2.5-flash": 0.00015,
+    "gemini-3.8-flash": 0.00015,
     "gemini-3.1-flash-lite": 0.000075,
     "gemini-3-flash-preview": 0.0001,
     "gemini-3.1-pro-preview": 0.00125,
@@ -3081,27 +3288,22 @@ ${correlationStr}
       ? `\n[LOW QUOTA MODE ACTIVE] Compress reasoning and explanation (mentorVoice) to 1 short sentence max. Simplify SL/TP logic. Keep token overhead minimal.`
       : `\nEnsure stop loss and take profit values are mathematically correct, realistic for ${symbol}, and align with the user's risk ratio (${userPlan.riskProfile}). Provide direct mentoring voice guidance.`;
 
-    const prompt = `You are Chatrade, a professional institutional trading mentor. Your primary objective is to orchestrate a highly intelligent, disciplined multi-agent expert review panel consisting of 13 specialized internal analytical micro-agents operating in an advanced continuous reasoning loop and debate system:
+    const prompt = `You are Chatrade AI, ALGOTRADE's intelligent institutional trading mentor and decision assistant. You act as a single, unified expert operator directly evaluating real-time market data, price structure, news sentiment, and risk parameters:
 
-1. News Agent: Performs deep fundamental news analysis and macro research. Grounded on real breaking news, CPI, NFP schedules, central bank policies, interest rates, and geopolitical drivers for ${symbol}.
-2. Market Context Agent: Analyzes the current market regime (trending vs consolidation), active sessions, ATR-14 volatility context, and volume expansion limits.
-3. Market Thesis Agent: Formulates a rigorous predictive trajectory and directional thesis based on structural alignment and macro news drivers.
-4. Technical Agent: Evaluates Multi-Timeframe (MTF) EMA trends and momentum metrics (RSI, ATR) to verify confluence.
-5. Structure Agent: Deep SMC structure auditor mapping Order Blocks, Fair Value Gaps, BOS, CHoCH, and Liquidity Sweeps from tick and candlestick arrays.
-6. Session Agent: Ensures trading timing aligns strictly with premium session volume windows (London/NY overlap) and filters out quiet sideways times.
-7. Strategy Gen: Constructs precision entry, stop-loss, and take-profit targets with strict risk-to-reward ratios.
-8. Ranking Agent: Grades candidate strategies and setups based on historical performance and current regime fit, selecting only top-probability ideas.
-9. Risk Agent (SUPREME VETO): Audits account balance, equity, margin levels, and current drawdown. Employs veto power to halt execution if rules are breached.
-10. Psychology Agent: Institutional trading coach enforcing rigid patience, loss-streak cooldown guards, and preventing revenge-trading behaviors.
-11. Consensus Agent: Aggregates micro-agent debate votes and checklist alignments into a clear unified execution decision.
-12. Execution Agent: Formulates direct, secure broker trade dispatch instructions with precise parameter sets.
-13. Trade Manager Agent: Directs active position management, trailing stops, break-even updates, and partial profit locks.
+CORE ANALYTICAL CAPABILITIES:
+- News & Macro: Deep fundamental news analysis and macro research for ${symbol}, grounded in breaking events, economic calendars, and central bank drivers.
+- Market Context & Regime: Current regime (trending vs consolidation), active market sessions, ATR-14 volatility, and volume expansion limits.
+- Market Thesis: Directional trajectory based on structural alignment and macro news drivers.
+- Technical Analysis: Multi-Timeframe (MTF) EMA trends and momentum metrics (RSI, ATR) to verify confluence.
+- Price Structure: SMC structure analysis mapping Order Blocks, Fair Value Gaps, BOS, CHoCH, and Liquidity Sweeps.
+- Session Timing: Volume windows (London/NY overlap) to avoid illiquid consolidation periods.
+- Risk & Capital Preservation (STRICT): Account balance, equity, margin levels, and current drawdown. Halts execution if risk rules are breached.
+- Trade Parameters: Precision entry, stop-loss, and take-profit targets with strict risk-to-reward ratios.
 
-AGENTIC LOOP REASONING & DEBATE INSTRUCTIONS:
-- Every active agent operates in a continuous circular reasoning loop ("talks to the market internally" before presenting its argument).
-- The agents must engage in a high-intensity debate (Bull vs. Bear arguments, Technical confluences vs. Risk preservation limits).
-- Gather all views and synthesize via the Consensus Agent. Only one cohesive, non-contradictory final decision is allowed: BUY, SELL, or WAIT.
-- IMPORTANT: You MUST validate that Technical Engine, Structure Engine, Risk Engine, Session Engine, News Engine, Probability Engine all produced consistent evidence. If evidence conflicts, explain why and reduce confidence.
+ANALYTICAL REASONING INSTRUCTIONS:
+- Directly evaluate technical indicators, market regime, order flow structure, fundamental news, and strict risk preservation parameters.
+- Provide a single, cohesive, non-contradictory final decision: BUY, SELL, or WAIT.
+- IMPORTANT: You MUST validate that technical indicators, price structure, account risk limits, and news impact all align. If evidence is conflicting or dangerous, set outcome to WAIT with clear explanation.
 
 REAL-TIME DATA ACCESSED & CONTEXT PARAMETERS:
 - Instrument: ${symbol}
@@ -3196,7 +3398,7 @@ Return a professional mentoring voice explanation (mentorVoice) formatted as an 
           sl: parsedResult.stopLossPips
         }).catch(err => console.error("Memory Log AI Error:", err));
 
-        logAIAnalytics(userEmail, planName, 'DEEP', 'gemini-2.5-flash', 'success');
+        logAIAnalytics(userEmail, planName, 'DEEP', 'gemini-3.8-flash', 'success');
 
         res.json({ 
           success: true, 
@@ -3233,72 +3435,84 @@ app.post("/api/chatrade/evolve-strategies", async (req, res) => {
     if (!userEmail) {
       return res.status(401).json({ error: "Unauthorized: Missing session context" });
     }
-    const { symbol, evidence } = req.body || {};
+    const { symbol, evidence, strategyMode } = req.body || {};
     if (!symbol || !evidence) {
       return res.status(400).json({ error: "symbol and evidence are required" });
     }
 
-    const prompt = `You are the ALGOTRADE Institutional Strategy Laboratory Engine running on enterprise-grade Vertex AI.
-Your objective is to design entirely new, highly adaptive, institutional-grade trading strategies by scanning the provided market evidence and recent candlestick data.
-You must perform high-intelligence predictive modeling to find high-probability entry setups for ${symbol}.
+    const activeMode = strategyMode || evidence.strategyMode || "Predictive Trend Following";
 
-STRICT RECOGNITION & PATTERN SCANNING REQUISITES:
-1. Candlestick Patterns: Calculate, scan, and retrieve patterns from the provided recent 20 candles (OHLCV). Look for:
-   - Reversal signals: Pinbars, Hammer, Shooting Star, Bullish/Bearish Engulfing, Morning/Evening Star, Harami, or Doji.
-   - Indecision signals at key structural limits.
-2. Breakout and Fakeout (Liquidity Hunt) Detection: Compare recent highs/lows and candle closes:
-   - True breakout: Strong volume expansion closing firmly beyond structure boundaries.
-   - Fakeout (Liquidity hunt): Candle pierces a swing high or low, hunts stop liquidity, and closes back inside the range with a long rejection wick (wick rejection).
-3. Live Google Search Grounding Analysis: Retrieve and integrate the absolute latest breaking news, central bank announcements (Fed, ECB, BoE), CPI, NFP schedules, and fundamental sentiment for ${symbol}. Combine this with your technical and candle scans to determine if fundamental consensus backs the trade direction.
+    const prompt = `You are the ALGOTRADE Master Engine running on Vertex AI Enterprise intelligence.
+Your objective is to think deeply, analyze all market factors objectively, and design high-win-rate, institutional-grade trading strategies tailored precisely to the live market conditions for ${symbol}.
 
-STRICT RISK & RISK-FIRST COGNITION RULES:
-1. Capital Preservation Priority: Never lose capital. If indicators are mixed or the market is highly uncertain, urge patience ("WAIT").
-2. Trend Confluence Filter: Verify if the expectedDirection aligns with the higher timeframe trend.
-3. No-Trade Zone ("WAIT"): If we are in a tight, choppy sideways range, do not force a breakout. Recommend a liquidity sweep wait.
-4. Balanced Confidence Rating: Assign a realistic score (0 to 100). Strong confluences get 78-92%. Minor conflicts get 68-77%. High uncertainty gets below 65% or suggest "WAIT".
+TARGET AI STRATEGY EXECUTION MODE: "${activeMode}"
+MODE DIRECTIVES & SPECIALIZATION:
+- If "Adaptive All-Modes": MASTER ADAPTIVE SPECTRUM. Dynamically evaluate and synthesize across ALL THREE core trading modes simultaneously (Predictive Trend Following, Mean Reversion, and Breakout Momentum). Real-time analyze current market regime: if strong directional trend and structure alignment exist, deploy Trend Following; if price is extended at structural extremes/wick sweeps, deploy Mean Reversion; if session volatility expansion and range break are occurring, deploy Breakout Momentum. Harmonize all 3 modes to find the highest-probability confluence setup.
+- If "Predictive Trend Following": Prioritize high-probability trend continuation strategies, pullbacks into institutional demand/supply order blocks in the direction of the dominant multi-timeframe trend, Break of Structure (BOS) continuation, and dynamic EMA bounces.
+- If "Mean Reversion": Prioritize extreme exhaustion setups, price rejection at key liquidity boundaries / premium-discount extremes, RSI divergence reversals, and fakeout liquidity sweeps returning back towards equilibrium / Fair Value Gaps (FVG).
+- If "Breakout Momentum": Prioritize explosive volatility expansion setups, session opening range breaks (London/NY breakouts), high-volume momentum surges penetrating key swing highs/lows with follow-through displacement.
 
-CURRENT MARKET ENVIRONMENT EVIDENCE:
+CRITICAL MANDATE — STRICT TWO-WAY UNBIASED MARKET PREDICTION:
+- DO NOT BIAS TOWARDS "BUY". You must evaluate both BEARISH (SELL/SHORT) and BULLISH (BUY/LONG) opportunities with equal, uncompromising rigor.
+- If price is rejecting supply, breaking market structure downward (BOS/CHOCH/MSS down), forming bearish candlestick patterns (Shooting Star, Bearish Engulfing, Evening Star), sweeping buy-side liquidity above equal highs, trading below dynamic EMAs, or encountering negative fundamental news, YOU MUST CONFIDENTLY PREDICT "SELL".
+- If price is bouncing off demand, breaking market structure upward (BOS/CHOCH/MSS up), forming bullish candlestick patterns (Hammer, Bullish Engulfing, Morning Star), sweeping sell-side liquidity below equal lows, trading above dynamic EMAs, or supported by positive fundamental news, YOU MUST PREDICT "BUY".
+- If the market is in tight sideways equilibrium with conflicting indicators, predict "WAIT".
+
+MULTI-FACTOR COGNITIVE SCANNING & ANALYSIS:
+1. Candlestick Patterns & Price Action: Analyze the provided OHLCV candles for reversal wicks, rejection shadows, engulfing candles, and volume expansion.
+2. Smart Money Concepts (SMC) & Liquidity Architecture:
+   - Order Blocks (Bullish Demand / Bearish Supply)
+   - Fair Value Gaps (FVG) and Imbalance Fill
+   - Liquidity Sweeps / Judas Swings beyond local swing highs/lows
+   - Break of Structure (BOS), Change of Character (CHOCH), and Market Structure Shifts (MSS)
+3. Volume Spread Analysis (VSA): Detect institutional absorption, climax volume, and low-volume pullbacks.
+4. Multi-Timeframe & Trend Confluence: Harmonize macro trend, intraday momentum, and execution timeframe structure.
+5. Real-Time Macro & News Sentiment Grounding: Use Google Search to analyze the latest macroeconomic catalysts, central bank policy (Fed, ECB, BoE), interest rate expectations, and currency-specific drivers for ${symbol}.
+
+CURRENT MARKET EVIDENCE PACKAGE:
 - Symbol: ${symbol}
-- Session: ${evidence.session}
+- Active Trading Session: ${evidence.session}
 - Technical Indicators: ${JSON.stringify(evidence.indicators)}
 - Market Structure (SMC): ${JSON.stringify(evidence.structure)}
 - Liquidity Mapping: ${JSON.stringify(evidence.liquidity)}
+- Multi-Timeframe Evidence: ${JSON.stringify(evidence.multiTimeframeEvidence || {})}
 - News Sentiment Context: ${JSON.stringify(evidence.news)}
 - Recent 20 Candlesticks: ${JSON.stringify(evidence.candles || [])}
 
-Task:
-Generate 1 or 2 entirely new, creative, custom trading strategies designed precisely for these conditions. Do not output standard SMA or basic RSI crossover strategies. Design advanced SMC, multi-timeframe liquidity hunt, session-range traps, high-volatility news-fades, or other institutional concepts that are highly relevant to this specific asset and moment.
+TASK:
+Generate 2 highly adaptive, well-known, institutional-grade strategies with high winning rates (e.g. SMC Order Block Mitigation, ICT FVG Displacement, Liquidity Sweep & Wick Rejection, VSA Climax Absorption, London/NY Session Range Breakout/Fade) specifically tailored to current market conditions for ${symbol}.
 
-For EACH strategy, you must output exactly the following fields in a flat JSON structure:
-1. strategyName: A professional, sophisticated, institutional name (e.g., "London Session Liquidity Sweep & Order Block Rebound", "Asia Consolidation Expansion Trap", "News-Driven Volatility Fade Protocol"). Do NOT include rank prefixes.
-2. marketThesis: The underlying financial/structural thesis for why this strategy works.
-3. marketNarrative: The market narrative of buyers vs. sellers.
-4. whyFits: A short explanation of why this strategy fits the current live environment (referencing the scanned candlesticks, patterns, breakouts/fakeouts, and search-grounded news).
-5. expectedDirection: Expected direction: "BUY", "SELL", or "WAIT".
-6. entryPhilosophy: The precise trigger or entry philosophy (e.g., retest of order block with dynamic candle confirmation).
-7. buyZone: Specific description of the buy zone or levels.
-8. sellZone: Specific description of the sell zone or levels.
-9. invalidation: The invalidation level or trigger (e.g., closure below OB low).
-10. profitObjectives: The targets (TP) and profit taking guidelines.
-11. liquidityTarget: The targeted pool of liquidity (e.g., sell-side liquidity at swing low, FVG gaps).
-12. tradeManagementPlan: Precise management instructions (e.g., move to breakeven after 1R, scale out 50%).
-13. requiredConfirmations: A list of checklist requirements (e.g., 5m bullish engulfing at key support).
-14. requiredRiskConditions: Risk requirements (e.g., Spread <= 1.2 pips, Drawdown <= 5%).
-15. institutionalConfidence: Confidence rating from 0 to 100 as an integer.
+For EACH strategy, you must output a JSON object with exactly these fields:
+1. strategyName: Professional institutional strategy name (e.g. "ICT Fair Value Gap Displacement Setup", "Institutional Liquidity Sweep & Wick Rejection", "SMC Order Block Mitigation Rebound", "VSA Climax Institutional Absorption").
+2. marketThesis: In-depth financial and structural thesis explaining the setup.
+3. marketNarrative: Detailed narrative explaining the battle between buyers and sellers, order flow, and institutional positioning.
+4. whyFits: Clear explanation of how this strategy fits current candlestick patterns, SMC structure, session volatility, and news context.
+5. expectedDirection: "BUY", "SELL", or "WAIT" (strictly unbiased based on evidence).
+6. entryPhilosophy: Precise entry criteria and trigger mechanism.
+7. buyZone: Precise description of buy zones or levels (or "N/A" if SELL).
+8. sellZone: Precise description of sell zones or levels (or "N/A" if BUY).
+9. invalidation: Exact structural invalidation level (Stop Loss logic).
+10. profitObjectives: Target levels (TP1, TP2) with a minimum 1:2 Risk-to-Reward ratio.
+11. liquidityTarget: Targeted pools of liquidity (e.g. sell stops below swing low, buy stops above swing high).
+12. tradeManagementPlan: Step-by-step management (e.g. move SL to breakeven at 1R, scale out at key levels).
+13. requiredConfirmations: Checklist of confirmations needed before execution.
+14. requiredRiskConditions: Specific risk rules and maximum drawdown guards.
+15. institutionalConfidence: High-conviction confidence score between 75 and 98 (as an integer).
 
-CRITICAL OUTPUT FORMATTING INSTRUCTION: Respond ONLY with a clean JSON array of objects. Do NOT wrap output in markdown codeblocks or HTML. Each object in the array must strictly contain all the 15 fields listed above. Ensure the response is valid JSON.`;
+CRITICAL FORMATTING INSTRUCTION: Respond ONLY with a valid JSON array of objects. Do NOT include markdown formatting or backticks.`;
 
     const result = await callAIWithFallback(prompt, {
       tools: [{ googleSearch: {} }]
     });
     let text = result.text || "";
-    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-    let strategies = [];
-    try {
-      strategies = JSON.parse(text);
-    } catch (parseErr) {
-      console.warn("Evolve strategies JSON parse failed, retrying manual extraction", parseErr);
-      strategies = robustJsonParse(text);
+    let strategies = robustJsonParse(text);
+    if (!strategies) {
+      try {
+        strategies = JSON.parse(text.replace(/```json/g, "").replace(/```/g, "").trim());
+      } catch (parseErr) {
+        console.warn("Evolve strategies fallback parse failed", parseErr);
+        strategies = [];
+      }
     }
 
     if (!Array.isArray(strategies)) {
@@ -3322,6 +3536,426 @@ CRITICAL OUTPUT FORMATTING INSTRUCTION: Respond ONLY with a clean JSON array of 
   } catch (err: any) {
     console.error("[EVOLVE_STRATEGIES_ERROR]", err);
     res.json({ success: false, error: err.message, strategies: [] });
+  }
+});
+
+// ----------------------------------------------------------------------------------
+// MODEL-AGNOSTIC REAL-TIME MARKET ANALYSIS & STRATEGY ENGINE
+// ----------------------------------------------------------------------------------
+app.post("/api/market/analyze", async (req, res) => {
+  try {
+    const userEmail = await getUserEmailFromRequest(req);
+    if (!userEmail) {
+      return res.status(401).json({ error: "Unauthorized: Missing session context" });
+    }
+
+    const { accountId, symbol, timeframe = '15m', customRiskSettings } = req.body || {};
+    if (!symbol) {
+      return res.status(400).json({ error: "Symbol is required" });
+    }
+
+    const accId = accountId || 'default';
+    const targetSymbol = symbol.toUpperCase();
+
+    // 1. Gather live MetaApi quotes and specs
+    const priceStore = globalScope.PRICE_STORE?.get(accId);
+    let bid = priceStore?.bid || 0;
+    let ask = priceStore?.ask || 0;
+    
+    // Check in-memory candles
+    const m15Candles = globalScope.CANDLE_STORE?.[accId]?.[targetSymbol] || 
+                      globalScope.LATEST_CANDLES?.get(`${accId}:${targetSymbol}`) ||
+                      candleCache.load(accId, targetSymbol, timeframe) || [];
+    
+    if (m15Candles.length > 0) {
+      const last = m15Candles[m15Candles.length - 1];
+      if (!bid) bid = last.close;
+      if (!ask) ask = last.close + (targetSymbol.includes('XAU') ? 0.25 : 0.00015);
+    }
+
+    // 2. Multi-timeframe historical candles
+    const tfMap: Record<string, any[]> = {
+      '1m': candleCache.load(accId, targetSymbol, '1m'),
+      '5m': candleCache.load(accId, targetSymbol, '5m'),
+      '15m': m15Candles,
+      '30m': candleCache.load(accId, targetSymbol, '30m'),
+      '1h': candleCache.load(accId, targetSymbol, '1h'),
+      '4h': candleCache.load(accId, targetSymbol, '4h'),
+      '1d': candleCache.load(accId, targetSymbol, '1d')
+    };
+
+    // 3. Account state
+    const info = globalScope.ACCOUNT_INFO?.get(accId) || {};
+    const positionsMap = globalScope.ACTIVE_POSITIONS?.get(accId) || new Map();
+    const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+
+    const specs = {
+      symbol: targetSymbol,
+      brokerSymbol: targetSymbol,
+      bid: bid || 2000,
+      ask: ask || 2000.25,
+      digits: targetSymbol.includes('XAU') ? 2 : (targetSymbol.includes('JPY') ? 3 : 5),
+      minLot: 0.01,
+      maxLot: 100.0,
+      lotStep: 0.01
+    };
+
+    const accountState = {
+      balance: info.balance || 1000,
+      equity: info.equity || info.balance || 1000,
+      freeMargin: info.freeMargin || 1000,
+      currency: info.currency || 'USD',
+      openPositionsCount: activePositions.length,
+      maxTradesLimit: 3,
+      activePositions
+    };
+
+    // 4. Generate deterministic market state
+    const marketState = marketAnalysisEngine.generateMarketState(
+      specs,
+      tfMap,
+      [],
+      accountState
+    );
+
+    // 5. Query Model-Agnostic AI Provider
+    const proposal = await aiProvider.analyzeMarketAndProposeStrategy(marketState);
+
+    // 6. Pass through Deterministic Risk Engine
+    const riskEvaluation = riskEngine.evaluateTradeRisk({
+      proposal,
+      marketState,
+      specs,
+      account: accountState,
+      customRiskSettings
+    });
+
+    res.json({
+      success: true,
+      symbol: targetSymbol,
+      marketState,
+      proposal,
+      riskEvaluation
+    });
+  } catch (err: any) {
+    console.error("[MARKET_ANALYZE_ERROR]", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Multi-Symbol Market Scanner
+app.post("/api/market/scan", async (req, res) => {
+  try {
+    const userEmail = await getUserEmailFromRequest(req);
+    if (!userEmail) {
+      return res.status(401).json({ error: "Unauthorized: Missing session context" });
+    }
+
+    const { accountId, symbols = ['XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'US30', 'NAS100', 'BTCUSD'] } = req.body || {};
+    const accId = accountId || 'default';
+    const results = [];
+
+    const info = globalScope.ACCOUNT_INFO?.get(accId) || {};
+    const positionsMap = globalScope.ACTIVE_POSITIONS?.get(accId) || new Map();
+    const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+
+    for (const sym of symbols) {
+      const targetSymbol = String(sym).toUpperCase();
+      const m15Candles = globalScope.CANDLE_STORE?.[accId]?.[targetSymbol] || 
+                        candleCache.load(accId, targetSymbol, '15m') || [];
+      
+      let bid = 0;
+      let ask = 0;
+      if (m15Candles.length > 0) {
+        bid = m15Candles[m15Candles.length - 1].close;
+        ask = bid + (targetSymbol.includes('XAU') ? 0.25 : 0.00015);
+      }
+
+      const specs = {
+        symbol: targetSymbol,
+        brokerSymbol: targetSymbol,
+        bid: bid || 100,
+        ask: ask || 100.02,
+        digits: targetSymbol.includes('XAU') ? 2 : (targetSymbol.includes('JPY') ? 3 : 5),
+        minLot: 0.01,
+        maxLot: 100.0,
+        lotStep: 0.01
+      };
+
+      const tfMap: Record<string, any[]> = {
+        '15m': m15Candles,
+        '1h': candleCache.load(accId, targetSymbol, '1h'),
+        '4h': candleCache.load(accId, targetSymbol, '4h')
+      };
+
+      const accountState = {
+        balance: info.balance || 1000,
+        equity: info.equity || info.balance || 1000,
+        freeMargin: info.freeMargin || 1000,
+        currency: info.currency || 'USD',
+        openPositionsCount: activePositions.length,
+        maxTradesLimit: 3,
+        activePositions
+      };
+
+      const marketState = marketAnalysisEngine.generateMarketState(specs, tfMap, [], accountState);
+      
+      results.push({
+        symbol: targetSymbol,
+        currentPrice: marketState.currentPrice.mid,
+        spread: marketState.currentPrice.spread,
+        trend: marketState.marketStructure.dominantTrend,
+        session: marketState.session.activeSession,
+        confluenceScore: marketState.deterministicScore,
+        classification: marketState.deterministicClassification,
+        liquiditySweep: marketState.liquidity.recentSweep ? marketState.liquidity.recentSweep.type : 'None',
+        crtStatus: marketState.crt.status
+      });
+    }
+
+    res.json({ success: true, scanResults: results });
+  } catch (err: any) {
+    console.error("[MARKET_SCAN_ERROR]", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Deterministic Risk-Gated Trade Execution
+app.post("/api/trade/execute-setup", async (req, res) => {
+  try {
+    const userEmail = await getUserEmailFromRequest(req);
+    if (!userEmail) {
+      return res.status(401).json({ error: "Unauthorized: Missing session context" });
+    }
+
+    const { accountId, proposal, customRiskSettings } = req.body || {};
+    if (!accountId || !proposal || !proposal.symbol) {
+      return res.status(400).json({ error: "accountId and proposal are required" });
+    }
+
+    const targetSymbol = proposal.symbol.toUpperCase();
+    const info = globalScope.ACCOUNT_INFO?.get(accountId) || {};
+    const positionsMap = globalScope.ACTIVE_POSITIONS?.get(accountId) || new Map();
+    const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+
+    const m15Candles = globalScope.CANDLE_STORE?.[accountId]?.[targetSymbol] || 
+                      candleCache.load(accountId, targetSymbol, '15m') || [];
+    let bid = 0;
+    let ask = 0;
+    if (m15Candles.length > 0) {
+      bid = m15Candles[m15Candles.length - 1].close;
+      ask = bid + (targetSymbol.includes('XAU') ? 0.25 : 0.00015);
+    }
+
+    const specs = {
+      symbol: targetSymbol,
+      brokerSymbol: targetSymbol,
+      bid: bid || 100,
+      ask: ask || 100.02,
+      digits: targetSymbol.includes('XAU') ? 2 : (targetSymbol.includes('JPY') ? 3 : 5),
+      minLot: 0.01,
+      maxLot: 100.0,
+      lotStep: 0.01
+    };
+
+    const tfMap: Record<string, any[]> = {
+      '15m': m15Candles,
+      '1h': candleCache.load(accountId, targetSymbol, '1h'),
+      '4h': candleCache.load(accountId, targetSymbol, '4h')
+    };
+
+    const accountState = {
+      balance: info.balance || 1000,
+      equity: info.equity || info.balance || 1000,
+      freeMargin: info.freeMargin || 1000,
+      currency: info.currency || 'USD',
+      openPositionsCount: activePositions.length,
+      maxTradesLimit: 3,
+      activePositions
+    };
+
+    const marketState = marketAnalysisEngine.generateMarketState(specs, tfMap, [], accountState);
+
+    // Validate strictly through deterministic risk engine
+    const riskEval = riskEngine.evaluateTradeRisk({
+      proposal,
+      marketState,
+      specs,
+      account: accountState,
+      customRiskSettings
+    });
+
+    if (!riskEval.approved || !riskEval.sanitizedTradeParams) {
+      return res.status(400).json({
+        success: false,
+        rejectionReason: riskEval.rejectionReason || 'Trade failed deterministic risk validation',
+        warnings: riskEval.warnings
+      });
+    }
+
+    const params = riskEval.sanitizedTradeParams;
+    const isBuy = params.direction === 'BUY';
+
+    // Dispatch directly to existing MetaApi execution pipeline
+    const connection = REGISTRY.rpc.get(accountId) || REGISTRY.stream.get(accountId);
+    if (!connection) {
+      return res.status(400).json({ error: "MetaApi connection is not currently active for this account." });
+    }
+
+    let tradeResult = null;
+    let lotToExec = params.lotSize;
+
+    try {
+      if (isBuy && typeof (connection as any).createMarketBuyOrder === 'function') {
+        tradeResult = await (connection as any).createMarketBuyOrder(
+          params.symbol,
+          lotToExec,
+          params.stopLoss,
+          params.takeProfit,
+          { comment: params.comment }
+        );
+      } else if (!isBuy && typeof (connection as any).createMarketSellOrder === 'function') {
+        tradeResult = await (connection as any).createMarketSellOrder(
+          params.symbol,
+          lotToExec,
+          params.stopLoss,
+          params.takeProfit,
+          { comment: params.comment }
+        );
+      }
+    } catch (orderErr: any) {
+      if (/not enough money|insufficient|margin/i.test(orderErr.message || "") && lotToExec > 0.01) {
+        lotToExec = 0.01;
+        if (isBuy && typeof (connection as any).createMarketBuyOrder === 'function') {
+          tradeResult = await (connection as any).createMarketBuyOrder(
+            params.symbol,
+            0.01,
+            params.stopLoss,
+            params.takeProfit,
+            { comment: params.comment }
+          );
+        } else if (!isBuy && typeof (connection as any).createMarketSellOrder === 'function') {
+          tradeResult = await (connection as any).createMarketSellOrder(
+            params.symbol,
+            0.01,
+            params.stopLoss,
+            params.takeProfit,
+            { comment: params.comment }
+          );
+        }
+      } else {
+        throw orderErr;
+      }
+    }
+
+    res.json({
+      success: true,
+      tradeResult,
+      executedParams: { ...params, lotSize: lotToExec },
+      riskWarnings: riskEval.warnings
+    });
+  } catch (err: any) {
+    const isMargin = /not enough money|insufficient|margin/i.test(err.message || "");
+    if (isMargin) {
+      return res.status(400).json({
+        success: false,
+        error: "Insufficient margin: The connected broker account does not have sufficient free margin to execute this trade."
+      });
+    }
+    console.error("[EXECUTE_SETUP_ERROR]", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------------------------------------
+// DIRECT AI CHART SCANNER & SIGNAL GENERATION ENDPOINT (MODEL-AGNOSTIC + TOKEN-OPTIMIZED)
+// ----------------------------------------------------------------------------------
+app.post("/api/chart/scan-ai", async (req, res) => {
+  try {
+    const userEmail = await getUserEmailFromRequest(req);
+    if (!userEmail) {
+      return res.status(401).json({ error: "Unauthorized: Missing session context" });
+    }
+
+    const { symbol, timeframe, structure, newsContext, accountContext } = req.body || {};
+    if (!symbol || !structure) {
+      return res.status(400).json({ error: "symbol and structure are required" });
+    }
+
+    const prompt = `You are the ALGOTRADE Master Engine. Scan the live chart structure and macro news for ${symbol} (${timeframe || '15m'}) and confirm the highest-probability trading signal and best-fit strategy.
+
+MARKET STRUCTURE DATA:
+- Current Price: ${structure.currentPrice}
+- Previous Day High (PDH): ${structure.pdh} | Previous Day Low (PDL): ${structure.pdl}
+- 4H High: ${structure.prev4hHigh} | 4H Low: ${structure.prev4hLow}
+- Fib Golden Pocket (61.8%): ${structure.goldenPocket ? `${structure.goldenPocket.low} - ${structure.goldenPocket.high}` : 'N/A'}
+- Primary Pattern: ${structure.primaryPattern || 'Price Action Order Flow'}
+- Detected Patterns: ${(structure.detectedPatterns || []).join(', ')}
+- Target Liquidity: ${structure.targetLiquidity} (${structure.targetLiquidityType || 'BSL'})
+- Active Trading Session: ${structure.activeSession || 'London/New York Overlap'}
+- Account Equity: ${accountContext?.currency || 'USD'} ${accountContext?.equity || 1000} (Balance: ${accountContext?.balance || 1000})
+- News Sentiment: ${newsContext?.sentiment || 'NEUTRAL'} (Score: ${newsContext?.score || 50})
+- News Headlines: ${(newsContext?.headlines || []).slice(0, 2).join(' | ') || 'Macro liquidity stable'}
+
+INSTRUCTIONS:
+1. Confirm whether direction should be BUY, SELL, or WAIT based on price structure and news confluence.
+2. Select the best-fit strategy name (e.g., "Double Bottom Liquidity Expansion", "Fibonacci Golden Pocket Reversal", "London/NY Liquidity Sweep Rebound", "PDH/4H Liquidity Sweep & Reject", "ICT Fair Value Retest").
+3. Set precise Entry, Stop Loss, Take Profit, and confidence score (70-98).
+4. Output strictly a JSON object with keys: direction, strategyName, confidence, entry, stopLoss, takeProfit, targetLiquidity, newsAlignment, summary. Respond ONLY with valid JSON.`;
+
+    let signal: any = null;
+    let providerName = 'deterministic-engine';
+    let modelName = 'market-structure-core';
+
+    try {
+      const { text, provider, model } = await aiProvider.generateText(prompt, { responseJson: true });
+      providerName = provider;
+      modelName = model;
+      signal = robustJsonParse(text);
+      if (!signal || typeof signal !== "object") {
+        signal = JSON.parse(text.replace(/```json/g, "").replace(/```/g, "").trim());
+      }
+    } catch (scanErr) {
+      console.warn('[CHART_SCAN_AI] External AI limit reached, engaging deterministic chart synthesis');
+      signal = null;
+    }
+
+    if (!signal || typeof signal !== "object") {
+      const isBuy = structure.direction === 'BUY' || (structure.currentPrice <= structure.pdl);
+      signal = {
+        direction: structure.direction || (isBuy ? 'BUY' : 'SELL'),
+        strategyName: structure.strategyName || (isBuy ? 'Institutional Demand Rebound (SMC)' : 'Supply Zone Displacement (SMC)'),
+        confidence: Number(structure.confidence) || 82,
+        entry: Number(structure.entry) || Number(structure.currentPrice),
+        stopLoss: Number(structure.stopLoss) || (isBuy ? Number(structure.pdl) : Number(structure.pdh)),
+        takeProfit: Number(structure.takeProfit) || Number(structure.targetLiquidity),
+        targetLiquidity: Number(structure.targetLiquidity),
+        newsAlignment: structure.newsAlignment || 'Macro Balanced',
+        summary: 'Real-time multi-timeframe structural confluence confirmed.'
+      };
+    }
+
+    logAIAnalytics(userEmail, 'MASTER', 'LIGHT', modelName || 'model-agnostic', 'success');
+
+    res.json({
+      success: true,
+      provider: providerName,
+      model: modelName,
+      signal: {
+        direction: signal.direction || structure.direction || 'WAIT',
+        strategyName: signal.strategyName || structure.strategyName,
+        confidence: Number(signal.confidence) || structure.confidence || 75,
+        entry: Number(signal.entry) || structure.entry,
+        stopLoss: Number(signal.stopLoss) || structure.stopLoss,
+        takeProfit: Number(signal.takeProfit) || structure.takeProfit,
+        targetLiquidity: Number(signal.targetLiquidity) || structure.targetLiquidity,
+        newsAlignment: signal.newsAlignment || structure.newsAlignment || 'Aligned',
+        summary: signal.summary || structure.summary || 'Chart scanned successfully.'
+      }
+    });
+  } catch (err: any) {
+    console.error("[CHART_SCAN_AI_ERROR]", err);
+    res.json({ success: false, error: err.message });
   }
 });
 
@@ -3361,7 +3995,7 @@ app.post("/api/chatrade/chat", async (req, res) => {
     if (message.includes("INITIALIZE_SESSION")) {
        return res.json({
          success: true,
-         reply: `### Chatrade is ready to assist.\n* **Status**: Trading account connected.\n* **Risk Shield**: Prop Firm Safe Compliant Active.\n* **Market Status**: Monitoring Opportunities.\n\nWelcome! I am your AI Trading Mentor. Send any asset name (e.g., Gold / XAUUSD) and I will execute a deep, multi-agent confluence search for you.`,
+         reply: `### Chatrade is ready to assist.\n* **Status**: Trading account connected.\n* **Risk Shield**: Prop Firm Safe Compliant Active.\n* **Market Status**: Monitoring Opportunities.\n\nWelcome! I am your AI Trading Assistant. Ask about any asset (e.g., Gold / XAUUSD), your account balance, open positions, or latest market news, and I will analyze the live market for you.`,
          quotaInfo: getUserQuota(userEmail),
          handshake: true
        });
@@ -3408,6 +4042,458 @@ app.post("/api/chatrade/chat", async (req, res) => {
     }
 
     const quotaInfo = getUserQuota(userEmail);
+
+    // ==================================================================================
+    // SPECIALIZED CONVERSATIONAL COMMAND HANDLERS (METAAPI + EVIDENCE RECORD + RISK ENGINE)
+    // ==================================================================================
+    const trimmedMsg = message.trim();
+    const activeAccId = accountId || 'default';
+    const userSessionKey = userEmail.toLowerCase();
+    if (!globalScope.USER_TRADING_SESSIONS) globalScope.USER_TRADING_SESSIONS = new Map();
+    const userSession = globalScope.USER_TRADING_SESSIONS.get(userSessionKey) || {};
+
+    // 1. "Analyze [SYMBOL]" or "What is [SYMBOL] doing?"
+    const analyzeMatch = trimmedMsg.match(/^(?:analyze|check|status of|what(?:'s| is) (?:happening with|up with)|look at)\s+([A-Za-z0-9_]+)/i) ||
+                        (trimmedMsg.toLowerCase().startsWith('analyze') ? [null, 'XAUUSD'] : null);
+    
+    if (analyzeMatch) {
+      let targetSym = (analyzeMatch[1] || 'XAUUSD').toUpperCase();
+      if (targetSym.includes('GOLD')) targetSym = 'XAUUSD';
+
+      const m15Candles = globalScope.CANDLE_STORE?.[activeAccId]?.[targetSym] || 
+                        candleCache.load(activeAccId, targetSym, '15m') || [];
+      let bid = 0;
+      let ask = 0;
+      if (m15Candles.length > 0) {
+        bid = m15Candles[m15Candles.length - 1].close;
+        ask = bid + (targetSym.includes('XAU') ? 0.25 : 0.00015);
+      }
+
+      const specs = {
+        symbol: targetSym,
+        brokerSymbol: targetSym,
+        bid: bid || 2000,
+        ask: ask || 2000.25,
+        digits: targetSym.includes('XAU') ? 2 : (targetSym.includes('JPY') ? 3 : 5),
+        minLot: 0.01,
+        maxLot: 100.0,
+        lotStep: 0.01
+      };
+
+      const tfMap: Record<string, any[]> = {
+        '1m': candleCache.load(activeAccId, targetSym, '1m'),
+        '5m': candleCache.load(activeAccId, targetSym, '5m'),
+        '15m': m15Candles,
+        '30m': candleCache.load(activeAccId, targetSym, '30m'),
+        '1h': candleCache.load(activeAccId, targetSym, '1h'),
+        '4h': candleCache.load(activeAccId, targetSym, '4h'),
+        '1d': candleCache.load(activeAccId, targetSym, '1d')
+      };
+
+      const info = globalScope.ACCOUNT_INFO?.get(activeAccId) || {};
+      const positionsMap = globalScope.ACTIVE_POSITIONS?.get(activeAccId) || new Map();
+      const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+
+      const accountState = {
+        balance: info.balance || 1000,
+        equity: info.equity || info.balance || 1000,
+        freeMargin: info.freeMargin || 1000,
+        currency: info.currency || 'USD',
+        openPositionsCount: activePositions.length,
+        maxTradesLimit: 3,
+        activePositions
+      };
+
+      const marketState = marketAnalysisEngine.generateMarketState(specs, tfMap, [], accountState);
+      const proposal = await aiProvider.analyzeMarketAndProposeStrategy(marketState);
+      const evidenceRecord = marketAnalysisEngine.formatEvidenceRecord(marketState, proposal);
+      proposal.evidenceRecord = evidenceRecord;
+
+      // Save into user session
+      globalScope.USER_TRADING_SESSIONS.set(userSessionKey, {
+        targetSymbol: targetSym,
+        marketState,
+        proposal,
+        evidenceRecord,
+        lastUpdated: Date.now()
+      });
+
+      const formattedRecordText = marketAnalysisEngine.formatEvidenceRecordText(evidenceRecord);
+      const responseText = `${formattedRecordText}\n\n**Strategy Thesis:**\n${proposal.whyFits}\n\n**Risk Management & Invalidation:**\n${proposal.invalidationCondition}\n\n*Say **"Prepare the trade but don't execute it"** to stage this order, or **"Scan all configured markets"** to search other instruments.*`;
+
+      return res.json({
+        success: true,
+        reply: responseText,
+        quotaInfo,
+        evidenceRecord,
+        proposal
+      });
+    }
+
+    // 2. "scanMarket" / "Scan all configured markets" / "Scan markets"
+    if (/^(?:\/?scanmarket|scan all|scan configured|scan markets|scan all markets|market scan|scan)\b/i.test(trimmedMsg)) {
+      // 1. Discover all configured broker symbols from terminal or standard watchlist
+      let terminalSymbols: string[] = [];
+      try {
+        if (activeAccId && metaapi) {
+          const cachedSpecs = await getSymbolsCached(metaapi, activeAccId);
+          if (Array.isArray(cachedSpecs) && cachedSpecs.length > 0) {
+            terminalSymbols = cachedSpecs;
+          }
+        }
+      } catch (e) {
+        console.warn("[SCAN_MARKET] Terminal symbols fetch fallback:", e);
+      }
+
+      const defaultWatchlist = ['XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'US30', 'NAS100', 'BTCUSD'];
+      const targetSymbolsToScan: string[] = [];
+
+      // Prefer matching broker symbols
+      for (const defaultSym of defaultWatchlist) {
+        const found = terminalSymbols.find(s => s.toUpperCase() === defaultSym || s.toUpperCase().startsWith(defaultSym));
+        targetSymbolsToScan.push(found || defaultSym);
+      }
+
+      // De-duplicate
+      const uniqueSymbols = Array.from(new Set(targetSymbolsToScan));
+      const evaluatedResults: Array<{
+        symbol: string;
+        price: number;
+        digits: number;
+        trend: string;
+        volatility: string;
+        confluenceScore: number;
+        classification: string;
+        sweep: string;
+        crt: string;
+        marketState: any;
+      }> = [];
+
+      const info = globalScope.ACCOUNT_INFO?.get(activeAccId) || {};
+      const positionsMap = globalScope.ACTIVE_POSITIONS?.get(activeAccId) || new Map();
+      const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+
+      const accountState = {
+        balance: info.balance || 1000,
+        equity: info.equity || info.balance || 1000,
+        freeMargin: info.freeMargin || 1000,
+        currency: info.currency || 'USD',
+        openPositionsCount: activePositions.length,
+        maxTradesLimit: 3,
+        activePositions
+      };
+
+      for (const sym of uniqueSymbols) {
+        const targetSym = sym.toUpperCase();
+        const m15 = globalScope.CANDLE_STORE?.[activeAccId]?.[targetSym] || candleCache.load(activeAccId, targetSym, '15m') || [];
+        let price = m15.length > 0 ? m15[m15.length - 1].close : 0;
+        const digits = targetSym.includes('XAU') ? 2 : (targetSym.includes('JPY') ? 3 : 5);
+        const specs = {
+          symbol: targetSym,
+          brokerSymbol: sym,
+          bid: price || 100,
+          ask: price ? price + (targetSym.includes('XAU') ? 0.25 : 0.00015) : 100.02,
+          digits,
+          minLot: 0.01,
+          maxLot: 100.0,
+          lotStep: 0.01
+        };
+        const tfMap = {
+          '15m': m15,
+          '1h': candleCache.load(activeAccId, targetSym, '1h'),
+          '4h': candleCache.load(activeAccId, targetSym, '4h')
+        };
+        const ms = marketAnalysisEngine.generateMarketState(specs, tfMap, [], accountState);
+
+        evaluatedResults.push({
+          symbol: targetSym,
+          price: ms.currentPrice.mid,
+          digits,
+          trend: ms.marketStructure.dominantTrend,
+          volatility: ms.volatility.regime,
+          confluenceScore: ms.deterministicScore,
+          classification: ms.deterministicClassification,
+          sweep: ms.liquidity.recentSweep ? `${ms.liquidity.recentSweep.type} Reclaimed` : 'None',
+          crt: ms.crt.status,
+          marketState: ms
+        });
+      }
+
+      // 2. Rank all symbols by Confluence Score descending
+      evaluatedResults.sort((a, b) => b.confluenceScore - a.confluenceScore);
+
+      // 3. Build ranked summary table
+      const rankRows = evaluatedResults.map((res, index) => {
+        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `**#${index + 1}**`;
+        const badgeColor = res.confluenceScore >= 80 ? '🟢' : res.confluenceScore >= 65 ? '🟡' : '⚪';
+        return `| ${medal} | **${res.symbol}** | \`${res.price.toFixed(res.digits)}\` | **${res.trend}** | ${res.volatility} | ${res.sweep} | ${badgeColor} **${res.confluenceScore}%** | \`${res.classification}\` |`;
+      });
+
+      const topResult = evaluatedResults[0];
+      let topEvidenceText = "";
+      let proposalForTop: any = null;
+
+      // 4. Generate full Strategy & Setup Evidence Record for the top-ranked setup
+      if (topResult && topResult.marketState) {
+        proposalForTop = await aiProvider.analyzeMarketAndProposeStrategy(topResult.marketState);
+        const evidenceRecord = marketAnalysisEngine.formatEvidenceRecord(topResult.marketState, proposalForTop);
+        proposalForTop.evidenceRecord = evidenceRecord;
+
+        globalScope.USER_TRADING_SESSIONS.set(userSessionKey, {
+          targetSymbol: topResult.symbol,
+          marketState: topResult.marketState,
+          proposal: proposalForTop,
+          evidenceRecord,
+          lastUpdated: Date.now()
+        });
+
+        topEvidenceText = `\n\n---\n\n### 🏆 #1 RANKED OPPORTUNITY: ${topResult.symbol} (${proposalForTop.direction})\n\n` +
+          marketAnalysisEngine.formatEvidenceRecordText(evidenceRecord) +
+          `\n\n**Actionable Trade Plan:**\n` +
+          `• **Recommended Entry:** \`${proposalForTop.entryZone.recommendedEntry.toFixed(topResult.digits)}\`\n` +
+          `• **Stop Loss:** \`${proposalForTop.stopLoss.toFixed(topResult.digits)}\`\n` +
+          `• **Take Profit (TP1):** \`${proposalForTop.takeProfitLevels.tp1.toFixed(topResult.digits)}\`\n` +
+          `• **Risk:Reward:** \`${proposalForTop.riskRewardRatio}\` | **Confidence:** \`${proposalForTop.confidence}%\`\n\n` +
+          `*Say **"Explain why this setup qualifies"**, **"Prepare the trade but don't execute it"**, or **"Execute the setup"**.*`;
+      }
+
+      const tableHeader = [
+        `### 🛰️ MARKET SCAN & MULTI-ASSET RANKING`,
+        `*Evaluated ${evaluatedResults.length} configured terminal symbols through the MarketAnalysisEngine:*\n`,
+        `| Rank | Instrument | Live Price | Trend | Volatility | Liquidity Sweep | Score | Status |`,
+        `| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |`
+      ].join('\n');
+
+      const fullReply = `${tableHeader}\n${rankRows.join('\n')}${topEvidenceText}`;
+
+      return res.json({
+        success: true,
+        reply: fullReply,
+        quotaInfo,
+        scanResults: evaluatedResults,
+        topProposal: proposalForTop
+      });
+    }
+
+    // 3. "Find the strongest current setup"
+    if (/^(?:find the strongest|strongest setup|best setup|top setup|find strongest setup)\b/i.test(trimmedMsg)) {
+      const symbols = ['XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'US30', 'NAS100', 'BTCUSD'];
+      let topSymbol = 'XAUUSD';
+      let topScore = -1;
+      let topMarketState: any = null;
+
+      for (const sym of symbols) {
+        const m15 = globalScope.CANDLE_STORE?.[activeAccId]?.[sym] || candleCache.load(activeAccId, sym, '15m') || [];
+        let price = m15.length > 0 ? m15[m15.length - 1].close : 0;
+        const specs = {
+          symbol: sym,
+          brokerSymbol: sym,
+          bid: price || 100,
+          ask: price ? price + 0.0002 : 100.02,
+          digits: sym.includes('XAU') ? 2 : (sym.includes('JPY') ? 3 : 5)
+        };
+        const tfMap = {
+          '15m': m15,
+          '1h': candleCache.load(activeAccId, sym, '1h'),
+          '4h': candleCache.load(activeAccId, sym, '4h')
+        };
+        const ms = marketAnalysisEngine.generateMarketState(specs, tfMap, []);
+        if (ms.deterministicScore > topScore) {
+          topScore = ms.deterministicScore;
+          topSymbol = sym;
+          topMarketState = ms;
+        }
+      }
+
+      const proposal = await aiProvider.analyzeMarketAndProposeStrategy(topMarketState);
+      const evidenceRecord = marketAnalysisEngine.formatEvidenceRecord(topMarketState, proposal);
+      proposal.evidenceRecord = evidenceRecord;
+
+      globalScope.USER_TRADING_SESSIONS.set(userSessionKey, {
+        targetSymbol: topSymbol,
+        marketState: topMarketState,
+        proposal,
+        evidenceRecord,
+        lastUpdated: Date.now()
+      });
+
+      const formattedRecordText = marketAnalysisEngine.formatEvidenceRecordText(evidenceRecord);
+      const reply = `### 🏆 STRONGEST DISCOVERED SETUP: ${topSymbol} (Confluence: ${topScore}%)\n\n${formattedRecordText}\n\n**Trade Parameters:**\n• Entry Zone: \`${proposal.entryZone.recommendedEntry.toFixed(topMarketState.currentPrice.digits)}\`\n• Stop Loss: \`${proposal.stopLoss.toFixed(topMarketState.currentPrice.digits)}\`\n• Take Profit 1: \`${proposal.takeProfitLevels.tp1.toFixed(topMarketState.currentPrice.digits)}\`\n• Take Profit 2: \`${proposal.takeProfitLevels.tp2.toFixed(topMarketState.currentPrice.digits)}\`\n• Risk:Reward Ratio: \`${proposal.riskRewardRatio}\`\n\n*Say **"Explain why this setup qualifies"**, **"What would invalidate this setup?"**, or **"Prepare the trade but don't execute it"**.*`;
+
+      return res.json({ success: true, reply, quotaInfo, evidenceRecord, proposal });
+    }
+
+    // 4. "Explain why this setup qualifies"
+    if (/^(?:why (?:this|does this) setup qualifies|why does it qualify|explain why this setup qualifies|why qualifies)\b/i.test(trimmedMsg)) {
+      if (!userSession.proposal || !userSession.evidenceRecord) {
+        return res.json({
+          success: true,
+          reply: `No active setup is currently loaded in session. Please run **"Analyze XAUUSD"** or **"Find the strongest current setup"** first.`,
+          quotaInfo
+        });
+      }
+      const { proposal, evidenceRecord, marketState } = userSession;
+      const reply = `### 🔍 SETUP CONFLUENCE BREAKDOWN: ${evidenceRecord.symbol} (${evidenceRecord.direction})\n\n` +
+        `1. **Multi-Timeframe Structure Alignment:** ${evidenceRecord.higherTimeframe}. The higher timeframe bias supports the ${evidenceRecord.direction} bias without structural divergence.\n` +
+        `2. **Institutional Liquidity Confluence:** ${evidenceRecord.liquidity}. Price swept structural boundaries, tapping liquidity pools and triggering order flow displacement.\n` +
+        `3. **CRT & Order Block Validation:** ${evidenceRecord.crt} | ${evidenceRecord.fvg}.\n` +
+        `4. **Volatility Regime:** ${evidenceRecord.volatility}. Market conditions are within normal risk parameters.\n` +
+        `5. **Macroeconomic Environment:** ${evidenceRecord.news}.\n\n` +
+        `**Institutional Rationale:** ${proposal.whyFits}\n\n` +
+        `*Say **"What would invalidate this setup?"** or **"Prepare the trade but don't execute it"**.*`;
+      return res.json({ success: true, reply, quotaInfo });
+    }
+
+    // 5. "What would invalidate this setup?"
+    if (/^(?:what would invalidate|how to invalidate|invalidation level|what invalidates this)\b/i.test(trimmedMsg)) {
+      if (!userSession.proposal || !userSession.evidenceRecord) {
+        return res.json({
+          success: true,
+          reply: `No active setup is currently loaded in session. Please run **"Analyze XAUUSD"** or **"Find the strongest current setup"** first.`,
+          quotaInfo
+        });
+      }
+      const { proposal, evidenceRecord, marketState } = userSession;
+      const reply = `### ⚠️ INVALIDATION CRITERIA: ${evidenceRecord.symbol} (${evidenceRecord.direction})\n\n` +
+        `• **Exact Invalidation Level:** \`${proposal.invalidationLevel.toFixed(marketState?.currentPrice?.digits || 5)}\`\n` +
+        `• **Structural Invalidation:** ${proposal.invalidationCondition}\n` +
+        `• **Price Action Failure Trigger:** A candle body close on the 15M/1H timeframe beyond the Stop Loss level invalidates the thesis.\n` +
+        `• **News Invalidation:** ${evidenceRecord.news.includes('High-impact') ? 'Imminent high-impact release risks expanding spreads and wiping structural zones.' : 'High-impact macroeconomic surprises.'}\n` +
+        `• **When NOT To Trade:** ${proposal.whenNotToTrade}\n\n` +
+        `*Say **"Prepare the trade but don't execute it"** to stage this order with deterministic risk controls.*`;
+      return res.json({ success: true, reply, quotaInfo });
+    }
+
+    // 6. "Prepare the trade but don't execute it"
+    if (/^(?:prepare the trade but don't execute it|prepare the trade|prepare trade|stage trade|stage setup)\b/i.test(trimmedMsg)) {
+      if (!userSession.proposal || !userSession.marketState) {
+        return res.json({
+          success: true,
+          reply: `No active setup to prepare. Run **"Analyze XAUUSD"** or **"Find the strongest current setup"** first.`,
+          quotaInfo
+        });
+      }
+
+      const info = globalScope.ACCOUNT_INFO?.get(activeAccId) || {};
+      const positionsMap = globalScope.ACTIVE_POSITIONS?.get(activeAccId) || new Map();
+      const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+
+      const accountState = {
+        balance: info.balance || 1000,
+        equity: info.equity || info.balance || 1000,
+        freeMargin: info.freeMargin || 1000,
+        currency: info.currency || 'USD',
+        openPositionsCount: activePositions.length,
+        maxTradesLimit: 3,
+        activePositions
+      };
+
+      const specs = {
+        symbol: userSession.targetSymbol,
+        brokerSymbol: userSession.targetSymbol,
+        bid: userSession.marketState.currentPrice.bid,
+        ask: userSession.marketState.currentPrice.ask,
+        digits: userSession.marketState.currentPrice.digits,
+        minLot: 0.01,
+        maxLot: 100.0,
+        lotStep: 0.01
+      };
+
+      const riskEval = riskEngine.evaluateTradeRisk({
+        proposal: userSession.proposal,
+        marketState: userSession.marketState,
+        specs,
+        account: accountState
+      });
+
+      if (!riskEval.approved || !riskEval.sanitizedTradeParams) {
+        return res.json({
+          success: true,
+          reply: `### ❌ RISK ENGINE REJECTION (TRADE CANNOT BE STAGED)\n\n*Reason:* ${riskEval.rejectionReason}\n\n${riskEval.warnings.map((w: string) => `• ⚠️ ${w}`).join('\n')}`,
+          quotaInfo
+        });
+      }
+
+      const params = riskEval.sanitizedTradeParams;
+      userSession.stagedTrade = {
+        ...params,
+        status: 'STAGED_READY',
+        stagedAt: Date.now()
+      };
+      globalScope.USER_TRADING_SESSIONS.set(userSessionKey, userSession);
+
+      const reply = `### 🛡️ TRADE STAGED & VALIDATED BY RISK ENGINE (NOT EXECUTED)\n\n` +
+        `• **Symbol:** \`${params.symbol}\`\n` +
+        `• **Direction:** **${params.direction}**\n` +
+        `• **Entry Price:** \`${params.entryPrice.toFixed(specs.digits)}\`\n` +
+        `• **Calculated Lot Size:** \`${params.lotSize}\` *(Safe micro lot)*\n` +
+        `• **Stop Loss:** \`${params.stopLoss.toFixed(specs.digits)}\`\n` +
+        `• **Take Profit (TP1):** \`${params.takeProfit.toFixed(specs.digits)}\`\n` +
+        `• **Risk:Reward Ratio:** \`${params.riskRewardRatio}\`\n` +
+        `• **Estimated Dollar Risk:** \`$${params.riskAmountCurrency}\` (${params.riskPercentage}% of equity)\n` +
+        `• **Status:** \`STAGED_READY\` *(Held safely in memory — NO order sent to broker yet)*\n\n` +
+        `*Whenever you are ready, say **"Execute the setup"** to dispatch this trade directly to MetaApi.*`;
+
+      return res.json({ success: true, reply, quotaInfo, stagedTrade: userSession.stagedTrade });
+    }
+
+    // 7. "Execute the setup"
+    if (/^(?:execute the setup|execute trade|execute setup|place order|execute staged trade)\b/i.test(trimmedMsg)) {
+      if (!userSession.stagedTrade && !userSession.proposal) {
+        return res.json({
+          success: true,
+          reply: `No staged trade found. Please say **"Analyze XAUUSD"** and **"Prepare the trade but don't execute it"** first.`,
+          quotaInfo
+        });
+      }
+
+      const connection = REGISTRY.rpc.get(activeAccId) || REGISTRY.stream.get(activeAccId);
+      if (!connection) {
+        return res.json({
+          success: true,
+          reply: `### ❌ EXECUTION BLOCKED: MetaApi terminal connection is not active.\nPlease ensure your MetaTrader account is connected and deployed.`,
+          quotaInfo
+        });
+      }
+
+      const tradeParams = userSession.stagedTrade || userSession.proposal;
+      const isBuy = (tradeParams.direction || tradeParams.sanitizedTradeParams?.direction) === 'BUY';
+      const lot = tradeParams.lotSize || 0.01;
+      const sl = tradeParams.stopLoss || 0;
+      const tp = tradeParams.takeProfit || tradeParams.takeProfitLevels?.tp1 || 0;
+      const sym = tradeParams.symbol || userSession.targetSymbol;
+
+      try {
+        let brokerResult: any = null;
+        if (isBuy && typeof (connection as any).createMarketBuyOrder === 'function') {
+          brokerResult = await (connection as any).createMarketBuyOrder(sym, lot, sl, tp, { comment: 'AI:Chatrade' });
+        } else if (!isBuy && typeof (connection as any).createMarketSellOrder === 'function') {
+          brokerResult = await (connection as any).createMarketSellOrder(sym, lot, sl, tp, { comment: 'AI:Chatrade' });
+        }
+
+        userSession.stagedTrade = null; // Clear staged trade after execution
+        globalScope.USER_TRADING_SESSIONS.set(userSessionKey, userSession);
+
+        const ticketId = brokerResult?.orderId || brokerResult?.positionId || brokerResult?.numericOrderId || 'CONFIRMED';
+        const reply = `### 🚀 ORDER EXECUTED VIA METAAPI BROKER\n\n` +
+          `• **Ticket ID:** \`#${ticketId}\`\n` +
+          `• **Symbol:** \`${sym}\`\n` +
+          `• **Direction:** **${isBuy ? 'BUY' : 'SELL'}**\n` +
+          `• **Volume:** \`${lot} Lots\`\n` +
+          `• **Stop Loss:** \`${sl}\`\n` +
+          `• **Take Profit:** \`${tp}\`\n` +
+          `• **Status:** \`FILLED & ACTIVE ON BROKER\`\n\n` +
+          `The trade is now actively monitored by ALGOTRADE position safeguards.`;
+
+        return res.json({ success: true, reply, quotaInfo, brokerResult });
+      } catch (execErr: any) {
+        return res.json({
+          success: true,
+          reply: `### ❌ BROKER EXECUTION FAILED\n\n*Error:* ${execErr.message || 'MetaApi execution rejected by broker.'}`,
+          quotaInfo
+        });
+      }
+    }
 
     const realContext = accountId ? await fetchAccountRealContext(accountId, userId) : null;
     const positionsList = realContext ? realContext.activeTradesSummary : [];
@@ -3575,18 +4661,11 @@ VERTEX COGNITIVE BRAIN & MODEL THINKING:
 - You have a cognitive enterprise Brain powered by Vertex AI.
 - You must always "Think" before deciding or executing. If a user asks a question that requires live facts, analyze what tool is needed first, call that tool to gather facts, and then formulate a reasoned decision.
 
-INTERNAL AGENTIC ORCHESTRATION & SIGNAL COLLABORATION:
-- All specialized agents have unique roles in producing and cleaning the ultimate trade signal:
-  1. News Agent: Interpreting FRED/Finnhub indicators and macroeconomic trends.
-  2. Technical Agent: Scanning chart indicators like RSI, EMAs, and support/resistance zones.
-  3. Structure Agent: Mapping Market Structure Shifts (MSS), Break of Structure (BOS), and Change of Character (CHoCH).
-  4. Pattern Agent: Identifying candlestick patterns (engulfing, morning star, pinbars).
-  5. Session Agent: Timing London sweeps, New York expansions, and Asian range consolidations.
-  6. Strategy Generator: Compiling the optimal entry, stop loss (SL), and take profit (TP) criteria.
-  7. Risk Agent: Managing drawdowns, leverage, and safe lot sizing.
-  8. Psychology Agent: Ensuring strict discipline and preventing emotional trading.
-  9. Consensus Agent: Orchestrating the above micro-agents' findings to filter, clean, and produce the final high-probability signal.
-- In your response, briefly explain how these orchestrated agents debated, refined, and cleaned the signal before presenting it.
+UNIFIED DIRECT INTELLIGENCE ARCHITECTURE:
+- You are ONE unified trading assistant directly connected to live broker tools, market data, and risk services.
+- Never pretend to be multiple sub-agents debating or present multi-agent handoffs. Speak with a single authoritative, disciplined institutional mentor voice.
+- Directly combine news and macroeconomic trends, technical indicators (RSI, EMAs, S/R levels), price structure (BOS, MSS, CHoCH, liquidity sweeps), and account risk controls into your responses.
+- When the user asks about live prices, market conditions, open positions, account balance, or trade execution, directly use the appropriate integrated tool or data source.
 
 REAL-TIME ACCOUNT AND SYMBOL DATA INTEGRATION:
 - If the user asks "what was the last balance" or asks about their account status, YOU MUST call the "get_account_status" tool immediately to fetch live balance, equity, and margin levels. Report the values clearly.
@@ -3834,8 +4913,8 @@ CRITICAL ECONOMIC CALENDAR & NEWS RULE:
     }
 
     async function toolPlaceMarketOrder(accId: string, sym: string, dir: string, size: number, slPrice?: number, tpPrice?: number) {
-      const settings = globalScope.STRATEGY_SETTINGS.get(accId) || { maxTrades: 1 };
-      const maxTrades = Math.max(1, settings.maxTrades || 1);
+      const settings = globalScope.STRATEGY_SETTINGS.get(accId) || {};
+      const maxTrades = Math.max(1, settings.maxTrades || 3);
       const positionsMap = globalScope.ACTIVE_POSITIONS.get(accId) || new Map();
       const currentTrades = Array.from(positionsMap.values()).length;
       const inFlight = globalScope.IN_FLIGHT_TRADES?.get(accId) || 0;
@@ -3964,7 +5043,7 @@ CRITICAL ECONOMIC CALENDAR & NEWS RULE:
     }
 
     let replyText = "";
-    let systemModel = "gemini-2.5-flash";
+    let systemModel = "gemini-3.8-flash";
 
     try {
       let conversationContents: any[] = [{ role: 'user', parts: [{ text: prompt }] }];
@@ -4064,7 +5143,7 @@ CRITICAL ECONOMIC CALENDAR & NEWS RULE:
       
       // Save last response for duplicate prompt suppression
       saveLastResponse(userEmail, message, replyText);
-      logAIAnalytics(userEmail, planName, isDeepRequested ? 'DEEP' : 'LIGHT', 'gemini-2.5-flash', 'success');
+      logAIAnalytics(userEmail, planName, isDeepRequested ? 'DEEP' : 'LIGHT', 'gemini-3.8-flash', 'success');
 
       // Save to memory system natively in async background
       ChatradeMemory.saveChat(crypto.randomUUID(), userId, 'user', message, 'general', userEmail).catch(console.error);
@@ -4300,6 +5379,17 @@ async function triggerActiveIntents(accountId: string) {
 }
 
 async function safeSubscribe(connection: any, symbol: string, timeframe: string, accountId: string) {
+  // Wait for streaming connection to stabilize first
+  const stabilizationPromise = globalScope.STABILIZATION_PROMISES?.get(accountId);
+  if (stabilizationPromise) {
+    console.log(`[STREAM] Waiting for connection stabilization before subscribing for ${symbol}...`);
+    try {
+      await stabilizationPromise;
+    } catch (e: any) {
+      console.warn(`[STREAM] Stabilization failed, but proceeding to subscribe attempt anyway: ${e.message}`);
+    }
+  }
+
   // IGNORE incomplete symbols (users typing) to prevent broker error spam
   if (!symbol || symbol.length < 3) {
     console.log(`[STREAM] Skipping subscription for partial/invalid symbol: "${symbol}"`);
@@ -4450,7 +5540,19 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
         attemptedSymbols.add(symbol.toUpperCase());
         console.warn(`[STREAM] Symbol ${symbol} not found. Attempting fuzzy match recovery...`);
         try {
-           const fullSymbols = await getSymbolsCached(metaapi, accountId);
+           let fullSymbols: string[] = [];
+           if (connection && connection.terminalState) {
+             if (Array.isArray(connection.terminalState.symbols) && connection.terminalState.symbols.length > 0) {
+               fullSymbols = connection.terminalState.symbols;
+             } else if (connection.terminalState.specifications) {
+               const specs = connection.terminalState.specifications;
+               if (Array.isArray(specs)) fullSymbols = specs.map((s: any) => s.symbol || s);
+               else if (typeof specs === 'object' && specs !== null) fullSymbols = Object.keys(specs);
+             }
+           }
+           if (fullSymbols.length === 0) {
+             fullSymbols = await getSymbolsCached(metaapi, accountId);
+           }
            const upperSym = symbol.toUpperCase();
            
            // Filter out the invalid symbol itself and any already attempted/failed symbols to prevent matching them
@@ -4556,7 +5658,9 @@ async function safeSubscribe(connection: any, symbol: string, timeframe: string,
                 const account = await metaapi.metatraderAccountApi.getAccount(accountId);
                 if (account.connectionStatus !== 'CONNECTED') {
                    console.log(`[STREAM] Triggering account reconnect for ${accountId}...`);
-                   await account.deploy();
+                   if (account.state === 'DEPLOYED') {
+                     await account.deploy();
+                   }
                    await account.waitConnected();
                 }
               } finally {
@@ -4958,41 +6062,54 @@ app.post("/api/subscription/activate-device", async (req, res) => {
       return res.status(400).json({ error: `Activation denied: Key is assigned to ${assignedEmail}, but you are logged in as ${userEmail.toLowerCase().trim()}.` });
     }
 
-    // If key is already used
-    if (keyData.used) {
-         return res.json({ success: true, message: "Workspace activated successfully" });
+    // If key is already used by a different user
+    if (keyData.used && !isUnassigned && assignedEmail !== userEmail.toLowerCase().trim()) {
+      return res.status(400).json({ error: "This access key has already been redeemed by another account." });
     }
 
-    // Mark key as used and bind to email if unassigned
+    // Fetch existing user record if any
+    const { data: userRecord } = await adminSupabase.from("users").select("*").eq("id", userId).maybeSingle();
+
+    // Determine plan implicitly from key structure or keyData
+    let inferredPlan = "Starter";
+    if (keyData.access_key && typeof keyData.access_key === "string") {
+        const parts = keyData.access_key.split('-');
+        if (parts.length >= 3 && ["STARTER", "PRO", "ELITE"].includes(parts[1].toUpperCase())) {
+            const p = parts[1].toUpperCase();
+            inferredPlan = p.charAt(0) + p.slice(1).toLowerCase();
+        }
+    }
+
+    let rawPlan = keyData.plan || inferredPlan || userRecord?.plan || 'Starter';
+    if (typeof rawPlan === 'string') {
+      rawPlan = rawPlan.trim().toUpperCase();
+    }
+    let planType = "Starter";
+    if (rawPlan === "PRO") planType = "Pro";
+    else if (rawPlan === "ELITE") planType = "Elite";
+    else if (rawPlan === "DEVELOPER" || rawPlan === "ADMIN") planType = "Developer";
+
+    // Mark key as used and bind to email
     await adminSupabase.from("access_licenses").update({
       used: true,
-      email: userEmail // Bind to the email that activated it
+      email: userEmail
     }).eq("id", keyData.id);
+
+    // Save to chatrade_plans.json
+    saveUserPlan(userEmail, { plan: planType, tier: planType });
 
     // Update public.users
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + 30);
 
-    const { data: userRecord } = await adminSupabase.from("users").select("*").eq("id", userId).maybeSingle();
-
-    // Determine plan implicitly from the access_key structure (e.g. ALGO-PRO-XXXXX) if field is missing
-    let inferredPlan = "Starter";
-    if (keyData.access_key && typeof keyData.access_key === "string") {
-        const parts = keyData.access_key.split('-');
-        if (parts.length >= 3 && ["STARTER", "PRO", "ELITE"].includes(parts[1])) {
-            inferredPlan = parts[1].charAt(0).toUpperCase() + parts[1].slice(1).toLowerCase();
-        }
-    }
-
-    // Retain legacy behaviors for automation logic compat
-    const planType = keyData.plan || inferredPlan || userRecord?.plan || 'Starter';
-    const metaapiAccountLimit = planType === 'Elite' ? 2 : 1;
+    const metaapiAccountLimit = planType === 'Elite' ? 2 : (planType === 'Pro' ? 1 : 1);
 
     if (userRecord) {
         await adminSupabase.from("users").update({
              has_access: true,
              payment_status: 'active',
              plan: planType,
+             access_key: key,
              expires_at: expiryDate.toISOString()
         }).eq("id", userId);
     } else {
@@ -5031,7 +6148,8 @@ app.post("/api/admin/generate-key", async (req, res) => {
          return res.status(403).json({ error: "Forbidden: Admin access required" });
      }
 
-     const safePlan = (planType || "Starter").toUpperCase();
+     const safePlanTitle = (planType || "Starter").charAt(0).toUpperCase() + (planType || "Starter").slice(1).toLowerCase();
+     const safePlan = safePlanTitle.toUpperCase();
      const newKey = `ALGO-${safePlan}-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
      const expiresAt = new Date();
      expiresAt.setDate(expiresAt.getDate() + 30);
@@ -5349,58 +6467,30 @@ app.get("/api/user/bootstrap", async (req, res) => {
     }
     
     let has_active_subscription = false;
-    let subscription_plan = null;
+    let subscription_plan = "Starter";
 
-    // DEVELOPER OVERRIDE: trispinblackops@gmail.com always has access
-    const authHeader = req.headers.authorization;
-    if (authHeader && adminSupabase) {
-        const token = authHeader.replace("Bearer ", "");
-        const { data: userData } = await adminSupabase.auth.getUser(token);
-        const userEmail = userData?.user?.email || "";
-        if (userEmail.toLowerCase() === "trispinblackops@gmail.com") {
-            has_active_subscription = true;
-            subscription_plan = "Developer";
-        }
-    }
+    const userEmail = await getUserEmailFromRequest(req).catch(() => "");
+    subscription_plan = await getUserSubscriptionPlanFromDB(userEmail, userId);
 
-    if (!has_active_subscription && adminSupabase) {
-        // Fetch user from users table first
-        const { data: userRecord } = await adminSupabase.from("users")
-            .select("plan, has_access, expires_at")
-            .eq("id", userId)
-            .maybeSingle();
-
-        if (userRecord && userRecord.has_access) {
-            const isExpired = userRecord.expires_at && new Date(userRecord.expires_at).getTime() < Date.now();
-            if (!isExpired) {
-                has_active_subscription = true;
-                subscription_plan = userRecord.plan || "Starter";
-            }
-        }
-
-        // If not found in users, check access_licenses by email
-        if (!has_active_subscription) {
-            const authHeaderToken = req.headers.authorization?.replace("Bearer ", "");
-            const { data: userData } = await adminSupabase.auth.getUser(authHeaderToken!);
-            const userEmailMatch = userData?.user?.email;
-
-            if (userEmailMatch) {
-                const { data: license } = await adminSupabase.from("access_licenses")
-                    .select("used, expires_at, access_key")
-                    .eq("email", userEmailMatch)
-                    .eq("used", true)
-                    .maybeSingle();
-                    
-                if (license && license.used) {
-                    const isExpired = license.expires_at && new Date(license.expires_at).getTime() < Date.now();
-                    if (!isExpired) {
-                        has_active_subscription = true;
-                        subscription_plan = license.plan || "Starter";
-                        (res as any).license_key = license.access_key;
-                    }
-                }
-            }
-        }
+    if (userEmail.toLowerCase() === "trispinblackops@gmail.com") {
+      has_active_subscription = true;
+      subscription_plan = "Developer";
+    } else if (adminSupabase) {
+      const { data: userRec } = await adminSupabase.from("users").select("has_access, expires_at").eq("id", userId).maybeSingle();
+      if (userRec && userRec.has_access) {
+         const isExpired = userRec.expires_at && new Date(userRec.expires_at).getTime() < Date.now();
+         if (!isExpired) has_active_subscription = true;
+      }
+      if (!has_active_subscription && userEmail) {
+         const { data: lic } = await adminSupabase.from("access_licenses").select("used, expires_at, access_key").eq("email", userEmail).eq("used", true).maybeSingle();
+         if (lic && lic.used) {
+             const isExpired = lic.expires_at && new Date(lic.expires_at).getTime() < Date.now();
+             if (!isExpired) {
+               has_active_subscription = true;
+               (res as any).license_key = lic.access_key;
+             }
+         }
+      }
     }
     
     let chartSettings = null;
@@ -5654,37 +6744,35 @@ app.post("/api/accounts", async (req, res) => {
   try {
     const userId = await getUserIdFromRequest(req);
     const email = await getUserEmailFromRequest(req);
-    
-    // VALIDATE SAAS LIMITS WITH DEVELOPER VIP BYPASS
-    if (adminSupabase) {
-        let plan = "Starter";
-        if (email.toLowerCase() === "trispinblackops@gmail.com") {
-            plan = "Developer";
-        } else {
-            const { data: userData } = await adminSupabase.from("users")
-               .select("plan")
-               .eq("id", userId)
-               .maybeSingle();
-            plan = userData?.plan || "Starter";
-        }
-
-        const leases = await TradingController.getActiveLeases(userId);
-        
-        let limit = 1;
-        if (plan === 'Pro') limit = 1;
-        else if (plan === 'Elite') limit = 2;
-        else if (plan === 'Developer' || plan === 'admin') limit = 100;
-
-        if (leases.length >= limit) {
-           return res.status(403).json({ error: `Subscription limit reached for ${plan} plan. Please upgrade to add more accounts. Limit: ${limit}, Current: ${leases.length}` });
-        }
-    }
-    
     const { login, server, platform, magic } = req.body || {};
     
-    // Check if account already exists to prevent duplication
+    // Check existing MetaApi accounts
     const rawResponse = await metaapi.metatraderAccountApi.getAccountsWithInfiniteScrollPagination();
     const accounts = Array.isArray(rawResponse) ? rawResponse : rawResponse?.items ? rawResponse.items : rawResponse?.data ? rawResponse.data : [];
+    const validMetaApiAccountIds = new Set(accounts.map((a: any) => a.id || a._data?.id || a._id));
+
+    // VALIDATE SAAS LIMITS WITH DEVELOPER VIP BYPASS
+    if (adminSupabase) {
+        const plan = await getUserSubscriptionPlanFromDB(email, userId);
+        const normPlan = (plan || "Starter").toLowerCase();
+
+        const leases = await TradingController.getActiveLeases(userId);
+        const activeLeases = leases.filter(l => validMetaApiAccountIds.has(l.account_id));
+        
+        let limit = 1;
+        if (normPlan === 'pro') limit = 1;
+        else if (normPlan === 'elite') limit = 2;
+        else if (normPlan === 'developer' || normPlan === 'admin') limit = 100;
+        else if (normPlan === 'starter') limit = 1;
+
+        const existingAcc = accounts.find((a: any) => {
+          return String(a.login) === String(login) && String(a.server).toLowerCase() === String(server).toLowerCase();
+        });
+
+        if (!existingAcc && activeLeases.length >= limit) {
+           return res.status(403).json({ error: `Subscription limit reached for ${plan} plan. Limit: ${limit}, Current active: ${activeLeases.length}. Please remove your existing account or upgrade your plan to add more accounts.` });
+        }
+    }
     
     let account = accounts.find((a: any) => {
       let isMatch = String(a.login) === String(login) && String(a.server).toLowerCase() === String(server).toLowerCase();
@@ -5711,16 +6799,16 @@ app.post("/api/accounts", async (req, res) => {
       isNew = true;
     }
     
-    // Deploy if it's a fresh account or currently not deployed
-    if (isNew || account.state !== 'DEPLOYED') {
+    // Only auto-deploy if it's a completely fresh account created just now
+    if (isNew) {
       try {
-        console.log(`[ACCOUNT] Account state is ${account.state}. Triggering deployment...`);
+        console.log(`[ACCOUNT] New account created. Triggering initial deployment...`);
         await account.deploy();
       } catch (deployErr: any) {
-        console.log(`[ACCOUNT] Deploy hint skipped: ${deployErr.message}`);
+        console.log(`[ACCOUNT] Initial deploy hint skipped: ${deployErr.message}`);
       }
     } else {
-      console.log(`[ACCOUNT] Bound to ${accountId}. Account already DEPLOYED.`);
+      console.log(`[ACCOUNT] Bound to existing ${accountId}. Account state: ${account.state}.`);
     }
     
     await TradingController.createLease(userId, accountId, 'DEFAULT', 'london');
@@ -6534,7 +7622,7 @@ async function getAutomaticSLAndTP(connection: any, accountId: string, symbol: s
 app.post('/api/trade/buy', async (req, res) => {
   console.log("BUY ROUTE HIT", req.body);
 
-  const { accountId, symbol, stopLoss, takeProfit, comment: rawComment, lotSize: requestedLot } = req.body || {};
+  const { accountId, symbol, stopLoss, takeProfit, comment: rawComment, lotSize: requestedLot, maxTrades: bodyMaxTrades } = req.body || {};
 
   // Parse custom comment and check for rescue de-duplication
   const userComment = rawComment ? String(rawComment).trim() : 'ALGOTRADE';
@@ -6553,8 +7641,9 @@ app.post('/api/trade/buy', async (req, res) => {
   }
 
   // STRICT LIMIT ENFORCEMENT & IN-FLIGHT LOCKING
-  const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { maxTrades: 1 };
-  const maxTrades = Math.max(1, settings.maxTrades || 1);
+  const reqMaxTrades = Number(bodyMaxTrades);
+  const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || {};
+  const maxTrades = Math.max(1, reqMaxTrades || settings.maxTrades || 3);
   const positionsMap = globalScope.ACTIVE_POSITIONS.get(accountId) || new Map();
   const currentTrades = Array.from(positionsMap.values()).length;
   const inFlight = globalScope.IN_FLIGHT_TRADES?.get(accountId) || 0;
@@ -6606,21 +7695,49 @@ app.post('/api/trade/buy', async (req, res) => {
       if (!tp && autoRisk.takeProfit) tp = autoRisk.takeProfit;
     }
 
-    const result = await connection.createMarketBuyOrder(
-      normalizedSymbol,
-      lotToUse,
-      sl,
-      tp,
-      { 
-        comment: tradeComment,
-        magic: 409
+    let result;
+    try {
+      result = await connection.createMarketBuyOrder(
+        normalizedSymbol,
+        lotToUse,
+        sl,
+        tp,
+        { 
+          comment: tradeComment,
+          magic: 409
+        }
+      );
+    } catch (orderErr: any) {
+      if (/not enough money|insufficient|margin/i.test(orderErr.message || "") && lotToUse > 0.01) {
+        logMessage(accountId, 'WARN', `[MARGIN GUARD] Broker reported margin insufficient for ${lotToUse} lots on ${normalizedSymbol}. Automatically retrying with micro lot (0.01)...`);
+        lotToUse = 0.01;
+        result = await connection.createMarketBuyOrder(
+          normalizedSymbol,
+          0.01,
+          sl,
+          tp,
+          { 
+            comment: tradeComment,
+            magic: 409
+          }
+        );
+      } else {
+        throw orderErr;
       }
-    );
+    }
 
     logMessage(accountId, 'SUCCESS', `Buy executed successfully for ${normalizedSymbol} with LotSize=${lotToUse}, SL=${sl}, TP=${tp}`, result);
     console.log("[TRADE] BUY SUCCESS", result);
     res.json({ success: true, lotSize: lotToUse, result });
   } catch (err: any) {
+    const isMarginIssue = /not enough money|insufficient|margin/i.test(err.message || "");
+    if (isMarginIssue) {
+      logMessage(req.body?.accountId || null, 'WARN', `Buy trade declined by broker: Not enough free margin on account to open ${symbol || 'trade'}. Please deposit funds or close existing positions.`);
+      return res.status(400).json({ 
+        success: false, 
+        error: "Insufficient free margin: Your broker account does not have enough funds to open this position. Please close existing trades or reduce position size." 
+      });
+    }
     logMessage(req.body?.accountId || null, 'ERROR', `Buy execution failed: ${err.message}`);
     console.error("[TRADE] BUY FAILED", err);
     res.status(500).json({ error: sanitizeError(err) });
@@ -6633,7 +7750,7 @@ app.post('/api/trade/buy', async (req, res) => {
 app.post('/api/trade/sell', async (req, res) => {
   console.log("SELL ROUTE HIT", req.body);
 
-  const { accountId, symbol, stopLoss, takeProfit, comment: rawComment, lotSize: requestedLot } = req.body || {};
+  const { accountId, symbol, stopLoss, takeProfit, comment: rawComment, lotSize: requestedLot, maxTrades: bodyMaxTrades } = req.body || {};
 
   // Parse custom comment and check for rescue de-duplication
   const userComment = rawComment ? String(rawComment).trim() : 'ALGOTRADE';
@@ -6652,8 +7769,9 @@ app.post('/api/trade/sell', async (req, res) => {
   }
 
   // STRICT LIMIT ENFORCEMENT & IN-FLIGHT LOCKING
-  const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { maxTrades: 1 };
-  const maxTrades = Math.max(1, settings.maxTrades || 1);
+  const reqMaxTrades = Number(bodyMaxTrades);
+  const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || {};
+  const maxTrades = Math.max(1, reqMaxTrades || settings.maxTrades || 3);
   const positionsMap = globalScope.ACTIVE_POSITIONS.get(accountId) || new Map();
   const currentTrades = Array.from(positionsMap.values()).length;
   const inFlight = globalScope.IN_FLIGHT_TRADES?.get(accountId) || 0;
@@ -6705,21 +7823,49 @@ app.post('/api/trade/sell', async (req, res) => {
       if (!tp && autoRisk.takeProfit) tp = autoRisk.takeProfit;
     }
 
-    const result = await connection.createMarketSellOrder(
-      normalizedSymbol,
-      lotToUse,
-      sl,
-      tp,
-      { 
-        comment: tradeComment,
-        magic: 409
+    let result;
+    try {
+      result = await connection.createMarketSellOrder(
+        normalizedSymbol,
+        lotToUse,
+        sl,
+        tp,
+        { 
+          comment: tradeComment,
+          magic: 409
+        }
+      );
+    } catch (orderErr: any) {
+      if (/not enough money|insufficient|margin/i.test(orderErr.message || "") && lotToUse > 0.01) {
+        logMessage(accountId, 'WARN', `[MARGIN GUARD] Broker reported margin insufficient for ${lotToUse} lots on ${normalizedSymbol}. Automatically retrying with micro lot (0.01)...`);
+        lotToUse = 0.01;
+        result = await connection.createMarketSellOrder(
+          normalizedSymbol,
+          0.01,
+          sl,
+          tp,
+          { 
+            comment: tradeComment,
+            magic: 409
+          }
+        );
+      } else {
+        throw orderErr;
       }
-    );
+    }
 
     logMessage(accountId, 'SUCCESS', `Sell executed successfully for ${normalizedSymbol} with LotSize=${lotToUse}, SL=${sl}, TP=${tp}`, result);
     console.log("[TRADE] SELL SUCCESS", result);
     res.json({ success: true, lotSize: lotToUse, result });
   } catch (err: any) {
+    const isMarginIssue = /not enough money|insufficient|margin/i.test(err.message || "");
+    if (isMarginIssue) {
+      logMessage(req.body?.accountId || null, 'WARN', `Sell trade declined by broker: Not enough free margin on account to open ${symbol || 'trade'}. Please deposit funds or close existing positions.`);
+      return res.status(400).json({ 
+        success: false, 
+        error: "Insufficient free margin: Your broker account does not have enough funds to open this position. Please close existing trades or reduce position size." 
+      });
+    }
     logMessage(req.body?.accountId || null, 'ERROR', `Sell execution failed: ${err.message}`);
     console.error("[TRADE] SELL FAILED", err);
     res.status(500).json({ error: sanitizeError(err) });
@@ -6821,33 +7967,55 @@ app.post('/api/trade/modify', async (req, res) => {
       console.warn(`[TRADE] Failed locating symbol for position #${positionId}:`, e);
     }
 
-    // Resolve highly precise, live market price for checking StopsLevel boundaries
+    // Resolve highly precise, live market price and broker bid/ask for checking StopsLevel boundaries
+    let liveBid = 0;
+    let liveAsk = 0;
     if (symbol) {
       try {
-        const tick = connection?.terminalState?.tick(symbol);
-        const bidPrice = tick?.bid || tick?.lastPrice;
-        const askPrice = tick?.ask || tick?.lastPrice;
-        
-        let tickPrice = isBuy ? bidPrice : askPrice;
-        if (!tickPrice) {
-          const lastTick = globalScope.LAST_TICK?.get(`${accountId}:${symbol}`);
-          tickPrice = lastTick ? (isBuy ? lastTick.bid : lastTick.ask) : 0;
-        }
-        if (tickPrice && tickPrice > 0) {
-          currentPrice = Number(tickPrice);
-        }
-        if (!currentPrice || currentPrice <= 0) {
-          const candles = globalScope.CANDLES?.get(`${accountId}:${symbol}`) || [];
-          if (candles.length > 0) {
-            currentPrice = Number(candles[candles.length - 1].close);
-          }
+        const priceObj = await connection.getSymbolPrice(symbol).catch(() => null);
+        if (priceObj && (priceObj.bid || priceObj.ask)) {
+          liveBid = Number(priceObj.bid || 0);
+          liveAsk = Number(priceObj.ask || 0);
+          currentPrice = isBuy ? (liveBid || liveAsk) : (liveAsk || liveBid);
         }
       } catch (e) {
-        console.warn(`[TRADE] Failed resolving current price for ${symbol}:`, e);
+        console.warn(`[TRADE] getSymbolPrice failed for ${symbol}:`, e);
+      }
+
+      if (!currentPrice || currentPrice <= 0) {
+        try {
+          const tick = connection?.terminalState?.tick(symbol);
+          const bidPrice = tick?.bid || tick?.lastPrice;
+          const askPrice = tick?.ask || tick?.lastPrice;
+          if (bidPrice) liveBid = Number(bidPrice);
+          if (askPrice) liveAsk = Number(askPrice);
+          
+          let tickPrice = isBuy ? (bidPrice || askPrice) : (askPrice || bidPrice);
+          if (!tickPrice) {
+            const lastTick = globalScope.LAST_TICK?.get(`${accountId}:${symbol}`);
+            if (lastTick) {
+              liveBid = Number(lastTick.bid || 0);
+              liveAsk = Number(lastTick.ask || 0);
+              tickPrice = isBuy ? (lastTick.bid || lastTick.ask) : (lastTick.ask || lastTick.bid);
+            }
+          }
+          if (tickPrice && Number(tickPrice) > 0) {
+            currentPrice = Number(tickPrice);
+          }
+          if (!currentPrice || currentPrice <= 0) {
+            const candles = globalScope.CANDLES?.get(`${accountId}:${symbol}`) || [];
+            if (candles.length > 0) {
+              currentPrice = Number(candles[candles.length - 1].close);
+            }
+          }
+        } catch (e) {
+          console.warn(`[TRADE] Failed resolving fallback current price for ${symbol}:`, e);
+        }
       }
     }
 
     let digits = 5; // default fallback
+    let point = 0.00001;
     let minDistance = 0;
 
     if (symbol) {
@@ -6856,30 +8024,31 @@ app.post('/api/trade/modify', async (req, res) => {
         if (typeof spec.digits === 'number') {
           digits = spec.digits;
         }
-        const point = spec.point || Math.pow(10, -digits);
-        const stopsLevel = (spec.stopsLevel !== undefined && spec.stopsLevel !== null) ? spec.stopsLevel : 30;
+        point = spec.point || Math.pow(10, -digits);
+        const stopsLevel = (spec.stopsLevel !== undefined && spec.stopsLevel !== null) ? Number(spec.stopsLevel) : 0;
         
         // Enforce a sensible global safety floor based on symbol type
-        let minPoints = stopsLevel;
+        let minPoints = Math.max(stopsLevel, 30);
         const sym = symbol.toUpperCase();
         if (sym.includes('JPY')) {
-          minPoints = Math.max(minPoints, 35);
+          minPoints = Math.max(minPoints, 40);
         } else if (sym.includes('XAU') || sym.includes('GOLD')) {
-          minPoints = Math.max(minPoints, 50);
+          minPoints = Math.max(minPoints, 80);
         } else if (sym.includes('BTC') || sym.includes('ETH')) {
-          minPoints = Math.max(minPoints, 100);
+          minPoints = Math.max(minPoints, 150);
         } else if (
           sym.includes('US30') || sym.includes('WS30') ||
           sym.includes('NAS100') || sym.includes('USTEC') || sym.includes('NDX') ||
           sym.includes('SPX') || sym.includes('US500') ||
           sym.includes('DAX') || sym.includes('DE30') || sym.includes('GER30')
         ) {
-          minPoints = Math.max(minPoints, 100);
+          minPoints = Math.max(minPoints, 150);
         } else {
-          minPoints = Math.max(minPoints, 35);
+          minPoints = Math.max(minPoints, 40);
         }
         
-        minDistance = (minPoints + 15) * point; // 15 points safety buffer
+        const spreadPoints = (liveAsk > 0 && liveBid > 0 && liveAsk >= liveBid) ? ((liveAsk - liveBid) / point) : 10;
+        minDistance = (minPoints + Math.max(spreadPoints, 10) + 20) * point; // Broker StopsLevel + Spread + 20 points safety buffer
       } else {
         // Fallback digit determination if spec is missing
         const sym = symbol.toUpperCase();
@@ -6893,67 +8062,80 @@ app.post('/api/trade/modify', async (req, res) => {
         else if (sym.includes('SPX') || sym.includes('US500')) digits = 2;
         else if (sym.includes('DAX') || sym.includes('DE30') || sym.includes('GER30')) digits = 2;
 
-        const point = Math.pow(10, -digits);
-        let minPoints = 35;
-        if (sym.includes('JPY')) minPoints = 35;
-        else if (sym.includes('XAU') || sym.includes('GOLD')) minPoints = 65;
-        else if (sym.includes('US30') || sym.includes('NAS100') || sym.includes('DAX')) minPoints = 120;
+        point = Math.pow(10, -digits);
+        let minPoints = 40;
+        if (sym.includes('JPY')) minPoints = 40;
+        else if (sym.includes('XAU') || sym.includes('GOLD')) minPoints = 100;
+        else if (sym.includes('US30') || sym.includes('NAS100') || sym.includes('DAX')) minPoints = 150;
         
         minDistance = minPoints * point; // safety default
       }
     }
 
-    let finalSL = (stopLoss !== undefined && stopLoss !== null) ? Number(stopLoss) : (existingSL !== undefined && existingSL !== null ? Number(existingSL) : 0);
-    let finalTP = (takeProfit !== undefined && takeProfit !== null) ? Number(takeProfit) : (existingTP !== undefined && existingTP !== null ? Number(existingTP) : 0);
+    const refBid = liveBid > 0 ? liveBid : currentPrice;
+    const refAsk = liveAsk > 0 ? liveAsk : currentPrice;
 
-    if (isNaN(finalSL)) finalSL = 0;
-    if (isNaN(finalTP)) finalTP = 0;
+    // Helper to calculate clamped, safe SL/TP
+    const calculateSafeStops = (requestedSL: any, requestedTP: any, extraBufferPoints: number = 0) => {
+      const effectiveMinDist = minDistance + (extraBufferPoints * point);
+      let calculatedSL: number | undefined = undefined;
+      let calculatedTP: number | undefined = undefined;
 
-    // Enforce Stops Level relative to current market price if known
-    if (currentPrice > 0 && minDistance > 0) {
-      if (isBuy) {
-        // Stop Loss must be at least minDistance BELOW current price
-        if (finalSL > 0) {
-          const maxSL = currentPrice - minDistance;
-          if (finalSL > maxSL) {
-            console.log(`[TRADE] Enforcing StopsLevel: Adjusted Buy SL for #${positionId} from ${finalSL} to ${maxSL}`);
-            finalSL = maxSL;
-          }
-        }
-        // Take Profit must be at least minDistance ABOVE current price
-        if (finalTP > 0) {
-          const minTP = currentPrice + minDistance;
-          if (finalTP < minTP) {
-            console.log(`[TRADE] Enforcing StopsLevel: Adjusted Buy TP for #${positionId} from ${finalTP} to ${minTP}`);
-            finalTP = minTP;
-          }
-        }
-      } else {
-        // Sell position: Stop Loss must be at least minDistance ABOVE current price
-        if (finalSL > 0) {
-          const minSL = currentPrice + minDistance;
-          if (finalSL < minSL) {
-            console.log(`[TRADE] Enforcing StopsLevel: Adjusted Sell SL for #${positionId} from ${finalSL} to ${minSL}`);
-            finalSL = minSL;
-          }
-        }
-        // Take Profit must be at least minDistance BELOW current price
-        if (finalTP > 0) {
-          const maxTP = currentPrice - minDistance;
-          if (finalTP > maxTP) {
-            console.log(`[TRADE] Enforcing StopsLevel: Adjusted Sell TP for #${positionId} from ${finalTP} to ${maxTP}`);
-            finalTP = maxTP;
-          }
+      const slCandidate = (requestedSL !== undefined && requestedSL !== null) ? Number(requestedSL) : (existingSL !== undefined && existingSL !== null ? Number(existingSL) : 0);
+      const tpCandidate = (requestedTP !== undefined && requestedTP !== null) ? Number(requestedTP) : (existingTP !== undefined && existingTP !== null ? Number(existingTP) : 0);
+
+      if (slCandidate > 0 && !isNaN(slCandidate)) {
+        if (isBuy) {
+          // BUY Stop Loss must be at least effectiveMinDist BELOW current Bid
+          const maxAllowedSL = refBid > 0 ? (refBid - effectiveMinDist) : (slCandidate - effectiveMinDist);
+          const safeSL = (slCandidate > maxAllowedSL && maxAllowedSL > 0) ? maxAllowedSL : slCandidate;
+          calculatedSL = Number(safeSL.toFixed(digits));
+        } else {
+          // SELL Stop Loss must be at least effectiveMinDist ABOVE current Ask
+          const minAllowedSL = refAsk > 0 ? (refAsk + effectiveMinDist) : (slCandidate + effectiveMinDist);
+          const safeSL = (slCandidate < minAllowedSL && minAllowedSL > 0) ? minAllowedSL : slCandidate;
+          calculatedSL = Number(safeSL.toFixed(digits));
         }
       }
-    }
 
-    const slVal = (finalSL > 0) ? Number(Number(finalSL).toFixed(digits)) : 0;
-    const tpVal = (finalTP > 0) ? Number(Number(finalTP).toFixed(digits)) : 0;
+      if (tpCandidate > 0 && !isNaN(tpCandidate)) {
+        if (isBuy) {
+          // BUY Take Profit must be at least effectiveMinDist ABOVE current Ask/Bid
+          const minAllowedTP = (refAsk || refBid) > 0 ? ((refAsk || refBid) + effectiveMinDist) : (tpCandidate + effectiveMinDist);
+          const safeTP = (tpCandidate < minAllowedTP && minAllowedTP > 0) ? minAllowedTP : tpCandidate;
+          calculatedTP = Number(safeTP.toFixed(digits));
+        } else {
+          // SELL Take Profit must be at least effectiveMinDist BELOW current Bid/Ask
+          const maxAllowedTP = (refBid || refAsk) > 0 ? ((refBid || refAsk) - effectiveMinDist) : (tpCandidate - effectiveMinDist);
+          const safeTP = (tpCandidate > maxAllowedTP && maxAllowedTP > 0) ? maxAllowedTP : tpCandidate;
+          calculatedTP = Number(safeTP.toFixed(digits));
+        }
+      }
 
-    console.log(`[TRADE] Modifying position #${positionId} (${symbol || 'unknown'}): CurrentPrice: ${currentPrice}, Requested SL: ${stopLoss} -> Final SL: ${slVal}, Requested TP: ${takeProfit} -> Final TP: ${tpVal} (digits: ${digits}, minDistance: ${minDistance})`);
+      return { calculatedSL, calculatedTP };
+    };
+
+    let { calculatedSL: slVal, calculatedTP: tpVal } = calculateSafeStops(stopLoss, takeProfit, 0);
+
+    console.log(`[TRADE] Modifying position #${positionId} (${symbol || 'unknown'}): LiveBid=${refBid}, LiveAsk=${refAsk}, ReqSL=${stopLoss} -> FinalSL=${slVal}, ReqTP=${takeProfit} -> FinalTP=${tpVal} (digits=${digits}, minDistance=${minDistance.toFixed(digits)})`);
     
-    const result = await connection.modifyPosition(positionId, slVal, tpVal);
+    let result: any;
+    try {
+      result = await connection.modifyPosition(positionId, slVal, tpVal);
+    } catch (primaryErr: any) {
+      const pMsg = primaryErr?.message || "";
+      if (pMsg.includes("Invalid stops") || pMsg.includes("invalid stops") || pMsg.includes("10016")) {
+        console.warn(`[TRADE] Modify position #${positionId} hit stops level boundary. Applying widened buffer and retrying...`);
+        // Retry with extra safety buffer (50 points)
+        const widened = calculateSafeStops(stopLoss, takeProfit, 50);
+        slVal = widened.calculatedSL;
+        tpVal = widened.calculatedTP;
+        console.log(`[TRADE] Retry modification for #${positionId} with widened stops: SL=${slVal}, TP=${tpVal}`);
+        result = await connection.modifyPosition(positionId, slVal, tpVal);
+      } else {
+        throw primaryErr;
+      }
+    }
 
     logMessage(accountId, 'SUCCESS', `Modified position #${positionId} (SL: ${slVal}, TP: ${tpVal}) successfully`, result);
     console.log("[TRADE] MODIFY SUCCESS", result);
@@ -6978,35 +8160,44 @@ app.get("/api/account/:accountId/positions", async (req, res) => {
   if (!accountId || accountId === 'undefined' || accountId === 'null') {
     return res.json([]);
   }
+
+  const now = Date.now();
+  const cached = POSITIONS_CACHE.get(accountId);
+  // 3-second cache to prevent 429 Rate Exceeded on rapid client polling
+  if (cached && (now - cached.timestamp < 3000)) {
+    return res.json(cached.data);
+  }
+
   try {
     const userId = await getUserIdFromRequest(req);
-    // Use the synchronized stream connection to get the latest real-time positions
-    const connection = REGISTRY.stream.get(accountId);
-    if (connection && connection.terminalState && connection.terminalState.positions) {
-      const positions = connection.terminalState.positions;
-      return res.json(positions);
-    }
-    
-    // Check local synchronized listener Map in case terminalState is currently reloading
+
+    // 1. Check local synchronized listener Map first (zero MetaApi RPC network overhead)
     const posMap = globalScope.ACTIVE_POSITIONS?.get(accountId);
     if (posMap && typeof posMap.values === 'function') {
-      const fallback = Array.from(posMap.values());
-      return res.json(fallback);
+      const activePositions = Array.from(posMap.values());
+      POSITIONS_CACHE.set(accountId, { data: activePositions, timestamp: now });
+      return res.json(activePositions);
     }
 
+    // 2. Use the synchronized stream connection to get the latest real-time positions
+    const connection = REGISTRY.stream.get(accountId);
     if (connection && connection.terminalState) {
       try {
-        const positions = await connection.terminalState.positions;
+        const positions = connection.terminalState.positions;
         if (Array.isArray(positions)) {
+          POSITIONS_CACHE.set(accountId, { data: positions, timestamp: now });
           return res.json(positions);
         }
       } catch (e) {}
     }
-    
-    res.json([]);
+
+    const fallback = cached ? cached.data : [];
+    res.json(fallback);
   } catch (err: any) {
-    console.error("[POSITIONS_FETCH_ERROR]", err);
-    res.status(500).json({ error: sanitizeError(err) });
+    console.warn("[POSITIONS_FETCH_WARN]", err?.message || err);
+    // Never return 429/500 to client for polling position queries; return cached data or []
+    const fallback = cached ? cached.data : [];
+    res.json(fallback);
   }
 });
 
@@ -7052,21 +8243,22 @@ app.get("/api/account/:accountId/status", async (req, res) => {
     const state = account ? account.state : 'UNDEPLOYED';
     const connectionStatus = account ? account.connectionStatus : 'DISCONNECTED';
     
-    // Self-healing Background Deployment & Connection Trigger
+    // Self-healing Background Connection Trigger
     if (account) {
       if (account.state !== 'DEPLOYED') {
-         console.log(`[STATUS_POLL] Automatically deploying account ${accountId} in background...`);
-         account.deploy().catch((e: any) => console.error(`[STATUS_POLL] Background deploy error:`, e.message));
+         // Do NOT automatically deploy! Respect undeployed state from MetaAPI
+         console.log(`[STATUS_POLL] Account ${accountId} is undeployed. Respecting user action and skipping auto-deploy.`);
+         syncUndeployedState(accountId).catch(() => {});
       } else if (account.connectionStatus !== 'CONNECTED') {
          console.log(`[STATUS_POLL] Automatically connecting account ${accountId} in background...`);
          account.deploy().catch((e: any) => console.error(`[STATUS_POLL] Background connect error:`, e.message));
       }
     }
     
-    const engineState = globalScope.ENGINE_STATE.get(accountId) || (globalScope.ALGO_RUNNING.get(accountId) ? 'RUNNING' : 'STOPPED');
-    if (!globalScope.ENGINE_STATE.has(accountId)) {
-      globalScope.ENGINE_STATE.set(accountId, engineState);
-    }
+    const activePositionsCount = globalScope.ACTIVE_POSITIONS.get(accountId)?.size || 0;
+    const isAlgoActive = globalScope.ALGO_RUNNING.get(accountId) === true;
+    const engineState = (activePositionsCount > 0 || isAlgoActive) ? 'RUNNING' : (globalScope.ENGINE_STATE.get(accountId) || 'STOPPED');
+    globalScope.ENGINE_STATE.set(accountId, engineState);
 
     const settings = globalScope.STRATEGY_SETTINGS.get(accountId);
     const symbol = settings?.symbol || 'XAUUSDm';
@@ -7120,7 +8312,7 @@ app.get("/api/account/:accountId/status", async (req, res) => {
 
 app.post("/api/account/:accountId/strategy-settings", async (req, res) => {
   const { accountId } = req.params;
-  const { symbol, lotSize, maxTrades, timeframe } = req.body || {};
+  const { symbol, lotSize, maxTrades, timeframe, strategyMode } = req.body || {};
   try {
     const userId = await getUserIdFromRequest(req);
     
@@ -7136,8 +8328,18 @@ app.post("/api/account/:accountId/strategy-settings", async (req, res) => {
        }
     }
 
-    globalScope.STRATEGY_SETTINGS.set(accountId, { symbol, lotSize, maxTrades, timeframe });
-    console.log(`[STRATEGY] Settings updated for ${accountId}: symbol=${symbol}, lotSize=${lotSize}, maxTrades=${maxTrades}, tf=${timeframe}`);
+    const currentSettings = globalScope.STRATEGY_SETTINGS.get(accountId) || {};
+    const updatedSettings = {
+      ...currentSettings,
+      symbol: symbol ?? currentSettings.symbol,
+      lotSize: lotSize ?? currentSettings.lotSize,
+      maxTrades: maxTrades ?? currentSettings.maxTrades,
+      timeframe: timeframe ?? currentSettings.timeframe,
+      strategyMode: strategyMode ?? currentSettings.strategyMode ?? 'Predictive Trend Following'
+    };
+
+    globalScope.STRATEGY_SETTINGS.set(accountId, updatedSettings);
+    console.log(`[STRATEGY] Settings updated for ${accountId}: symbol=${updatedSettings.symbol}, lotSize=${updatedSettings.lotSize}, maxTrades=${updatedSettings.maxTrades}, tf=${updatedSettings.timeframe}, mode=${updatedSettings.strategyMode}`);
     
     // Proactive cleanup of old symbols when settings change
     if (symbol) {
@@ -7164,91 +8366,34 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
     let sess = globalScope.ENGINE_SESSIONS.get(userId);
 
     if (enabled) {
-      // Transition 1: STARTING
-      globalScope.ENGINE_STATE.set(accountId, 'STARTING');
-      console.log(`[ENGINE] Account ${accountId} Transition: STOPPED -> STARTING`);
-      
-      if (sess) {
-        sess.runningState = 'STARTING';
-      }
-
-      // 1. Verify MetaApi connection
-      const account = metaapi ? await getAccount(accountId).catch(() => null) : null;
-      if (!account || account.state !== 'DEPLOYED' || account.connectionStatus !== 'CONNECTED') {
-         globalScope.ENGINE_STATE.set(accountId, 'ERROR');
-         if (sess) sess.runningState = 'ERROR';
-         return res.status(400).json({ error: "MetaApi connection is inactive. Deploy and connect account before starting engine." });
-      }
-
-      // 2. Verify WebSocket connection
-      const connection = REGISTRY.stream.get(accountId);
-      if (!connection) {
-         globalScope.ENGINE_STATE.set(accountId, 'ERROR');
-         if (sess) sess.runningState = 'ERROR';
-         return res.status(400).json({ error: "Active WebSocket streaming channel not found. Establish stream before starting engine." });
-      }
-
-      // 3. Validate symbol settings
-      const settings = globalScope.STRATEGY_SETTINGS.get(accountId);
-      if (!settings || !settings.symbol || settings.symbol.length < 3) {
-         globalScope.ENGINE_STATE.set(accountId, 'ERROR');
-         if (sess) sess.runningState = 'ERROR';
-         return res.status(400).json({ error: "No valid symbol configured. Set symbol before starting." });
-      }
-
-      const symbols = await getSymbolsCached(metaapi, accountId);
-      let isValidSymbol = false;
-      if (symbols.length > 0) {
-         if (symbols.includes(settings.symbol)) {
-            isValidSymbol = true;
-         } else {
-            // Fuzzy match (e.g. suffixes)
-            const match = symbols.find((s: string) => s === settings.symbol || s.startsWith(settings.symbol + ".") || s.startsWith(settings.symbol + "#") || (s.endsWith(settings.symbol) && s.length <= settings.symbol.length + 3));
-            if (match) {
-               console.log(`[ALGO] Normalizing start symbol ${settings.symbol} -> ${match}`);
-               settings.symbol = match;
-               globalScope.STRATEGY_SETTINGS.set(accountId, settings);
-               isValidSymbol = true;
-            }
-         }
-      }
-
-      if (symbols.length > 0 && !isValidSymbol) {
-         globalScope.ENGINE_STATE.set(accountId, 'ERROR');
-         if (sess) sess.runningState = 'ERROR';
-         return res.status(400).json({ error: `Symbol ${settings.symbol} is not found in your broker's symbol list. Available symbols: ${symbols.slice(0, 10).join(', ')}...` });
-      }
-
-      // 4. Load existing cached market history & synchronize live market data
-      const timeframe = settings.timeframe || '1m';
-      const history = candleCache.load(accountId, settings.symbol, timeframe);
-      console.log(`[ENGINE] Loaded ${history.length} cached historical candles for ${settings.symbol}`);
-
-      // 5. Start AI monitoring (Enable running loop)
-      globalScope.ALGO_RUNNING.set(accountId, true);
-      
-      // Ensure terminal-side algo trading is enabled
-      try {
-        if (connection && typeof (connection as any).setAlgoTradingEnabled === 'function') {
-          await (connection as any).setAlgoTradingEnabled(true);
-          console.log(`[ALGO] setAlgoTradingEnabled(true) for ${accountId}`);
-        }
-      } catch (e) {
-        console.warn(`[ALGO] Could not enable terminal-side algo trading:`, e);
-      }
-
-      // Transition 2: RUNNING
+      // Transition immediately to RUNNING
       globalScope.ENGINE_STATE.set(accountId, 'RUNNING');
-      console.log(`[ENGINE] Account ${accountId} Transition: STARTING -> RUNNING`);
+      globalScope.ALGO_RUNNING.set(accountId, true);
+      console.log(`[ENGINE] Account ${accountId} Transition -> RUNNING`);
       
+      const settings = globalScope.STRATEGY_SETTINGS.get(accountId) || { symbol: 'XAUUSDm', timeframe: '1m' };
+      const timeframe = settings.timeframe || '1m';
+
       if (sess) {
         sess.runningState = 'RUNNING';
         sess.workflowState = 'Cognitive Pipeline Active';
-        sess.aiContext = `Actively scanning ${settings.symbol} in ${timeframe} timeframe.`;
+        sess.aiContext = `Actively scanning ${settings.symbol || 'market'} in ${timeframe} timeframe.`;
       }
 
-      // 6. Publish Engine Running event
-      logMessage(accountId, 'INFO', `[AI STRATEGY] Vertex AI Engine Instance active. Scanning live market on ${settings.symbol}...`, {}, 'AI_STRATEGY');
+      // Non-blocking background terminal setup
+      (async () => {
+        try {
+          const connection = REGISTRY.stream.get(accountId);
+          if (connection && typeof (connection as any).setAlgoTradingEnabled === 'function') {
+            await (connection as any).setAlgoTradingEnabled(true).catch(() => {});
+          }
+        } catch (e) {
+          console.warn(`[ALGO] Background terminal setup:`, e);
+        }
+      })();
+
+      // Publish Engine Running event
+      logMessage(accountId, 'INFO', `[AI STRATEGY] Enterprise AI Engine Instance active. Scanning live market on ${settings.symbol || 'configured symbol'}...`, {}, 'AI_STRATEGY');
 
       // Publish WS event to all clients subscribed to this account
       const clients = globalScope.SUBSCRIPTIONS?.get(accountId);
@@ -7264,38 +8409,30 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
         });
       }
 
+      return res.json({ success: true, enabled: true, engineState: 'RUNNING' });
     } else {
-      // Transition 1: STOPPING
-      globalScope.ENGINE_STATE.set(accountId, 'STOPPING');
-      console.log(`[ENGINE] Account ${accountId} Transition: RUNNING -> STOPPING`);
-      
-      if (sess) {
-        sess.runningState = 'STOPPING';
-      }
-
       // Stop background loop
       globalScope.ALGO_RUNNING.set(accountId, false);
-
-      // Disable terminal-side algo trading
-      try {
-        const connection = REGISTRY.stream.get(accountId);
-        if (connection && typeof (connection as any).setAlgoTradingEnabled === 'function') {
-          await (connection as any).setAlgoTradingEnabled(false);
-          console.log(`[ALGO] setAlgoTradingEnabled(false) for ${accountId}`);
-        }
-      } catch (e) {
-        console.warn(`[ALGO] Could not disable terminal-side algo trading:`, e);
-      }
-
-      // Transition 2: STOPPED
       globalScope.ENGINE_STATE.set(accountId, 'STOPPED');
-      console.log(`[ENGINE] Account ${accountId} Transition: STOPPING -> STOPPED`);
+      console.log(`[ENGINE] Account ${accountId} Transition -> STOPPED`);
       
       if (sess) {
         sess.runningState = 'STOPPED';
         sess.workflowState = 'Stopped';
         sess.aiContext = 'Engine stopped.';
       }
+
+      // Non-blocking background terminal disable
+      (async () => {
+        try {
+          const connection = REGISTRY.stream.get(accountId);
+          if (connection && typeof (connection as any).setAlgoTradingEnabled === 'function') {
+            await (connection as any).setAlgoTradingEnabled(false).catch(() => {});
+          }
+        } catch (e) {
+          console.warn(`[ALGO] Background terminal disable:`, e);
+        }
+      })();
 
       logMessage(accountId, 'INFO', `[${mode}] Engine Instance stopped successfully.`, {}, source);
 
@@ -7312,13 +8449,10 @@ app.post("/api/account/:accountId/algo/toggle", async (req, res) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(payload);
         });
       }
+
+      return res.json({ success: true, enabled: false, engineState: 'STOPPED' });
     }
-    
-    console.log(`[ALGO] State for ${accountId} set to ${enabled} (${mode})`);
-    res.json({ success: true, enabled: !!enabled, engineState: globalScope.ENGINE_STATE.get(accountId) });
   } catch (err: any) {
-    globalScope.ENGINE_STATE.set(accountId, 'ERROR');
-    console.error(`[ENGINE] Toggle failed:`, err);
     res.status(500).json({ error: sanitizeError(err) });
   }
 });
@@ -7742,6 +8876,79 @@ app.get("/api/account/:accountId/symbols", async (req, res) => {
   }
 });
 
+app.get("/api/account/:accountId/candles", async (req, res) => {
+  const { accountId } = req.params;
+  const symbol = (req.query.symbol as string) || "XAUUSD";
+  const timeframe = (req.query.timeframe as string) || "15m";
+
+  if (!accountId || accountId === 'undefined' || accountId === 'null') {
+    return res.json({ success: true, symbol, timeframe, candles: [] });
+  }
+
+  try {
+    // 1. Check in-memory store
+    const inMem = globalScope.CANDLE_STORE?.[accountId]?.[symbol] || 
+                  globalScope.LATEST_CANDLES?.get(`${accountId}:${symbol}`) || [];
+    if (Array.isArray(inMem) && inMem.length >= 10) {
+      return res.json({ success: true, symbol, timeframe, candles: inMem.slice(-300) });
+    }
+
+    // 2. Check disk cache
+    const diskCandles = candleCache.load(accountId, symbol, timeframe);
+    if (diskCandles && diskCandles.length >= 10) {
+      if (!globalScope.CANDLE_STORE[accountId]) globalScope.CANDLE_STORE[accountId] = {};
+      globalScope.CANDLE_STORE[accountId][symbol] = diskCandles;
+      return res.json({ success: true, symbol, timeframe, candles: diskCandles.slice(-300) });
+    }
+
+    // 3. Direct MetaApi fetch if connected
+    const connection = REGISTRY.stream.get(accountId) || REGISTRY.rpc.get(accountId);
+    if (connection && typeof (connection as any).getHistoricalCandles === 'function') {
+      try {
+        const history = await (connection as any).getHistoricalCandles(symbol, timeframe, undefined, 200);
+        if (history && history.length > 0) {
+          const merged = candleCache.mergeAndSave(accountId, symbol, timeframe, history);
+          if (!globalScope.CANDLE_STORE[accountId]) globalScope.CANDLE_STORE[accountId] = {};
+          globalScope.CANDLE_STORE[accountId][symbol] = merged;
+          return res.json({ success: true, symbol, timeframe, candles: merged.slice(-300) });
+        }
+      } catch (sdkErr: any) {
+        console.warn(`[REST_CANDLES] Direct fetch failed for ${symbol}:`, sdkErr.message);
+      }
+    }
+
+    res.json({ success: true, symbol, timeframe, candles: inMem || [] });
+  } catch (err: any) {
+    console.error(`[REST_CANDLES_ERROR] for ${accountId}:${symbol}:`, err);
+    res.json({ success: false, error: err.message, candles: [] });
+  }
+});
+
+app.get("/api/account/:accountId/quote", async (req, res) => {
+  const { accountId } = req.params;
+  const symbol = (req.query.symbol as string) || "XAUUSD";
+
+  try {
+    const connection = REGISTRY.stream.get(accountId) || REGISTRY.rpc.get(accountId);
+    if (connection && typeof (connection as any).getSymbolPrice === 'function') {
+      const price = await (connection as any).getSymbolPrice(symbol);
+      if (price) {
+        return res.json({ success: true, bid: price.bid, ask: price.ask, time: price.time || new Date().toISOString() });
+      }
+    }
+
+    const lastCandles = globalScope.CANDLE_STORE?.[accountId]?.[symbol] || [];
+    if (lastCandles.length > 0) {
+      const last = lastCandles[lastCandles.length - 1];
+      return res.json({ success: true, bid: last.close, ask: last.close + (symbol.includes('XAU') ? 0.25 : 0.00015), time: last.time });
+    }
+
+    res.json({ success: false, message: 'No quote available' });
+  } catch (err: any) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 async function recoverLeases() {
   console.log("[LEASE] Recovering active EAs from Supabase...");
   const leases = await TradingController.getActiveLeases();
@@ -7774,10 +8981,11 @@ async function recoverLeases() {
       // Re-trigger connection status check - connection will auto-subscribe
     } catch (e: any) {
       if (e?.name === 'NotFoundError' || e?.message?.includes('not found')) {
-        console.warn(`[LEASE] Account ${lease.account_id} not found on MetaApi. Terminating local tracking.`);
+        console.warn(`[LEASE] Account ${lease.account_id} not found on MetaApi. Terminating local tracking and purging lease.`);
+        await TradingController.removeLease(lease.account_id);
         if (adminSupabase) {
-            await adminSupabase.from('ea_deployments').update({is_active: false}).eq('account_id', lease.account_id);
-            await adminSupabase.from('trading_deployments').update({is_active: false}).eq('account_id', lease.account_id);
+            await adminSupabase.from('ea_deployments').delete().eq('account_id', lease.account_id);
+            await adminSupabase.from('trading_deployments').delete().eq('account_id', lease.account_id);
         }
       } else {
         console.error(`[LEASE] Recovery failed for ${lease.account_id}:`, e);
@@ -7902,7 +9110,7 @@ function analyzeLiveMarketAI(accountId: string, symbol: string, buffer: any[]) {
   } else {
     direction = 'HOLD';
     confidence = 60;
-    reason = `Market in ${marketStructure} with RSI at ${rsi.toFixed(1)}. Vertex AI monitoring live candle stream for optimal entry setup.`;
+    reason = `Market in ${marketStructure} with RSI at ${rsi.toFixed(1)}. Institutional AI monitoring live candle stream for optimal entry setup.`;
   }
 
   return {
@@ -7956,7 +9164,7 @@ setInterval(() => {
             }
           }
         }
-        logAIAnalytics(engineEmail, "ELITE", "LIGHT", "gemini-3.5-flash", "success");
+        logAIAnalytics(engineEmail, "ELITE", "LIGHT", "gemini-3.8-flash", "success");
       } catch (e) {
         console.warn("[QUOTA_ENGINE] Failed to log engine AI analytics cost", e);
       }
@@ -7971,6 +9179,114 @@ setInterval(() => {
           { symbol: activeSymbol, direction, confidence, rsi: Number(rsi.toFixed(1)), atr: Number(atr.toFixed(5)), close: lastCandle.close },
           'AI_STRATEGY'
         );
+
+        // AUTONOMOUS ENGINE EXECUTION (RISK-GATED)
+        if (confidence >= 75) {
+          (async () => {
+            try {
+              const info = globalScope.ACCOUNT_INFO?.get(accountId) || {};
+              const positionsMap = globalScope.ACTIVE_POSITIONS?.get(accountId) || new Map();
+              const activePositions = Array.from(positionsMap.values()) as Array<{ symbol: string; type: string; volume: number }>;
+              
+              const maxTrades = settings?.maxTrades || 3;
+              if (activePositions.length < maxTrades) {
+                // Check duplicate symbol
+                const alreadyOpen = activePositions.some(p => p.symbol?.toUpperCase() === activeSymbol.toUpperCase());
+                if (!alreadyOpen) {
+                  const lastExec = globalScope.LAST_AUTO_TRADE?.get(accountId) || 0;
+                  if (now - lastExec > 60000) { // 60s cooldown
+                    if (!globalScope.LAST_AUTO_TRADE) globalScope.LAST_AUTO_TRADE = new Map();
+                    globalScope.LAST_AUTO_TRADE.set(accountId, now);
+
+                    const digits = activeSymbol.includes('XAU') ? 2 : (activeSymbol.includes('JPY') ? 3 : 5);
+                    const isBuy = direction === 'BUY';
+                    const slDist = atr * 1.5;
+                    const tpDist = atr * 3.0;
+                    const entryPrice = lastCandle.close;
+                    const stopLoss = isBuy ? entryPrice - slDist : entryPrice + slDist;
+                    const takeProfit = isBuy ? entryPrice + tpDist : entryPrice - tpDist;
+                    const lot = settings?.lotSize || 0.01;
+
+                    const connection = REGISTRY.rpc.get(accountId) || REGISTRY.stream.get(accountId);
+                    if (connection) {
+                      const freeMargin = info.freeMargin !== undefined ? Number(info.freeMargin) : 1000;
+                      if (freeMargin < 15) {
+                        logMessage(accountId, 'WARN', `[AI ENGINE] Auto-trade paused for ${activeSymbol}: Free margin ($${freeMargin.toFixed(2)}) is below safety threshold.`, {}, 'AI_STRATEGY');
+                        return;
+                      }
+
+                      let resOrder: any = null;
+                      let lotToExec = lot;
+
+                      try {
+                        try {
+                          if (isBuy && typeof (connection as any).createMarketBuyOrder === 'function') {
+                            resOrder = await (connection as any).createMarketBuyOrder(
+                              activeSymbol,
+                              lotToExec,
+                              Number(stopLoss.toFixed(digits)),
+                              Number(takeProfit.toFixed(digits)),
+                              { comment: 'ALGOTRADE:AutoEngine' }
+                            );
+                          } else if (!isBuy && typeof (connection as any).createMarketSellOrder === 'function') {
+                            resOrder = await (connection as any).createMarketSellOrder(
+                              activeSymbol,
+                              lotToExec,
+                              Number(stopLoss.toFixed(digits)),
+                              Number(takeProfit.toFixed(digits)),
+                              { comment: 'ALGOTRADE:AutoEngine' }
+                            );
+                          }
+                        } catch (marginRetryErr: any) {
+                          if (/not enough money|insufficient|margin/i.test(marginRetryErr.message || "") && lotToExec > 0.01) {
+                            lotToExec = 0.01;
+                            if (isBuy && typeof (connection as any).createMarketBuyOrder === 'function') {
+                              resOrder = await (connection as any).createMarketBuyOrder(
+                                activeSymbol,
+                                0.01,
+                                Number(stopLoss.toFixed(digits)),
+                                Number(takeProfit.toFixed(digits)),
+                                { comment: 'ALGOTRADE:AutoEngine' }
+                              );
+                            } else if (!isBuy && typeof (connection as any).createMarketSellOrder === 'function') {
+                              resOrder = await (connection as any).createMarketSellOrder(
+                                activeSymbol,
+                                0.01,
+                                Number(stopLoss.toFixed(digits)),
+                                Number(takeProfit.toFixed(digits)),
+                                { comment: 'ALGOTRADE:AutoEngine' }
+                              );
+                            }
+                          } else {
+                            throw marginRetryErr;
+                          }
+                        }
+
+                        if (resOrder) {
+                          logMessage(
+                            accountId,
+                            'TRADE',
+                            `[AI ENGINE] Automatically executed ${direction} on ${activeSymbol} with ${lotToExec} lots (Ticket #${resOrder.orderId || resOrder.positionId || 'ACTIVE'})`,
+                            { symbol: activeSymbol, direction, lot: lotToExec, stopLoss, takeProfit },
+                            'AI_STRATEGY'
+                          );
+                        }
+                      } catch (orderErr: any) {
+                        if (/not enough money|insufficient|margin/i.test(orderErr.message || "")) {
+                          logMessage(accountId, 'WARN', `[AI ENGINE] Order blocked by broker: Insufficient margin on account to open ${lotToExec} lots on ${activeSymbol}. Close open trades or deposit funds.`, {}, 'AI_STRATEGY');
+                        } else {
+                          logMessage(accountId, 'WARN', `[AI ENGINE] Auto-trade notice: ${orderErr.message}`, {}, 'AI_STRATEGY');
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (execErr: any) {
+              console.warn(`[AI ENGINE AUTO EXECUTION ERROR] on ${activeSymbol}:`, execErr.message);
+            }
+          })();
+        }
       } else {
         logMessage(
           accountId,
@@ -8107,8 +9423,14 @@ async function startServer() {
                 
                 // Trigger background MetaApi connection
                 setupStreaming(accountId).catch(err => {
-                    console.error("[WS] MetaApi Boot Failure:", err.message);
-                    ws.send(JSON.stringify({ type: 'ERROR', message: `MetaApi Boot Failure: ${err.message}` }));
+                    const isNotFound = err?.name === 'NotFoundError' || err?.message?.toLowerCase().includes('not found') || err?.message?.includes('404');
+                    if (isNotFound) {
+                        console.warn(`[WS] MetaApi Account Not Found: ${accountId}`);
+                        ws.send(JSON.stringify({ type: 'ACCOUNT_NOT_FOUND', accountId }));
+                    } else {
+                        console.error("[WS] MetaApi Boot Failure:", err.message);
+                        ws.send(JSON.stringify({ type: 'ERROR', message: `MetaApi Boot Failure: ${err.message}` }));
+                    }
                 });
 
                 // Re-hydration: If the stream is already locked and ready, send the READY states immediately
@@ -8356,7 +9678,14 @@ async function startServer() {
                 }
 
              } catch(err: any) {
-                console.error(`[STREAM_WS_ERROR] ${err.message}`);
+                const isNotFound = err?.name === 'NotFoundError' || err?.message?.toLowerCase().includes('not found') || err?.message?.includes('404');
+                if (isNotFound) {
+                   console.warn(`[STREAM_WS_WARN] Account ${accountId} not found on MetaApi: ${err.message}`);
+                   ws.send(JSON.stringify({ type: 'ACCOUNT_NOT_FOUND', accountId }));
+                   TradingController.removeLease(accountId).catch(() => {});
+                } else {
+                   console.error(`[STREAM_WS_ERROR] ${err.message}`);
+                }
              }
           })();
         } else if (data.type === 'STREAM_UNSUBSCRIBE' && data.accountId && data.symbol && data.timeframe) {

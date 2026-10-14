@@ -24,10 +24,12 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { TradingAccount } from '../types';
-const CandlestickChart = lazy(() => import('./CandlestickChart'));
+import CandlestickChart from './CandlestickChart';
 import { connectionManager, TradingPhase } from '../src/lib/ConnectionManager';
 import { safeFetch } from '../src/lib/utils';
 import { useStore } from '../src/store';
+import { scanChartStructure, scanChartWithAI, candleCache, tokenBudget, calculateAccountLotSize } from '../src/lib/chartScanner';
+import { MarketAnalysisEngine } from '../src/lib/MarketAnalysisEngine';
 
 interface MarketDataProps {
   accounts: TradingAccount[];
@@ -131,57 +133,8 @@ const MarketData: React.FC<MarketDataProps> = ({
   const marketAnalysis = useStore(state => state.marketAnalysis);
   const activeSetup = useStore(state => state.activeSetup);
   const [showAnalysis, setShowAnalysis] = useState(true);
-  const [showNotification, setShowNotification] = useState(false);
   const [isExecutingManual, setIsExecutingManual] = useState(false);
-
-  useEffect(() => {
-    if (activeSetup && activeSetup.isPendingConfirm) {
-      setShowNotification(true);
-    } else {
-      setShowNotification(false);
-    }
-  }, [activeSetup?.isPendingConfirm, activeSetup?.setupTimestamp, activeSetup?.entry]);
-
-  const confirmAndExecutePending = async () => {
-    if (!activeSetup || !selectedAccountId || !token) return;
-    setIsExecutingManual(true);
-    try {
-      const isBuy = activeSetup.direction === 'BUY';
-      const endpoint = isBuy ? '/api/trade/buy' : '/api/trade/sell';
-      
-      const payload = {
-        accountId: selectedAccountId,
-        symbol: activeSetup.symbol,
-        lotSize: Number(lotSizeInput) || lotSize || 0.1,
-        stopLoss: Number(activeSetup.stopLoss.toFixed(5)),
-        takeProfit: Number(activeSetup.takeProfit.toFixed(5)),
-        comment: `AI: ${activeSetup.strategyName}`
-      };
-      
-      // Update store to clear the confirmation requirement
-      useStore.getState().setActiveSetup({
-        ...activeSetup,
-        isPendingConfirm: false
-      });
-      setShowNotification(false);
-      
-      addLog(`[MANUAL SIGNAL CONFIRMED] Dispatching secure payload for ${activeSetup.symbol} via ${activeSetup.strategyName}`);
-      
-      await safeFetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(payload)
-      });
-      
-    } catch (err: any) {
-      console.error("Manual confirm failed", err);
-    } finally {
-      setIsExecutingManual(false);
-    }
-  };
+  const [isScanning, setIsScanning] = useState(false);
 
   const [lotSizeInput, setLotSizeInput] = useState<string>(String(lotSize));
 
@@ -191,6 +144,197 @@ const MarketData: React.FC<MarketDataProps> = ({
   
   const systemStatus = connectionStatus;
   const selectedAccount = useMemo(() => accounts.find(a => a.id === selectedAccountId), [accounts, selectedAccountId]);
+
+  // Real Vertex AI Market Structure & Signal Scan Trigger
+  const lastManualScanTimeRef = useRef(0);
+  const triggerVertexAIScan = async () => {
+    const now = Date.now();
+    if (now - lastManualScanTimeRef.current < 15000) {
+      addLog(`[AI SCANNER] Rate pacing active: Please wait ${Math.ceil((15000 - (now - lastManualScanTimeRef.current)) / 1000)}s before next scan.`);
+      return;
+    }
+    if (!candles || candles.length < 5 || isScanning) return;
+    lastManualScanTimeRef.current = now;
+    setIsScanning(true);
+    addLog(`[VERTEX AI] Scanning live ${symbol} (${timeframe}) chart structure, patterns & news catalysts...`);
+
+    const accountContext = {
+      equity: selectedAccount?.equity || selectedAccount?.balance || 1000,
+      balance: selectedAccount?.balance || 1000,
+      currency: selectedAccount?.currency || 'USD',
+      preferredLotSize: Number(lotSizeInput) || lotSize,
+      maxTrades: strategySettings?.maxTrades || 1
+    };
+
+    const newsContext = {
+      sentiment: useStore.getState().newsImpact?.bias || 'NEUTRAL',
+      score: useStore.getState().newsImpact?.score || 50,
+      headlines: useStore.getState().newsImpact?.title ? [useStore.getState().newsImpact.title] : []
+    };
+
+    try {
+      const scannedSetup = await scanChartWithAI(candles, symbol, timeframe, accountContext, newsContext, token);
+      if (scannedSetup) {
+        useStore.getState().setActiveSetup({
+          symbol: scannedSetup.symbol,
+          strategyName: scannedSetup.strategyName,
+          direction: scannedSetup.direction,
+          entry: scannedSetup.entry,
+          stopLoss: scannedSetup.stopLoss,
+          takeProfit: scannedSetup.takeProfit,
+          confidence: scannedSetup.confidence,
+          sessionName: scannedSetup.activeSession,
+          pdh: scannedSetup.pdh,
+          pdl: scannedSetup.pdl,
+          prev4hHigh: scannedSetup.prev4hHigh,
+          prev4hLow: scannedSetup.prev4hLow,
+          fibLevels: scannedSetup.fibLevels,
+          goldenPocket: scannedSetup.goldenPocket,
+          targetLiquidity: scannedSetup.targetLiquidity,
+          targetLiquidityType: scannedSetup.targetLiquidityType,
+          detectedPatterns: scannedSetup.detectedPatterns,
+          primaryPattern: scannedSetup.primaryPattern,
+          newsAlignment: scannedSetup.newsAlignment,
+          riskRewardRatio: scannedSetup.riskRewardRatio,
+          recommendedLotSize: scannedSetup.recommendedLotSize,
+          lotSize: scannedSetup.recommendedLotSize || Number(lotSizeInput) || lotSize || 0.01,
+          isPendingConfirm: false
+        });
+        addLog(`[VERTEX AI] Setup generated: ${scannedSetup.direction} via ${scannedSetup.strategyName} (${scannedSetup.confidence}% Conviction). Chart markings updated in real-time.`);
+
+        // If Engine is RUNNING, auto-execute high-confidence setup following rules and maxTrades
+        if (isAlgoRunning && scannedSetup.direction !== 'WAIT' && scannedSetup.confidence >= 75) {
+          const currentPos = globalPositions.filter((p: any) => p.symbol === symbol);
+          const maxTrades = strategySettings?.maxTrades || 1;
+          if (currentPos.length < maxTrades && selectedAccountId && token) {
+            const endpoint = scannedSetup.direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
+            safeFetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({
+                accountId: selectedAccountId,
+                symbol: scannedSetup.symbol,
+                lotSize: scannedSetup.recommendedLotSize || Number(lotSizeInput) || lotSize || 0.01,
+                stopLoss: Number(Number(scannedSetup.stopLoss).toFixed(5)),
+                takeProfit: Number(Number(scannedSetup.takeProfit).toFixed(5)),
+                comment: `AI: ${scannedSetup.strategyName}`
+              })
+            }).then(res => {
+              if (res?.success) {
+                addLog(`[ENGINE AUTO-EXECUTE] ${scannedSetup.direction} order placed on ${symbol} via ${scannedSetup.strategyName} (Confidence: ${scannedSetup.confidence}%).`);
+              }
+            }).catch(err => console.warn('[ENGINE AUTO-EXECUTE ERROR]', err));
+          }
+        }
+      }
+    } catch (err: any) {
+      addLog(`[VERTEX AI] Scan error: ${err.message}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  // CONTINUOUS ENGINE AUTOMATION (Auto-Scans & Auto-Executes when Start Engine is Active)
+  const isEngineExecutingRef = useRef(false);
+  const lastEngineScanTimeRef = useRef(0);
+  const lastEngineTradeTimeRef = useRef(0);
+
+  useEffect(() => {
+    if (!isAlgoRunning || !selectedAccountId || !symbol || !candles || candles.length < 5) return;
+
+    const runEngineCycle = async () => {
+      const now = Date.now();
+      // Pacing: ensure minimum 25s between automatic AI analysis runs to avoid quota exhaustion
+      if (now - lastEngineScanTimeRef.current < 25000 || isEngineExecutingRef.current) return;
+      isEngineExecutingRef.current = true;
+      lastEngineScanTimeRef.current = now;
+
+      try {
+        const accountContext = {
+          equity: selectedAccount?.equity || selectedAccount?.balance || 1000,
+          balance: selectedAccount?.balance || 1000,
+          freeMargin: selectedAccount?.freeMargin || 1000,
+          currency: selectedAccount?.currency || 'USD',
+          preferredLotSize: Number(lotSizeInput) || lotSize || 0.01,
+          openPositionsCount: globalPositions.length,
+          maxTradesLimit: strategySettings?.maxTrades || 1
+        };
+
+        const newsContext = {
+          sentiment: useStore.getState().newsImpact?.bias || 'NEUTRAL',
+          score: useStore.getState().newsImpact?.score || 50,
+          headlines: useStore.getState().newsImpact?.title ? [useStore.getState().newsImpact.title] : []
+        };
+
+        // 1. Locally compute the structured snapshot
+        MarketAnalysisEngine.processRawMarketData(
+          symbol,
+          candles,
+          accountContext,
+          newsContext,
+          symbol.includes('XAU') ? 2 : 5
+        );
+
+        // 2. Query AI Model-Agnostic Engine
+        const scannedSetup = await scanChartWithAI(candles, symbol, timeframe, accountContext, newsContext, token);
+        if (scannedSetup && scannedSetup.direction !== 'WAIT' && scannedSetup.confidence >= 75) {
+          useStore.getState().setActiveSetup({
+            ...scannedSetup,
+            isPendingConfirm: false
+          });
+
+          // Check position limits and trade cooldown (60s)
+          const currentPos = globalPositions.filter((p: any) => p.symbol === symbol);
+          const maxTrades = strategySettings?.maxTrades || 1;
+          const hasTradeCooldown = Date.now() - lastEngineTradeTimeRef.current < 60000;
+
+          if (currentPos.length < maxTrades && !hasTradeCooldown && selectedAccountId && token) {
+            lastEngineTradeTimeRef.current = Date.now();
+            const endpoint = scannedSetup.direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
+            const res = await safeFetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({
+                accountId: selectedAccountId,
+                symbol: scannedSetup.symbol,
+                lotSize: scannedSetup.recommendedLotSize || Number(lotSizeInput) || lotSize || 0.01,
+                stopLoss: Number(Number(scannedSetup.stopLoss).toFixed(5)),
+                takeProfit: Number(Number(scannedSetup.takeProfit).toFixed(5)),
+                comment: `AI:${scannedSetup.strategyName.slice(0, 20)}`
+              })
+            });
+
+            if (res?.success) {
+              addLog(`[ENGINE AUTONOMOUS EXECUTE] ${scannedSetup.direction} order placed on ${symbol} via ${scannedSetup.strategyName} (Confidence: ${scannedSetup.confidence}%).`);
+            } else if (res?.error) {
+              addLog(`[ENGINE EXECUTE NOTICE] ${res.error}`);
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn("[ENGINE_CYCLE_ERROR]", err);
+      } finally {
+        isEngineExecutingRef.current = false;
+      }
+    };
+
+    // Run engine cycle with initial 3s delay
+    const initialTimer = setTimeout(runEngineCycle, 3000);
+
+    // Auto-poll interval while Engine is running (every 30s)
+    const engineInterval = setInterval(runEngineCycle, 30000);
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(engineInterval);
+    };
+  }, [isAlgoRunning, selectedAccountId, symbol, timeframe, selectedAccount, lotSize, lotSizeInput, strategySettings?.maxTrades, globalPositions.length, token]);
+
 
   useEffect(() => {
     if (!selectedAccountId) return;
@@ -245,6 +389,31 @@ const MarketData: React.FC<MarketDataProps> = ({
 
   const activeStreamRef = useRef<string>('');
 
+  const sanitizeCandles = (arr: any[]): any[] => {
+    if (!Array.isArray(arr) || arr.length === 0) return [];
+    const valid = arr.filter(c => c && c.time && typeof c.close === 'number' && !isNaN(c.close) && c.close > 0)
+      .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    if (valid.length <= 1) return valid;
+
+    let startIndex = 0;
+    for (let i = valid.length - 1; i >= 1; i--) {
+      const cur = valid[i];
+      const prev = valid[i - 1];
+      const curTime = new Date(cur.time).getTime();
+      const prevTime = new Date(prev.time).getTime();
+      const gapHours = (curTime - prevTime) / (1000 * 3600);
+      const priceChangeRatio = Math.abs(cur.close - prev.close) / prev.close;
+
+      // Strip disconnected historical epochs (gap > 96 hours or price jump > 2.5%)
+      if (gapHours > 96 || priceChangeRatio > 0.025) {
+        startIndex = i;
+        break;
+      }
+    }
+
+    return valid.slice(startIndex);
+  };
+
   useEffect(() => {
     let loadedFromCache = false;
     if (currentUserEmail && selectedAccountId && symbol && timeframe) {
@@ -254,9 +423,12 @@ const MarketData: React.FC<MarketDataProps> = ({
         if (cached) {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setCandles(parsed);
-            loadedFromCache = true;
-            console.log(`[CANDLES_CACHE] Instantly loaded ${parsed.length} cached candles`);
+            const clean = sanitizeCandles(parsed);
+            if (clean.length > 0) {
+              setCandles(clean);
+              loadedFromCache = true;
+              console.log(`[CANDLES_CACHE] Instantly loaded ${clean.length} sanitized cached candles`);
+            }
           }
         }
       } catch (e) {
@@ -271,9 +443,50 @@ const MarketData: React.FC<MarketDataProps> = ({
     setDeals([]);
   }, [selectedAccountId, symbol, timeframe, currentUserEmail]);
 
+  // LIVE STREAMING, REST HYDRATION & TICK FALLBACK ENGINE
   useEffect(() => {
     if (!selectedAccountId || !symbol || !timeframe) return;
-    
+
+    // 1. Instant REST Hydration from server/cache
+    safeFetch(`/api/account/${encodeURIComponent(selectedAccountId)}/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    }).then(res => {
+      if (res?.success && Array.isArray(res.candles) && res.candles.length > 0) {
+        const clean = sanitizeCandles(res.candles);
+        if (clean.length > 0) {
+          setCandles(clean);
+          if (currentUserEmail) {
+            localStorage.setItem(`candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`, JSON.stringify(clean));
+          }
+        }
+      }
+    }).catch(e => console.warn("[REST_CANDLES] Hydration warning:", e));
+
+    // 2. Continuous real-time tick polling fallback (every 2.5s) to guarantee chart moves live
+    const quotePollInterval = setInterval(() => {
+      safeFetch(`/api/account/${encodeURIComponent(selectedAccountId)}/quote?symbol=${encodeURIComponent(symbol)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      }).then(res => {
+        if (res?.success && typeof res.bid === 'number' && res.bid > 0) {
+          const bid = Number(res.bid);
+          const ask = Number(res.ask) || (bid + (symbol.includes('XAU') ? 0.25 : 0.00015));
+          setLatestTick({ bid, ask });
+          
+          setCandles(prev => {
+            if (prev.length === 0) return prev;
+            const next = [...prev];
+            const last = { ...next[next.length - 1] };
+            last.close = bid;
+            last.high = Math.max(last.high, bid);
+            last.low = Math.min(last.low, bid);
+            next[next.length - 1] = last;
+            return sanitizeCandles(next);
+          });
+        }
+      }).catch(() => {});
+    }, 2500);
+
+    // 3. WebSocket Real-Time Stream Subscription
     const phaseCheck = setInterval(() => {
       if (connectionManager.currentPhase === TradingPhase.META_CONNECTED ||
           connectionManager.currentPhase === TradingPhase.BROKER_CONNECTED || 
@@ -295,7 +508,7 @@ const MarketData: React.FC<MarketDataProps> = ({
     
     const unsub = connectionManager.subscribe((data: any) => {
       if (data.type === 'HISTORY_SNAPSHOT' && isSymbolMatch(data.symbol, symbol)) {
-          const validHistory = data.candles.filter((c: any) => c && c.time && c.open !== undefined && c.close !== undefined);
+          const validHistory = sanitizeCandles(data.candles || []);
           if (validHistory.length > 0) {
               setCandles(validHistory);
               if (currentUserEmail && selectedAccountId && symbol && timeframe) {
@@ -325,15 +538,17 @@ const MarketData: React.FC<MarketDataProps> = ({
             if (next.length > 300) next.shift();
           }
 
+          const cleanNext = sanitizeCandles(next);
+
           if (currentUserEmail && selectedAccountId && symbol && timeframe) {
             const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
             try {
-              localStorage.setItem(cacheKey, JSON.stringify(next));
+              localStorage.setItem(cacheKey, JSON.stringify(cleanNext));
             } catch (e) {
               console.warn("Failed to write live candle update to cache", e);
             }
           }
-          return next;
+          return cleanNext;
         });
         
       } else if (data.type === 'price:update' && isSymbolMatch(data.symbol, symbol)) {
@@ -357,24 +572,27 @@ const MarketData: React.FC<MarketDataProps> = ({
            last.low = Math.min(last.low, price);
            next[next.length - 1] = last;
 
+           const cleanNext = sanitizeCandles(next);
+
            if (currentUserEmail && selectedAccountId && symbol && timeframe) {
              const cacheKey = `candles:${currentUserEmail}:${selectedAccountId}:${symbol}:${timeframe}`;
              try {
-               localStorage.setItem(cacheKey, JSON.stringify(next));
+               localStorage.setItem(cacheKey, JSON.stringify(cleanNext));
              } catch (e) {
                console.warn("Failed to write price update cache", e);
              }
            }
-           return next;
+           return cleanNext;
         });
       }
     });
 
     return () => {
       clearInterval(phaseCheck);
+      clearInterval(quotePollInterval);
       unsub();
     };
-  }, [selectedAccountId, symbol, timeframe]);
+  }, [selectedAccountId, symbol, timeframe, token, currentUserEmail]);
 
   const [localSymbol, setLocalSymbol] = useState(symbol);
 
@@ -395,25 +613,25 @@ const MarketData: React.FC<MarketDataProps> = ({
 
   // Handle manual lots adjustment
   const handleVolumeDecrement = () => {
-    const next = Math.max(0.01, Number((lotSize - 0.01).toFixed(2)));
+    const next = Math.max(0.01, Number(((lotSize || 0.01) - 0.01).toFixed(2)));
     setLotSize(next);
   };
 
   const handleVolumeIncrement = () => {
-    const next = Math.min(10.0, Number((lotSize + 0.01).toFixed(2)));
+    const next = Math.min(10.0, Number(((lotSize || 0.01) + 0.01).toFixed(2)));
     setLotSize(next);
   };
 
   // Live prices indicators for buy & sell
   const liveBidPrice = useMemo(() => {
-    if (latestTick?.bid) return latestTick.bid.toFixed(2);
-    if (chartData.length > 0) return chartData[chartData.length - 1].close.toFixed(2);
+    if (latestTick?.bid) return Number(latestTick.bid).toFixed(2);
+    if (chartData.length > 0 && chartData[chartData.length - 1]?.close !== undefined) return Number(chartData[chartData.length - 1].close).toFixed(2);
     return '----.--';
   }, [latestTick, chartData]);
 
   const liveAskPrice = useMemo(() => {
-    if (latestTick?.ask) return latestTick.ask.toFixed(2);
-    if (chartData.length > 0) return (chartData[chartData.length - 1].close + 0.15).toFixed(2); // estimated ask
+    if (latestTick?.ask) return Number(latestTick.ask).toFixed(2);
+    if (chartData.length > 0 && chartData[chartData.length - 1]?.close !== undefined) return Number(chartData[chartData.length - 1].close + 0.15).toFixed(2); // estimated ask
     return '----.--';
   }, [latestTick, chartData]);
 
@@ -537,10 +755,31 @@ const MarketData: React.FC<MarketDataProps> = ({
           )}
         </div>
 
+        {/* Real Vertex AI Market Structure & Strategy Scan Button */}
+        <button
+          type="button"
+          onClick={triggerVertexAIScan}
+          disabled={isScanning || !candles || candles.length === 0}
+          className={`flex items-center gap-1.5 py-2 px-3 sm:px-4 rounded-xl border text-xs font-mono font-black tracking-wider transition-all cursor-pointer active:scale-95 text-center ${
+            isScanning
+              ? 'bg-amber-500/20 border-amber-500/40 text-amber-300 animate-pulse'
+              : 'bg-[#face6f]/10 border-[#face6f]/30 text-[#face6f] hover:bg-[#face6f]/20 shadow-md shadow-[#face6f]/5'
+          }`}
+          title="Scan live chart structure and generate real Vertex AI trade signals"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isScanning ? 'animate-spin text-amber-400' : 'text-[#face6f]'}`} />
+          <span className="truncate text-[10px] sm:text-xs">{isScanning ? 'SCANNING...' : 'SCAN (VERTEX AI)'}</span>
+        </button>
+
         {/* Start Engine / Stop Engine dynamic executor */}
         <button
           type="button"
-          onClick={onToggleAlgo}
+          onClick={async () => {
+            await onToggleAlgo();
+            if (!isAlgoRunning) {
+              triggerVertexAIScan();
+            }
+          }}
           disabled={(connectionStatus !== 'READY' && connectionStatus !== 'CONNECTED' && connectionStatus !== 'SYNCING') || tradeStatus === 'executing'}
           className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 sm:px-4 rounded-xl border text-xs font-mono font-black tracking-wider transition-all cursor-pointer active:scale-95 text-center ${
             isAlgoRunning 
@@ -550,12 +789,21 @@ const MarketData: React.FC<MarketDataProps> = ({
         >
           {isAlgoRunning ? (
             <>
-              <Square className="w-3 h-3 fill-rose-400" />
-              <span className="truncate text-[10px] sm:text-xs">STOP ENGINE</span>
+              {globalPositions.length > 0 ? (
+                <>
+                  <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+                  <span className="truncate text-[10px] sm:text-xs">ENGINE LOCKED ({globalPositions.length} ACTIVE)</span>
+                </>
+              ) : (
+                <>
+                  <Square className="w-3 h-3 fill-rose-400 shrink-0" />
+                  <span className="truncate text-[10px] sm:text-xs">STOP ENGINE</span>
+                </>
+              )}
             </>
           ) : (
             <>
-              <Play className="w-3 h-3 fill-emerald-400 text-emerald-400 ml-0.5" />
+              <Play className="w-3 h-3 fill-emerald-400 text-emerald-400 ml-0.5 shrink-0" />
               <span className="truncate text-[10px] sm:text-xs">START ENGINE</span>
             </>
           )}
@@ -681,61 +929,6 @@ const MarketData: React.FC<MarketDataProps> = ({
             SHOW ANALYSIS: {showAnalysis ? 'ON' : 'OFF'}
           </button>
         </div>
-
-        {/* Dynamic Non-Blocking Manual Trade Confirmation Signal Toast */}
-        {showNotification && activeSetup && activeSetup.isPendingConfirm && (
-          <div className="absolute bottom-16 left-4 sm:bottom-4 sm:left-4 sm:right-auto z-40 w-[calc(100%-2rem)] sm:w-[320px] bg-slate-950/98 border border-[#fbbf24]/55 rounded-2xl p-4 shadow-2xl backdrop-blur-md animate-slide-in pointer-events-auto font-sans border-l-4 border-l-[#fbbf24]">
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="flex h-1.5 w-1.5 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
-                  </span>
-                  <span className="font-mono text-[8px] font-black text-[#fbbf24] uppercase tracking-widest leading-none">AI SIGNAL MATCHED</span>
-                </div>
-                <h4 className="text-[10px] font-black text-white uppercase tracking-wider mt-1 truncate">
-                  {activeSetup.strategyName.replace(/\[RANKED #1\]/gi, '').split('[')[0].trim()}
-                </h4>
-                <p className="text-[9px] text-slate-400 mt-0.5">
-                  {activeSetup.symbol} • Confidence: <span className="font-bold text-slate-100">{activeSetup.confidence}%</span>
-                </p>
-                <div className="flex gap-4 mt-2 font-mono text-[9px] text-slate-400 border-t border-white/5 pt-2">
-                  <div>
-                    <span className="block text-[7px] text-slate-500">DIRECTION</span>
-                    <span className={`font-extrabold ${activeSetup.direction === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>{activeSetup.direction}</span>
-                  </div>
-                  <div>
-                    <span className="block text-[7px] text-slate-500">ENTRY</span>
-                    <span className="font-extrabold text-[#fbbf24]">{activeSetup.entry.toFixed(5)}</span>
-                  </div>
-                  <div>
-                    <span className="block text-[7px] text-slate-500">TP TARGET</span>
-                    <span className="font-semibold text-emerald-400">{activeSetup.takeProfit.toFixed(5)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex gap-2 mt-3 block">
-              <button
-                type="button"
-                onClick={() => setShowNotification(false)}
-                className="w-1/3 py-1 rounded-lg border border-white/5 text-[9px] font-black uppercase text-slate-500 hover:text-slate-300 transition-colors cursor-pointer inline-block text-center mr-1"
-              >
-                Dismiss
-              </button>
-              <button
-                type="button"
-                disabled={isExecutingManual}
-                onClick={confirmAndExecutePending}
-                className="w-[62%] py-1 rounded-lg bg-[#fbbf24] hover:bg-[#face6f] disabled:opacity-50 text-[9px] font-black uppercase text-slate-950 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer inline-block text-center"
-              >
-                {isExecutingManual ? 'Executing...' : 'EXECUTE'}
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Absolute dynamic background asset indicator */}
         <div className="absolute top-4 left-4 pointer-events-none opacity-5 z-0 select-none font-mono">
@@ -869,7 +1062,7 @@ const MarketData: React.FC<MarketDataProps> = ({
                     <div className="space-y-1">
                       <label className="text-[9px] font-mono font-bold text-slate-500 uppercase font-black">AI Lot Size Allocation (Auto)</label>
                       <div className="w-full bg-black/40 border border-white/5 text-xs font-mono text-emerald-400 rounded-xl px-3 py-2 font-black select-none">
-                        {lotSize ? lotSize.toFixed(2) : "Calculating..."} Lots
+                        {lotSize && !isNaN(Number(lotSize)) ? Number(lotSize).toFixed(2) : "Calculating..."} Lots
                       </div>
                     </div>
                     <div className="space-y-1">

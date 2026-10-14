@@ -5,9 +5,9 @@ import {
   MessageSquare, Sliders, ShieldCheck, Play, Save, ChevronRight,
   Brain, Scale, Globe, User, Wallet, History, Sparkles, Check, CheckCircle2,
   X, AlertTriangle, Paperclip, Mic, FileText, ChevronDown, ChevronUp, Layers, BadgePercent, Lock, Terminal,
-  Shield, XCircle, Trash2, Compass
+  Shield, XCircle, Trash2
 } from 'lucide-react';
-import { useStore } from '../src/store';
+import { useStore, calculateDynamicLotSize } from '../src/store';
 import { getSymbolDriverBreakdown } from '../src/utils/symbolDrivers';
 import { assessNewsImpact } from '../src/utils/newsImpactEngine';
 import { runDeterministicStructureEngine, runMultiTimeframeStructureEngine, calculateTechnicalIndicators, getDetailedMarketSession } from '../src/utils/structureEngine';
@@ -243,16 +243,6 @@ export default function ChatradeAI({
   // Collapsible sections inside active/latest AI messages
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
-  // Live agents orchestration state
-  const [agentStates, setAgentStates] = useState({
-    market: 'idle', // 'idle' | 'processing' | 'completed'
-    technical: 'idle',
-    risk: 'idle',
-    news: 'idle',
-    account: 'idle',
-    execution: 'idle'
-  });
-
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
   const userDisplayName = useMemo(() => {
@@ -330,7 +320,7 @@ export default function ChatradeAI({
         behavior: 'smooth'
       });
     }
-  }, [messages, isSendingMessage, agentStates]);
+  }, [messages, isSendingMessage]);
 
   // Synchronize internalSymbol when propSymbol from parent changes
   useEffect(() => {
@@ -392,24 +382,57 @@ export default function ChatradeAI({
   // Auto trade mode state
   const isAutoTrade = useStore(state => state.isAutoTrade);
   const setIsAutoTrade = useStore(state => state.setIsAutoTrade);
+  const engineState = useStore(state => state.engineState);
   const autoTradeConfirmationOpen = useStore(state => state.autoTradeConfirmationOpen);
   const setAutoTradeConfirmationOpen = useStore(state => state.setAutoTradeConfirmationOpen);
-  const autoTradeMode = isAutoTrade || isAlgoTradeRunning;
+  const autoTradeMode = isAutoTrade || isAlgoTradeRunning || engineState === 'RUNNING';
 
   const toggleAutoTradeMode = () => {
     if (!autoTradeMode) {
+      if (globalPositions.length > 0) {
+        addLog("Cannot start engine while active trades are open. Please close trades or wait for TP/SL.");
+        return;
+      }
       setAutoTradeConfirmationOpen(true);
     } else {
+      if (globalPositions.length > 0) {
+        addLog(`ENGINE LOCKED: Active trade open (${globalPositions.length} position). Engine will remain RUNNING until trade hits TP/SL or is closed.`);
+        addMessage({
+          sender: 'system',
+          text: `🔒 **[ENGINE LOCKED IN RUNNING MODE]** You currently have **${globalPositions.length} active position(s)** open on your account.\n\n* **Status:** Engine is locked in **RUNNING** state.\n* **Condition:** The engine cannot be stopped while trades are active. It will automatically unlock once positions hit Take Profit (TP), Stop Loss (SL), or are manually closed.`
+        });
+        return;
+      }
       setIsAutoTrade(false);
+      useStore.getState().setEngineState('STOPPED');
       localStorage.setItem('auto_trade_mode', 'false');
+      if (props.toggleAlgoTrade) {
+        props.toggleAlgoTrade();
+      } else {
+        safeFetch(`/api/account/${encodeURIComponent(selectedAccountId)}/algo/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ enabled: false })
+        }).catch(err => console.warn("Algo toggle error:", err));
+      }
       addLog(`[AUTONOMOUS TRADE MODE] Set auto trade mode to: false`);
     }
   };
 
   const confirmEnableAutoTrade = () => {
     setIsAutoTrade(true);
+    useStore.getState().setEngineState('RUNNING');
     localStorage.setItem('auto_trade_mode', 'true');
-    addLog(`[AUTONOMOUS TRADE MODE] Set auto trade mode to: true`);
+    if (props.toggleAlgoTrade) {
+      props.toggleAlgoTrade();
+    } else {
+      safeFetch(`/api/account/${encodeURIComponent(selectedAccountId)}/algo/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ enabled: true })
+      }).catch(err => console.warn("Algo toggle error:", err));
+    }
+    addLog(`[AUTONOMOUS TRADE MODE] Set auto trade mode to: true (Engine RUNNING)`);
     setAutoTradeConfirmationOpen(false);
   };
 
@@ -1167,7 +1190,7 @@ export default function ChatradeAI({
         sentimentScore: gNewsScore,
         sentimentBias: gNewsSentiment,
         impactScore: newsImpactScore,
-        explanation: newsData?.explanation || 'Vertex AI Search news sentiment grounded.',
+        explanation: newsData?.explanation || 'Real-time news sentiment grounded.',
         newsImpactAssessment
       },
       account: {
@@ -1231,45 +1254,13 @@ export default function ChatradeAI({
     const isMtfAligned = (isWeeklyBullish === isBuy) && (isDailyBullish === isBuy) && (is4HBullish === isBuy);
 
     if (hasStrongVolume && (isEngulfing || isPinbar || isMtfAligned)) {
-      momentumMultiplier = 2.0; // SCALE UP 2x (1.5x to 3x)
-      scalingReason = ` [Momentum Sizing Scaled 2x: Vol=${(vol_0/averageVolume).toFixed(1)}x, Patterns=${isEngulfing ? "Engulfing" : ""}${isPinbar ? "Pinbar" : ""}, MTF Aligned]`;
+      momentumMultiplier = 1.5;
+      scalingReason = ` [Momentum Scaled: Vol=${(vol_0/averageVolume).toFixed(1)}x, MTF Aligned]`;
     }
 
-    if (rawBalance <= 150) {
-      lotSizeChoice = 0.01; // Ultra safety for micro-caps (e.g. $26)
-    } else if (rawBalance <= 500) {
-      lotSizeChoice = Math.min(lotSizeChoice, 0.02);
-    } else {
-      // Risk percentage from settings
-      const riskPercentage = useStore.getState().strategySettings?.riskConfig?.riskPercentage || 1.5;
-      
-      // Adapt risk based on live drawdown condition
-      let adaptedRiskPercentage = riskPercentage;
-      if (liveDrawdownPct >= 8.0) {
-        adaptedRiskPercentage = riskPercentage * 0.25; // Circuit breaker: slash risk to 25% if drawdown >= 8%
-      } else if (liveDrawdownPct > 5.0) {
-        adaptedRiskPercentage = riskPercentage * 0.5; // Cut risk in half if drawdown is high
-      }
-      
-      // Streak-based lot size scaling
-      let streakFactor = 1.0;
-      if (consecutiveLosses >= 3) {
-        streakFactor = 0.5;
-      }
-
-      const riskAmount = rawBalance * (adaptedRiskPercentage / 100);
-      const pipValuePerLot = isGold ? 100 : 10;
-      const maxSafeLot = riskAmount / (slPips * pipValuePerLot);
-      
-      const marginFactor = liveFreeMargin < rawBalance * 0.3 ? 0.5 : 1.0;
-      
-      // Dynamic lot size heavily based on account balance, risk limit, and strategy confidence
-      const confidenceMultiplier = (selected.confidence || 80) / 100;
-      const proposedLot = maxSafeLot * marginFactor * streakFactor * momentumMultiplier * confidenceMultiplier;
-      
-      // Dynamic calculation overrides hardcoded values
-      lotSizeChoice = Math.max(0.01, Math.round(proposedLot * 100) / 100);
-    }
+    const maxTradesInput = useStore.getState().strategySettings?.maxTrades || 3;
+    const dynamicBaseLot = calculateDynamicLotSize(rawBalance, liveFreeMargin, maxTradesInput);
+    lotSizeChoice = Math.max(0.01, Math.min(10.0, Math.round(dynamicBaseLot * momentumMultiplier * 100) / 100));
 
     // --- 10. TRADE QUALITY SCORE & RANKING ---
     const trendScore = (isDailyBullish === isBuy ? 10 : 3) + (isWeeklyBullish === isBuy ? 10 : 3);
@@ -1310,7 +1301,7 @@ export default function ChatradeAI({
     
     const riskMsg = `Risk Agent: Account balance of $${rawBalance.toFixed(2)} detected. Free Margin is $${liveFreeMargin.toFixed(2)}. Selected lot size: ${lotSizeChoice.toFixed(2)} Standard Lots. SL: ${stopLoss.toFixed(5)}, TP: ${takeProfit.toFixed(5)}.`;
     
-    const consensusMsg = `Consensus Orchestrator: "${selected.name}" triggers BUY signal with Master Trade Quality Score of ${masterTradeQualityScore} (${qualityRank} Class).${scalingReason} Execution Agent: Trade setup is locked. SL is ${stopLoss.toFixed(5)}, TP is ${takeProfit.toFixed(5)}. Historic Strategy Win Rate is ${specificStratPerformance.winRate}%. Setup is APPROVED.`;
+    const consensusMsg = `Consensus Orchestrator: "${selected.name}" triggers ${selected.direction} signal with Master Trade Quality Score of ${masterTradeQualityScore} (${qualityRank} Class).${scalingReason} Execution Agent: Trade setup is locked. SL is ${stopLoss.toFixed(5)}, TP is ${takeProfit.toFixed(5)}. Historic Strategy Win Rate is ${specificStratPerformance.winRate}%. Setup is APPROVED.`;
 
     const symbolDriverInfo = getSymbolDriverBreakdown(symbol);
     const predictedDirection = selected.direction;
@@ -1463,14 +1454,14 @@ export default function ChatradeAI({
           })
           .then(res => res.json())
           .then(data => {
-            console.log("[VERTEX AI AUTO-SCALE] Partial close executed successfully:", data);
+            console.log("[AI AUTO-SCALE] Partial close executed successfully:", data);
           })
-          .catch(err => console.error("[VERTEX AI AUTO-SCALE] Partial close failed", err));
+          .catch(err => console.error("[AI AUTO-SCALE] Partial close failed", err));
         }
 
         addMessage({
           sender: 'system',
-          text: `⚡ **[VERTEX AI TRAILING ENGINE: AUTO-POSITION SCALING]** Position **${pos.symbol}** has attained a brilliant **+1.5%** account growth target ($${pos.profit.toFixed(2)} / ${pctProfitOfBalance.toFixed(2)}%).\n\n* **Engine Action:** Auto-Position Scaling activated.\n* **Volume Reduction:** 50% closed (${halfVolume} lots scaled out) to secure profits.\n* **Stop Protection:** Moved remaining 50% position stop loss to Break-even (**${pos.openPrice}**).\n* **Vertex AI Status:** Secure Capital Lock Active.`
+          text: `⚡ **[AI TRAILING ENGINE: AUTO-POSITION SCALING]** Position **${pos.symbol}** has attained a brilliant **+1.5%** account growth target ($${pos.profit.toFixed(2)} / ${pctProfitOfBalance.toFixed(2)}%).\n\n* **Engine Action:** Auto-Position Scaling activated.\n* **Volume Reduction:** 50% closed (${halfVolume} lots scaled out) to secure profits.\n* **Stop Protection:** Moved remaining 50% position stop loss to Break-even (**${pos.openPrice}**).\n* **AI Status:** Secure Capital Lock Active.`
         });
       }
 
@@ -1514,17 +1505,25 @@ export default function ChatradeAI({
       }
 
       if (newSL) {
+        const sym = (pos.symbol || '').toUpperCase();
+        const minBuffer = sym.includes('JPY') ? 0.05 : (sym.includes('XAU') || sym.includes('GOLD') ? 1.0 : (currentPrice > 1000 ? 10.0 : 0.0008));
+        if (isBuy) {
+          newSL = Math.min(newSL, currentPrice - minBuffer);
+        } else {
+          newSL = Math.max(newSL, currentPrice + minBuffer);
+        }
+
         const getSymbolDigits = (symbol: string, price: number) => {
-          const sym = symbol.toUpperCase();
-          if (sym.includes('JPY')) return 3;
-          if (sym.includes('XAU') || sym.includes('GOLD')) return 2;
-          if (sym.includes('XAG') || sym.includes('SILVER')) return 3;
-          if (sym.includes('BTC') || sym.includes('BTCUSD')) return 2;
-          if (sym.includes('ETH')) return 2;
-          if (sym.includes('US30') || sym.includes('WS30')) return 2;
-          if (sym.includes('NAS100') || sym.includes('USTEC') || sym.includes('NDX')) return 2;
-          if (sym.includes('SPX') || sym.includes('US500')) return 2;
-          if (sym.includes('DAX') || sym.includes('DE30') || sym.includes('GER30')) return 2;
+          const s = symbol.toUpperCase();
+          if (s.includes('JPY')) return 3;
+          if (s.includes('XAU') || s.includes('GOLD')) return 2;
+          if (s.includes('XAG') || s.includes('SILVER')) return 3;
+          if (s.includes('BTC') || s.includes('BTCUSD')) return 2;
+          if (s.includes('ETH')) return 2;
+          if (s.includes('US30') || s.includes('WS30')) return 2;
+          if (s.includes('NAS100') || s.includes('USTEC') || s.includes('NDX')) return 2;
+          if (s.includes('SPX') || s.includes('US500')) return 2;
+          if (s.includes('DAX') || s.includes('DE30') || s.includes('GER30')) return 2;
           if (price > 1000) return 2;
           if (price > 50) return 3;
           return 5;
@@ -1534,11 +1533,13 @@ export default function ChatradeAI({
         const formattedNewSL = Number(newSL.toFixed(digs));
         const formattedTP = pos.takeProfit ? Number(pos.takeProfit.toFixed(digs)) : undefined;
 
-        fetch('/api/trade/modify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ accountId: selectedAccountId, positionId: pos.id, stopLoss: formattedNewSL, takeProfit: formattedTP })
-        }).catch(err => console.error("Trailing stop update failed", err));
+        if (formattedNewSL > 0) {
+          fetch('/api/trade/modify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ accountId: selectedAccountId, positionId: pos.id, stopLoss: formattedNewSL, takeProfit: formattedTP })
+          }).catch(err => console.error("Trailing stop update failed", err));
+        }
       }
 
       if (updated) {
@@ -1733,7 +1734,7 @@ export default function ChatradeAI({
 
                 const originalStrategyName = pos.comment ? pos.comment.replace('CHATRADE: ', '').replace('CB:', '') : 'Confluence Strategy';
 
-                addLog(`[RECOVERY AGENT] Setup violated stop distance by ${(drawdownRatio * 100).toFixed(1)}%. Deploying high-precision Backup Trade! [Lots: ${backupLotSize.toFixed(2)}, Dir: ${backupDirection}]`);
+                addLog(`[RECOVERY AGENT] Setup violated stop distance by ${((drawdownRatio || 0) * 100).toFixed(1)}%. Deploying high-precision Backup Trade! [Lots: ${(backupLotSize || 0).toFixed(2)}, Dir: ${backupDirection}]`);
 
                 await safeFetch(backupDirection === 'BUY' ? `/api/trade/buy` : `/api/trade/sell`, {
                   method: 'POST',
@@ -1744,16 +1745,16 @@ export default function ChatradeAI({
                   body: JSON.stringify({
                     accountId: selectedAccountId,
                     symbol: pos.symbol,
-                    lotSize: Number(backupLotSize.toFixed(2)),
-                    stopLoss: Number(backupSL.toFixed(5)),
-                    takeProfit: Number(backupTP.toFixed(5)),
+                    lotSize: Number((backupLotSize || 0).toFixed(2)),
+                    stopLoss: Number((backupSL || 0).toFixed(5)),
+                    takeProfit: Number((backupTP || 0).toFixed(5)),
                     comment: `Rescue: ${originalStrategyName} [Ref:${posId}]`
                   })
                 });
 
                 addMessage({
                   sender: 'system',
-                  text: `🛡️ **[DEFENSIVE RECOVERY PROTOCOL ACTIVATED]** Open trade on **${pos.symbol}** breached the 50% risk threshold (drawdown ratio: **${(drawdownRatio * 100).toFixed(1)}%**).\n\n* **Action taken:** Dispatched high-priority **Backup Trade** (2.5x size) at **${currentPrice}**.\n* **Backup trade details:** ${backupDirection} of **${backupLotSize.toFixed(2)}** lots (SL: ${backupSL.toFixed(5)}, TP: ${backupTP.toFixed(5)})\n* **Objective:** Capture direct breakout momentum to fully recoup losses and close both positions at net profit.`
+                  text: `🛡️ **[DEFENSIVE RECOVERY PROTOCOL ACTIVATED]** Open trade on **${pos.symbol}** breached the 50% risk threshold (drawdown ratio: **${((drawdownRatio || 0) * 100).toFixed(1)}%**).\n\n* **Action taken:** Dispatched high-priority **Backup Trade** (2.5x size) at **${currentPrice}**.\n* **Backup trade details:** ${backupDirection} of **${(backupLotSize || 0).toFixed(2)}** lots (SL: ${(backupSL || 0).toFixed(5)}, TP: ${(backupTP || 0).toFixed(5)})\n* **Objective:** Capture direct breakout momentum to fully recoup losses and close both positions at net profit.`
                 });
               } catch (err) {
                 console.error("Backup trade deployment failed", err);
@@ -1828,22 +1829,33 @@ export default function ChatradeAI({
       const realSl = pos.stopLoss || (isBuy ? pos.openPrice - 40 * pipsRatio : pos.openPrice + 40 * pipsRatio);
       const realTp = pos.takeProfit || (isBuy ? pos.openPrice + 80 * pipsRatio : pos.openPrice - 80 * pipsRatio);
       
-      useStore.getState().setActiveSetup({
-        symbol: pos.symbol,
-        strategyName: pos.comment === "CHATRADE" ? "Confluence Strategy V2" : (pos.comment || "Active EA"),
-        direction: isBuy ? 'BUY' : 'SELL',
-        entry: pos.openPrice,
-        stopLoss: realSl,
-        takeProfit: realTp,
-        confidence: 94,
-        sessionName: getActiveMarketSession(),
-        liquidityAreas: [
-          { price: pos.openPrice + (isBuy ? -12 : 12) * pipsRatio, label: "Imbalance Liquidity Block" },
-          { price: pos.openPrice + (isBuy ? 25 : -25) * pipsRatio, label: "Secured Order Pool" }
-        ],
-        support: pos.openPrice - 40 * pipsRatio,
-        resistance: pos.openPrice + 40 * pipsRatio
-      });
+      const currSetup = useStore.getState().activeSetup;
+      const targetDir = isBuy ? 'BUY' : 'SELL';
+      if (
+        !currSetup ||
+        currSetup.symbol !== pos.symbol ||
+        currSetup.direction !== targetDir ||
+        Math.abs(currSetup.entry - pos.openPrice) > 0.00001 ||
+        Math.abs((currSetup.stopLoss || 0) - realSl) > 0.00001 ||
+        Math.abs((currSetup.takeProfit || 0) - realTp) > 0.00001
+      ) {
+        useStore.getState().setActiveSetup({
+          symbol: pos.symbol,
+          strategyName: pos.comment === "CHATRADE" ? "Confluence Strategy V2" : (pos.comment || "Active EA"),
+          direction: targetDir,
+          entry: pos.openPrice,
+          stopLoss: realSl,
+          takeProfit: realTp,
+          confidence: 94,
+          sessionName: getActiveMarketSession(),
+          liquidityAreas: [
+            { price: pos.openPrice + (isBuy ? -12 : 12) * pipsRatio, label: "Imbalance Liquidity Block" },
+            { price: pos.openPrice + (isBuy ? 25 : -25) * pipsRatio, label: "Secured Order Pool" }
+          ],
+          support: pos.openPrice - 40 * pipsRatio,
+          resistance: pos.openPrice + 40 * pipsRatio
+        });
+      }
     }
   }, [globalPositions]);
 
@@ -1868,7 +1880,7 @@ export default function ChatradeAI({
           marketState: "Engine Idle",
           marketStructure: { status: 'idle', message: 'Engine is OFF. Click Start Engine to launch market & AI analysis.' },
           liquidity: { status: 'idle', message: 'Standing by for Engine activation.' },
-          news: { status: 'idle', message: 'Vertex AI Grounded News Agent standing by.' },
+          news: { status: 'idle', message: 'News Sentiment Grounding Agent standing by.' },
           risk: { status: 'idle', message: 'Capital Risk Guard standing by.' },
           consensus: { status: 'idle', message: 'ENGINE IDLE: AI scanners and token consumption paused until Start Engine is toggled.', outcome: 'IDLE' }
         }));
@@ -2054,9 +2066,20 @@ export default function ChatradeAI({
       // Stage 2: Market Thesis Agent (index 2)
       useStore.getState().setActiveStepIndex(2);
       useStore.getState().setAgentStatus('thesis', { status: 'ACTIVE', latestInsight: 'Formulating trajectory thesis...', confidence: 85 });
-      const isUpwardThesis = rsi14 > 50 && newsImpactAssessment.overallSentiment !== 'BEARISH';
-      const proposedThesisDirection = isUpwardThesis ? 'BUY' : 'SELL';
-      const proposedAdaptiveStrategy = isUpwardThesis ? 'SMC Order Block Retest' : 'ICT Fair Value Gap Sweep';
+      
+      // Balanced Multi-Factor Directional Weighting
+      let bullFactors = 0;
+      let bearFactors = 0;
+      if (rsi14 > 52) bullFactors += 1;
+      if (rsi14 < 48) bearFactors += 1;
+      if (ema9 > ema21) bullFactors += 1;
+      if (ema9 < ema21) bearFactors += 1;
+      if (isDailyBullish) bullFactors += 1; else bearFactors += 1;
+      if (newsImpactAssessment.overallSentiment === 'BULLISH') bullFactors += 1;
+      if (newsImpactAssessment.overallSentiment === 'BEARISH') bearFactors += 1;
+      
+      const proposedThesisDirection = bullFactors > bearFactors ? 'BUY' : (bearFactors > bullFactors ? 'SELL' : (rsi14 >= 50 ? 'BUY' : 'SELL'));
+      const proposedAdaptiveStrategy = proposedThesisDirection === 'BUY' ? 'SMC Bullish Order Block Retest' : 'ICT Bearish Fair Value Gap Displacement';
       
       useStore.getState().setAgentStatus('thesis', {
         status: 'COMPLETED',
@@ -2181,11 +2204,12 @@ export default function ChatradeAI({
 
       // CALL THE NEW API TO EVOLVE CUSTOM ADAPTIVE AI STRATEGIES FOR CURRENT CONDITIONS
       try {
-        useStore.getState().setAgentStatus('risk', { status: 'ACTIVE', latestInsight: 'Vertex AI Strategy Lab: Synthesizing adaptive setups...', confidence: 92 });
+        const activeStrategyMode = useStore.getState().strategySettings?.strategyMode || 'Predictive Trend Following';
+        useStore.getState().setAgentStatus('risk', { status: 'ACTIVE', latestInsight: `Enterprise Strategy Lab [${activeStrategyMode}]: Synthesizing adaptive setups...`, confidence: 92 });
         const evolveRes = await safeFetch('/api/chatrade/evolve-strategies', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ symbol, evidence: evidenceRegistry })
+          body: JSON.stringify({ symbol, evidence: evidenceRegistry, strategyMode: activeStrategyMode })
         });
         if (evolveRes && evolveRes.success && Array.isArray(evolveRes.strategies) && evolveRes.strategies.length > 0) {
           // DYNAMICAL AI STRATEGY REQUIREMENT: Only use the AI's custom-evolved strategies
@@ -2424,18 +2448,9 @@ export default function ChatradeAI({
         else { finalSL = finalEntryPrice + slDistance; finalTP = finalEntryPrice - slDistance * 2.5; }
       }
 
-      // Dynamic Lot Size Calculation
-      const pipsRatio = symbol.includes('JPY') ? 0.01 : ((symbol.includes('XAU') || symbol.includes('GOLD')) ? 0.1 : 0.0001);
-      const pipValuePerLot = (symbol.includes('XAU') || symbol.includes('GOLD')) ? 100 : 10;
-      const slPips = slDistance / pipsRatio;
-      
-      const riskPercentage = liveDrawdownPct > 5.0 ? 0.5 : 1.0;
-      const riskAmount = rawBalance * (riskPercentage / 100);
-      const maxSafeLot = riskAmount / (slPips * pipValuePerLot || 1);
-      const marginFactor = freeMargin < rawBalance * 0.3 ? 0.5 : 1.0;
-      const confidenceMultiplier = topCandidate ? (topCandidate.confidence / 100) : 0.8;
-      
-      const calculatedLotSize = Math.max(0.01, Math.round(maxSafeLot * marginFactor * confidenceMultiplier * 100) / 100);
+      // Dynamic Risk-Based Lot Size from Account Balance, Margin & User Trade Count Limit
+      const userMaxTrades = useStore.getState().strategySettings?.maxTrades || 3;
+      const calculatedLotSize = calculateDynamicLotSize(rawBalance, freeMargin, userMaxTrades);
 
       const deterministicMatchResult = hasValidMatch && isRiskCleared;
       const blockReason = !topCandidate 
@@ -2465,7 +2480,7 @@ export default function ChatradeAI({
         useStore.getState().setStrategies(storeStrategies);
       }
 
-      let aiExplanation = "Vertex AI Supervisor analysis pending...";
+      let aiExplanation = "AI Supervisor analysis pending...";
 
       // Stage 11: Execution Engine & Trade Manager (index 11)
       useStore.getState().setActiveStepIndex(11);
@@ -2482,7 +2497,7 @@ export default function ChatradeAI({
         setAgentDebates({
           marketStructure: { status: 'completed', message: `SMC indicators aligned.` },
           liquidity: { status: 'completed', message: `Mitigations intact. Resting pools identified.` },
-          news: { status: 'completed', message: `Vertex AI News grounded sentiment: ${gNewsSentiment}.` },
+          news: { status: 'completed', message: `News grounded sentiment: ${gNewsSentiment}.` },
           risk: { status: 'completed', message: `Safety bounds validated. Lot size: ${calculatedLotSize.toFixed(2)}.` },
           consensus: { status: 'completed', message: `Agreement achieved: ${topCandidate.name}`, outcome: topCandidate.direction },
           candidatesCount: validCandidates.length, highestRanked: topCandidate.name, consensusScore: topCandidate.confidence,
@@ -2515,49 +2530,74 @@ export default function ChatradeAI({
 
 
         const currentDebate = [
-          `Technical Agent: Indicators -> Rate: ${finalEntryPrice.toFixed(5)}, RSI: ${rsi14}, ATR: ${atr14.toFixed(5)}.`,
+          `Technical Agent: Indicators -> Rate: ${(finalEntryPrice || 0).toFixed(5)}, RSI: ${rsi14}, ATR: ${(atr14 || 0).toFixed(5)}.`,
           `News Agent: Grounded news sentiment: ${gNewsSentiment}. Explainer: "${aiExplanation.slice(0, 80)}...".`,
-          `Structure Agent: Mapped zone: OB at ${smc.orderBlockPrice.toFixed(5)}.`,
-          `Risk Agent: Sizing: ${calculatedLotSize.toFixed(2)} lots. SL: ${finalSL.toFixed(5)}.`,
+          `Structure Agent: Mapped zone: OB at ${(smc.orderBlockPrice || 0).toFixed(5)}.`,
+          `Risk Agent: Sizing: ${(calculatedLotSize || 0).toFixed(2)} lots. SL: ${(finalSL || 0).toFixed(5)}.`,
           `Consensus Agent: ✅ MATCHED (${topCandidate.confidence}% confidence) - Routing ${topCandidate.direction} via ${topCandidate.name}`
         ];
         useStore.getState().setDebateDialogue(currentDebate);
 
         if (autoTradeMode) {
+          useStore.getState().setActiveSetup({ ...setupData, isPendingConfirm: false });
+
           const lastTradeTime = localStorage.getItem(`cooldown:${symbol}`) || '0';
-          const strategyCooldownKey = `cooldown:${symbol}:${topCandidate.name}:${topCandidate.direction}`;
-          const lastStratTradeTime = localStorage.getItem(strategyCooldownKey) || '0';
+          const timeSinceLastTrade = Date.now() - parseInt(lastTradeTime);
 
-          if (Date.now() - parseInt(lastTradeTime) >= 15000 && Date.now() - parseInt(lastStratTradeTime) >= 300000) {
+          if (timeSinceLastTrade >= 10000) {
             localStorage.setItem(`cooldown:${symbol}`, String(Date.now()));
-            localStorage.setItem(strategyCooldownKey, String(Date.now()));
-
-            useStore.getState().setActiveSetup({ ...setupData, isPendingConfirm: false });
 
             try {
+              const currentCount = globalPositions.length;
+              const availableSlots = Math.max(0, maxTradesLimit - currentCount);
+
+              if (availableSlots <= 0) {
+                addLog(`[AUTO TRADE] Max capacity reached (${currentCount}/${maxTradesLimit}). Standing by.`);
+                return;
+              }
+
               const endpoint = topCandidate.direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
+              const tradesToDispatch = Math.min(1, availableSlots);
+              addLog(`[AUTO TRADE] ⚡ Auto-dispatching ${topCandidate.direction} on ${symbol} via ${topCandidate.name} (${topCandidate.confidence}% confidence)...`);
+
               const tradePromises = [];
-              for (let i = 0; i < maxTradesLimit; i++) {
+              for (let i = 0; i < tradesToDispatch; i++) {
                 tradePromises.push(
                   safeFetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                    body: JSON.stringify({ accountId: selectedAccountId, symbol, lotSize: Number(calculatedLotSize.toFixed(2)), stopLoss: Number(finalSL.toFixed(5)), takeProfit: Number(finalTP.toFixed(5)), comment: `CHATRADE: ${topCandidate.name}` })
+                    body: JSON.stringify({ 
+                      accountId: selectedAccountId, 
+                      symbol, 
+                      lotSize: Number((calculatedLotSize || 0).toFixed(2)), 
+                      stopLoss: Number((finalSL || 0).toFixed(5)), 
+                      takeProfit: Number((finalTP || 0).toFixed(5)), 
+                      comment: `CHATRADE: ${topCandidate.name}`,
+                      maxTrades: maxTradesLimit
+                    })
                   })
                 );
               }
-              await Promise.all(tradePromises);
-              useStore.getState().setAgentStatus('manager', { status: 'COMPLETED', latestInsight: `Dispatched ${maxTradesLimit} positions on ${symbol} at ${finalEntryPrice.toFixed(5)}.`, confidence: 96 });
+              const results = await Promise.all(tradePromises);
+              const firstResult = results[0];
+              const orderId = firstResult?.numericOrderId || firstResult?.orderId || firstResult?.id || 'Active';
+
+              useStore.getState().setAgentStatus('manager', { status: 'COMPLETED', latestInsight: `✅ Auto-dispatched ${topCandidate.direction} on ${symbol} at ${(finalEntryPrice || 0).toFixed(5)}.`, confidence: 96 });
+              addLog(`[AUTO TRADE] ✅ Order #${orderId} executed on ${symbol} (${topCandidate.direction})`);
               addMessage({
                 sender: 'system',
-                text: `🚀 **[AUTONOMOUS ENTRY DISPATCHED]** ${topCandidate.name} triggers **${topCandidate.direction}** (**${topCandidate.confidence}%** confidence).\n\n* **Instrument:** ${symbol}\n* **Positions Count:** ${maxTradesLimit}\n* **Volume Unit:** ${calculatedLotSize.toFixed(2)} lots per position\n* **Entry Rate:** ${finalEntryPrice.toFixed(5)}\n* **SL:** ${finalSL.toFixed(5)} | **TP:** ${finalTP.toFixed(5)}\n\n*AI Explainer / Adviser Challenge:* ${aiExplanation}`
+                text: `🚀 **[AUTONOMOUS ENTRY EXECUTED]** ${topCandidate.name} triggered **${topCandidate.direction}** (**${topCandidate.confidence}%** confidence).\n\n* **Instrument:** ${symbol}\n* **Order Ticket:** #${orderId}\n* **Volume:** ${(calculatedLotSize || 0).toFixed(2)} lots\n* **Entry Rate:** ${(finalEntryPrice || 0).toFixed(5)}\n* **SL:** ${(finalSL || 0).toFixed(5)} | **TP:** ${(finalTP || 0).toFixed(5)}\n\n*AI Thesis:* ${aiExplanation}`
               });
-            } catch (err) { console.error("Auto trade failed", err); }
+            } catch (err: any) {
+              console.error("Auto trade failed", err);
+              addLog(`[AUTO TRADE ERROR] Execution failed: ${err?.message || err}`);
+            }
           }
         } else {
+          // Manual approval mode: signal waiting for user action
           useStore.getState().setActiveSetup({ ...setupData, isPendingConfirm: true, setupTimestamp: Date.now() });
-          setOpportunityModal({ isOpen: false, strategyName: topCandidate.name, symbol, direction: topCandidate.direction as 'BUY' | 'SELL', entry: finalEntryPrice, sl: finalSL.toFixed(5), tp: finalTP.toFixed(5), lotSize: calculatedLotSize, confidence: topCandidate.confidence });
-          addLog(`[SIGNAL SCANNER] Confluence setup detected on ${symbol} via ${topCandidate.name} [Confidence: ${topCandidate.confidence}%]. Approval requested.`);
+          setOpportunityModal({ isOpen: false, strategyName: topCandidate.name, symbol, direction: topCandidate.direction as 'BUY' | 'SELL', entry: finalEntryPrice, sl: (finalSL || 0).toFixed(5), tp: (finalTP || 0).toFixed(5), lotSize: calculatedLotSize, confidence: topCandidate.confidence });
+          addLog(`[SIGNAL SCANNER] Confluence setup detected on ${symbol} via ${topCandidate.name} [Confidence: ${topCandidate.confidence}%]. Manual approval requested.`);
         }
       } else {
         useStore.getState().setLastDecisionIndicators({
@@ -2581,10 +2621,10 @@ export default function ChatradeAI({
         useStore.getState().addPipelineLog(`[${timeStr}] Consensus Agent: 🛑 ENTRY BLOCKED on ${symbol}. ${blockReason}.`);
 
         const currentDebate = [
-          `Technical Agent: Indicators -> RSI: ${rsi14} | ATR: ${atr14.toFixed(5)}.`,
+          `Technical Agent: Indicators -> RSI: ${rsi14} | ATR: ${(atr14 || 0).toFixed(5)}.`,
           `News Agent: Grounded sentiment: ${gNewsSentiment}.`,
           `Structure Agent: Multi-timeframe structure is too weak or consolidation ranges are narrow.`,
-          `Risk Agent: Capital preserved. Drawdown: ${liveDrawdownPct.toFixed(2)}%.`,
+          `Risk Agent: Capital preserved. Drawdown: ${(liveDrawdownPct || 0).toFixed(2)}%.`,
           `Consensus Agent: 🛑 BLOCKED - ${blockReason}`
         ];
         useStore.getState().setDebateDialogue(currentDebate);
@@ -2593,10 +2633,10 @@ export default function ChatradeAI({
         useStore.getState().setAgentStatus('manager', { status: 'COMPLETED', latestInsight: `Standing by. Capital protected.`, confidence: 0 });
       }
 
-      // Stage 12: Vertex AI Advisor Challenge (index 12) - Non-blocking Supervisor
+      // Stage 12: AI Advisor Challenge (index 12) - Non-blocking Supervisor
       (async () => {
         useStore.getState().setActiveStepIndex(12);
-        useStore.getState().setAgentStatus('execution', { status: 'ACTIVE', latestInsight: 'Vertex AI Advisory Board generating thesis...', confidence: 90 });
+        useStore.getState().setAgentStatus('execution', { status: 'ACTIVE', latestInsight: 'AI Advisory Board generating thesis...', confidence: 90 });
         try {
           const analyzeRes = await safeFetch('/api/chatrade/analyze', {
             method: 'POST',
@@ -2629,7 +2669,7 @@ export default function ChatradeAI({
             analyzeIn = analyzeRes.usageMetadata?.promptTokenCount || 2400;
             analyzeOut = analyzeRes.usageMetadata?.candidatesTokenCount || 850;
           } else {
-            aiExplanation = `Vertex AI has reviewed structural confluences on ${symbol} and advises capital preservation.`;
+            aiExplanation = `Institutional AI has reviewed structural confluences on ${symbol} and advises capital preservation.`;
           }
           
           // Update active setup with AI rationale
@@ -2643,16 +2683,16 @@ export default function ChatradeAI({
           
           useStore.getState().recordTokenUsage('consensus', analyzeIn, analyzeOut, 0);
         } catch (err) {
-          aiExplanation = `Vertex AI Advisory Board analyzed parameters. Technical alignment is ${deterministicMatchResult ? 'EXCELLENT' : 'STANDBY'}.`;
+          aiExplanation = `AI Advisory Board analyzed parameters. Technical alignment is ${deterministicMatchResult ? 'EXCELLENT' : 'STANDBY'}.`;
           useStore.getState().recordTokenUsage('consensus', 2400, 850, 0);
         }
         
-        useStore.getState().setAgentStatus('execution', { status: 'COMPLETED', latestInsight: 'Vertex AI thesis recorded.', confidence: topCandidate ? topCandidate.confidence : 50 });
+        useStore.getState().setAgentStatus('execution', { status: 'COMPLETED', latestInsight: 'AI thesis recorded.', confidence: topCandidate ? topCandidate.confidence : 50 });
         
         if (deterministicMatchResult && topCandidate && autoTradeMode) {
             addMessage({
               sender: 'agent',
-              agentName: 'Vertex AI Supervisor',
+              agentName: 'AI Supervisor',
               text: `**Post-Trade Advisory Thesis (${symbol})**:\n\n${aiExplanation}`
             });
         }
@@ -2921,28 +2961,6 @@ export default function ChatradeAI({
     addLog(`[Sessions] Deleted saved session.`);
   };
 
-  const runAgentCascade = async () => {
-    // Cascade multi-agent statuses for dynamic visual feedback matching the terminal image
-    setAgentStates({
-      market: 'processing',
-      technical: 'idle',
-      risk: 'idle',
-      news: 'idle',
-      account: 'idle',
-      execution: 'idle'
-    });
-    await new Promise(r => setTimeout(r, 600));
-    setAgentStates(prev => ({ ...prev, market: 'completed', technical: 'processing' }));
-    await new Promise(r => setTimeout(r, 650));
-    setAgentStates(prev => ({ ...prev, technical: 'completed', risk: 'processing', news: 'processing' }));
-    await new Promise(r => setTimeout(r, 700));
-    setAgentStates(prev => ({ ...prev, risk: 'completed', news: 'completed', account: 'processing' }));
-    await new Promise(r => setTimeout(r, 550));
-    setAgentStates(prev => ({ ...prev, account: 'completed', execution: 'processing' }));
-    await new Promise(r => setTimeout(r, 500));
-    setAgentStates(prev => ({ ...prev, execution: 'completed' }));
-  };
-
   const executeAnalysis = async (symbol: string) => {
     if (!selectedAccountId) {
       addMessage({ sender: 'system', text: "⚠️ **No Account Connected:** Please select or configure an active trading account on the Accounts tab before requesting live core analysis." });
@@ -2950,10 +2968,7 @@ export default function ChatradeAI({
     }
 
     setIsSendingMessage(true);
-    addLog(`Running multi-agent Chatrade evaluation on ${symbol}`);
-    
-    // Background cascade simulation matching UI design
-    const cascadePromise = runAgentCascade();
+    addLog(`Running Chatrade AI analysis on ${symbol}`);
 
     const newsState = useStore.getState().newsImpact;
 
@@ -2979,9 +2994,6 @@ export default function ChatradeAI({
       if (data && data.quotaInfo) {
         setQuotaInfo(data.quotaInfo);
       }
-      
-      // Wait for cascade to safely finish so visual states align
-      await cascadePromise;
 
       if (data.success && data.analysis) {
          addMessage({
@@ -2997,34 +3009,22 @@ export default function ChatradeAI({
          
          const isApprove = data.analysis.outcome === 'APPROVE';
          const adviceText = isApprove
-           ? `### 📈 MULTI-AGENT CONFLUENCE REPORT: PASSED\n\nConfluence analysis has passed with **${data.analysis.confidence}%** confidence bias.\n\n* **Candlestick Alignment:** Potential reversal candlestick formation identified. Volume profile supports immediate buy activity.\n* **Macro Correlation Agent:** Key economic indices remain stable and back risk profiles.\n* **Capital Check:** Free margin thresholds comply with institutional safety levels.\n\n**Upgraded Flow Action:** Select **Generate ${symbol} Strategy** below to configure the risk levels and auto-execution loops for this setup.`
-           : `### 📉 MULTI-AGENT CONFLUENCE REPORT: STABLE CONDITIONS\n\nConfluence analysis results in a **${data.analysis.outcome}** verdict. Reason: ${data.analysis.reason || "Insufficient candlestick pattern confirmation."}\n\n* **Candlestick Alignment:** Waiting for candlestick reversal or wick rejection close.\n* **Flow & Liquidity Pools:** Identified clean order block support zones nearby.\n* **Capital Check:** System has safely preserved your available margin.\n\n**Upgraded Flow Action:** Click **Generate ${symbol} Strategy** below to compile and optimize the automated trading strategy for this setup.`;
+           ? `### 📈 MARKET ANALYSIS: OPPORTUNITY IDENTIFIED\n\nLive analysis indicates an **${data.analysis.outcome}** signal with **${data.analysis.confidence}%** confidence.\n\n* **Technical Alignment:** Reversal structure and momentum support this directional setup.\n* **Macro & News Backdrop:** Economic indices and fundamental drivers are aligned.\n* **Risk Protection:** Margin thresholds and account parameters meet safe guidelines.\n\n**Action:** Select **Generate ${symbol} Strategy** below to configure risk levels and execute.`
+           : `### 📉 MARKET ANALYSIS: CONSOLIDATION / STANDBY\n\nLive analysis verdict is **${data.analysis.outcome}**. Reason: ${data.analysis.reason || "Market structure lacks high-probability confirmation."}\n\n* **Technical Condition:** Awaiting clear structural breakout or wick rejection confirmation.\n* **Liquidity & Zones:** Monitoring nearby supply and demand zones.\n* **Capital Check:** Capital and available margin safely preserved.\n\n**Action:** You can generate a strategy or scan another instrument.`;
 
          addMessage({
            sender: 'agent',
-           agentName: 'Institutional Alignment Agent',
+           agentName: 'Chatrade AI',
            text: adviceText,
            options: [`Generate ${symbol} Strategy`, 'Show Open Positions']
          });
       } else {
-         addMessage({ sender: 'system', text: "⚠️ **Intelligence System Alert:** Failed to perform multi-agent checks: " + (data.error || "Gemini Reasoning timeout.") });
+         addMessage({ sender: 'system', text: "⚠️ **Analysis Alert:** Failed to complete analysis: " + (data.error || "Reasoning timeout.") });
       }
     } catch (e: any) {
-      await cascadePromise;
-      addMessage({ sender: 'system', text: "❌ **Gateway Dispatch Error:** Confluence system failed to connect with the Cloud Node: " + e.message });
+      addMessage({ sender: 'system', text: "❌ **Gateway Dispatch Error:** Failed to connect with analysis server: " + e.message });
     } finally {
       setIsSendingMessage(false);
-      // Reset agent statuses back to idle
-      setTimeout(() => {
-        setAgentStates({
-          market: 'idle',
-          technical: 'idle',
-          risk: 'idle',
-          news: 'idle',
-          account: 'idle',
-          execution: 'idle'
-        });
-      }, 5000);
     }
   };
 
@@ -3053,8 +3053,8 @@ export default function ChatradeAI({
         return;
       }
 
-      const tradesToOpen = availableSlots;
-      addMessage({ sender: 'agent', agentName: 'Execution Agent', text: `Broadcasting ${tradesToOpen} Vertex AI trade order(s) for **${targetSym}** (${direction}) via strategy **${stratName}**...` });
+      const tradesToOpen = Math.min(1, availableSlots);
+      addMessage({ sender: 'agent', agentName: 'Chatrade AI', text: `Broadcasting ${tradesToOpen} trade order for **${targetSym}** (${direction}) via strategy **${stratName}**...` });
       
       const endpoint = direction === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
       const tradePromises = [];
@@ -3069,10 +3069,11 @@ export default function ChatradeAI({
             body: JSON.stringify({
                 accountId: selectedAccountId || '435594282',
                 symbol: targetSym,
-                lotSize: Number(opportunityModal.lotSize.toFixed(2)),
+                lotSize: Number((opportunityModal.lotSize || 0.01).toFixed(2)),
                 stopLoss: Number(opportunityModal.sl),
                 takeProfit: Number(opportunityModal.tp),
-                comment: `ALGOTRADE: ${stratName}`
+                comment: `ALGOTRADE: ${stratName}`,
+                maxTrades: maxTradesLimit
             })
           })
         );
@@ -3084,9 +3085,9 @@ export default function ChatradeAI({
       if (successfulTrades.length > 0) {
           addMessage({ 
             sender: 'system', 
-            text: `### 📈 VERTEX AI ORDER EXECUTION SUCCESS\n\nExecuted **${successfulTrades.length}** ${direction} orders on **${targetSym}** via strategy **${stratName}**.\n\n* **Positions Count:** ${currentCount + successfulTrades.length}/${maxTradesLimit} (User Limit Strictly Enforced)\n* **Comment:** \`ALGOTRADE: ${stratName}\`\n* **Lot Size:** Calculated by Vertex AI based on Account Equity.\n* **Execution status:** Active positions synchronized.` 
+            text: `### 📈 ORDER EXECUTION SUCCESS\n\nExecuted **${successfulTrades.length}** ${direction} orders on **${targetSym}** via strategy **${stratName}**.\n\n* **Positions Count:** ${currentCount + successfulTrades.length}/${maxTradesLimit} (User Limit Strictly Enforced)\n* **Comment:** \`ALGOTRADE: ${stratName}\`\n* **Lot Size:** Institutional risk-calculated lot based on Account Equity.\n* **Execution status:** Active positions synchronized.` 
           });
-          addLog(`Executed ${successfulTrades.length} Vertex AI trades for ${targetSym} successfully`);
+          addLog(`Executed ${successfulTrades.length} automated trades for ${targetSym} successfully`);
       } else {
           addMessage({ sender: 'system', text: `❌ **Broker Execution Rejected:** ${results[0]?.error || "Trade request failed."}` });
       }
@@ -3136,8 +3137,8 @@ export default function ChatradeAI({
          symbol: symbolMatched,
          direction: direction as 'BUY' | 'SELL',
          entry: entry,
-         sl: sl.toFixed(5),
-         tp: tp.toFixed(5),
+         sl: (sl || 0).toFixed(5),
+         tp: (tp || 0).toFixed(5),
          lotSize: lotSizeChoice,
          confidence: 94
        });
@@ -3208,12 +3209,9 @@ export default function ChatradeAI({
     // 2. Generate Confluence Strategy
     if (upperText.startsWith('GENERATE') || upperText.includes('STRATEGY')) {
        setIsSendingMessage(true);
-       addLog(`Engaging Strategy Synthesis Agent on ${internalSymbol} (${selectedTimeframe})`);
-       
-       const cascadePromise = runAgentCascade(); // visual feedback cascade
+       addLog(`Compiling confluence strategy on ${internalSymbol} (${selectedTimeframe})`);
        
        setTimeout(async () => {
-         await cascadePromise;
          setIsSendingMessage(false);
          
          let userNewsData: any = null;
@@ -3228,7 +3226,7 @@ export default function ChatradeAI({
          if (!scanResult) {
            addMessage({
              sender: 'agent',
-             agentName: 'Strategy Compiler Agent',
+             agentName: 'Chatrade AI',
              text: `### ❌ NO HIGH QUALITY OPPORTUNITY DETECTED\n\nI have scanned live candles, market structure, news sentiment, volatility, and liquidity depth for **${internalSymbol}**.\n\nAt this exact moment, **no high-probability trading setups meet our strict 65% confluence threshold**. Chatrade prioritizes capital safety over force-firing signals.\n\n* **Reason:** Trend consolidation lacks directional momentum / wick rejection is flat.\n* **Current Session:** ${getActiveMarketSession()}\n* **Advice:** Continue monitoring or try checking another instrument (e.g., EURUSD, GBPUSD, XAUUSD).`,
              options: [`GENERATE ${internalSymbol} STRATEGY`, 'Show Open Positions']
            });
@@ -3243,7 +3241,7 @@ export default function ChatradeAI({
          
          addMessage({
            sender: 'agent',
-           agentName: 'Strategy Compiler Agent',
+           agentName: 'Chatrade AI',
             text: '',
            isCard: true,
            cardData: {
@@ -3267,7 +3265,7 @@ export default function ChatradeAI({
              preNewsPrediction: scanResult.preNewsPrediction,
              marketThesis: scanResult.marketThesis,
              allMarketConditionsFit: scanResult.allMarketConditionsFit,
-             mentorVoice: `### ⚡ CONFLUENCE STRATEGY DESIGN COMPILED\n\nI have generated a highly safe, candlestick-aligned strategy template for **${internalSymbol}** on the **${selectedTimeframe}** timeframe.\n\n#### 🔬 Cognitive Multi-Agent Debate Records:\n* **[Candlestick Pattern Agent]**: ${scanResult.technicalAlignment}\n* **[Macro & Sentiment Agent]**: ${scanResult.newsImpact}\n* **[Risk Management Agent]**: ${scanResult.leverageSafety}\n\n#### ⚙️ Generated Strategy Config:\n* **Strategy Name:** ${stratName}\n* **Target Signal:** ${direction} (Candle reversals)\n* **Target Entry:** ${entry.toFixed(5)}\n* **Calculated Lot Size:** ${scanResult.lotSize.toFixed(2)} Lots\n* **Stop Loss (SL):** ${sl.toFixed(5)}\n* **Take Profit (TP):** ${tp.toFixed(5)}\n\n**Do you want me to execute this trade on your connected broker terminal?**`
+             mentorVoice: `### ⚡ CONFLUENCE STRATEGY DESIGN COMPILED\n\nI have generated a highly safe, candlestick-aligned strategy template for **${internalSymbol}** on the **${selectedTimeframe}** timeframe.\n\n#### 🔬 Technical & Risk Confluence Summary:\n* **[Technical Structure]**: ${scanResult.technicalAlignment}\n* **[Macro & Sentiment Check]**: ${scanResult.newsImpact}\n* **[Risk Management Limit]**: ${scanResult.leverageSafety}\n\n#### ⚙️ Generated Strategy Config:\n* **Strategy Name:** ${stratName}\n* **Target Signal:** ${direction} (Candle reversals)\n* **Target Entry:** ${(entry || 0).toFixed(5)}\n* **Calculated Lot Size:** ${(scanResult.lotSize || 0).toFixed(2)} Lots\n* **Stop Loss (SL):** ${(sl || 0).toFixed(5)}\n* **Take Profit (TP):** ${(tp || 0).toFixed(5)}\n\n**Do you want me to execute this trade on your connected broker terminal?**`
            },
            options: [
               `EXECUTE ${stratName} on ${internalSymbol} (${direction})`,
@@ -3292,7 +3290,7 @@ export default function ChatradeAI({
            driverBreakdown: scanResult.driverBreakdown,
            newsImpactAssessment: scanResult.newsImpactAssessment
          });
-       }, 1500);
+       }, 500);
        return;
     }
 
@@ -3307,11 +3305,11 @@ export default function ChatradeAI({
          const automationAction = isAlgoTradeRunning ? 'STOP ALGO AUTOMATION' : 'ENGAGE ALGO AUTOMATION';
          addMessage({
            sender: 'agent',
-           agentName: 'Execution Agent',
+           agentName: 'Chatrade AI',
            text: `### ✅ CONFLUENCE STRATEGY APPLIED IN CLOUD\n\nThe smart strategy config (Lot Size: 0.03, SL: 30, TP: 60) is now **successfully synchronized** with your live ALGOTRADE Cloud Server.\n\nAll parameters are locked for execution. To begin taking trades automatically based on this strategy, press **Engage Algo Automation** below.`,
            options: [automationAction, 'Cancel Trade']
          });
-       }, 1000);
+       }, 500);
        return;
     }
 
@@ -3337,7 +3335,7 @@ export default function ChatradeAI({
        try {
            const activeSetup = useStore.getState().activeSetup;
            const symbol = upperText.split(' ').pop() || internalSymbol;
-           addMessage({ sender: 'agent', agentName: 'Execution Agent', text: `Broadcasting institutional trade payload to live broker node for **${symbol}**...` });
+           addMessage({ sender: 'agent', agentName: 'Chatrade AI', text: `Broadcasting trade order to live broker node for **${symbol}**...` });
            
            const endpoint = activeSetup?.direction === 'SELL' ? '/api/trade/sell' : '/api/trade/buy';
            const res = await safeFetch(endpoint, {
@@ -3366,7 +3364,7 @@ export default function ChatradeAI({
                addMessage({ sender: 'system', text: `❌ **Broker Execution Rejected:** ${data.error || "Insufficient Margin / High Drawdown Level."}` });
            }
        } catch (err: any) {
-           addMessage({ sender: 'system', text: `❌ **Execution Failure:** Connection pipeline disconnected: ${err.message}` });
+           addMessage({ sender: 'system', text: `❌ **Execution Failure:** Connection disconnected: ${err.message}` });
        } finally {
          setIsSendingMessage(false);
        }
@@ -3374,13 +3372,12 @@ export default function ChatradeAI({
     }
     
     if (upperText === 'CANCEL TRADE') {
-       addMessage({ sender: 'system', text: "⚠️ **Execution Cancelled:** Command dropped. The Multi-Agent pipeline has reverted execution safety interlocks back to observation status." });
+       addMessage({ sender: 'system', text: "⚠️ **Execution Cancelled:** Trade command cancelled." });
        return;
     }
 
     // 6. Fallback to normal Chat
     setIsSendingMessage(true);
-    const cascadePromise = runAgentCascade(); // visual agent status cascade matching UI terminal
     try {
       const activeAcc = accounts.find(a => a.id === selectedAccountId);
       const computedMarginVal = (() => {
@@ -3454,16 +3451,66 @@ export default function ChatradeAI({
          })
       });
 
-      await cascadePromise; // Ensure multi-agent animation completes organically
-
       const data = res;
       if (data && data.quotaInfo) {
         setQuotaInfo(data.quotaInfo);
       }
       if (data.success && data.reply) {
-         addMessage({ sender: 'system', text: data.reply });
+         const relevantProposal = data.proposal || data.topProposal;
+         const evidence = data.evidenceRecord || (relevantProposal?.evidenceRecord);
+         
+         if (relevantProposal) {
+           const sym = relevantProposal.symbol || internalSymbol;
+           const dir = relevantProposal.direction || 'BUY';
+           const entryVal = relevantProposal.entryZone?.recommendedEntry || relevantProposal.entry || 0;
+           const slVal = relevantProposal.stopLoss || 0;
+           const tpVal = relevantProposal.takeProfitLevels?.tp1 || relevantProposal.takeProfit || 0;
+           
+           useStore.getState().setActiveSetup({
+             symbol: sym,
+             strategyName: relevantProposal.strategyName || 'Algorithmic Setup',
+             direction: dir,
+             entry: entryVal,
+             stopLoss: slVal,
+             takeProfit: tpVal,
+             confidence: relevantProposal.confidence || 85,
+             sessionName: relevantProposal.marketStructure?.activeSession || "Institutional Model",
+             support: dir === 'BUY' ? slVal : tpVal,
+             resistance: dir === 'SELL' ? slVal : tpVal,
+             evidencePackage: evidence,
+             multiTimeframeEvidence: relevantProposal.higherTimeframe
+           });
+           
+           if (sym && sym !== internalSymbol) {
+             setInternalSymbol(sym);
+             if (propSetSymbol) propSetSymbol(sym);
+           }
+         }
+
+         let suggestedOptions: string[] | undefined = undefined;
+         if (data.evidenceRecord || data.topProposal || data.proposal) {
+           suggestedOptions = [
+             "Explain why this setup qualifies",
+             "What would invalidate this setup?",
+             "Prepare the trade but don't execute it",
+             "Execute the setup"
+           ];
+         } else if (data.stagedTrade) {
+           suggestedOptions = [
+             "Execute the setup",
+             "What would invalidate this setup?",
+             "Scan all configured markets"
+           ];
+         }
+
+         addMessage({ 
+           sender: 'agent', 
+           agentName: 'Chatrade AI', 
+           text: data.reply,
+           options: suggestedOptions
+         });
       } else {
-         addMessage({ sender: 'system', text: "⚠️ **Reasoning Engine Exhausted:** Gemini response failed. Engaging local backup algorithmic intelligence patterns with preset standard responses." });
+         addMessage({ sender: 'system', text: "⚠️ **Reasoning Engine Alert:** " + (data.error || "Unable to complete request. Please try again.") });
       }
     } catch(err: any) {
       addMessage({ sender: 'system', text: `❌ **Node Failure:** Unable to query Gemini model directly: ${err.message}` });
@@ -3524,7 +3571,7 @@ export default function ChatradeAI({
       name: r.name,
       winRate: `${r.winRate}%`,
       totalTrades: r.total,
-      roi: r.pnl >= 0 ? `+$${r.pnl.toFixed(2)}` : `-$${Math.abs(r.pnl).toFixed(2)}`,
+      roi: r.pnl >= 0 ? `+$${(r.pnl || 0).toFixed(2)}` : `-$${Math.abs(r.pnl || 0).toFixed(2)}`,
       status: r.rank <= 3 ? "Active" : (r.rank <= 5 ? "Monitoring" : "Idle")
     }));
   }, [learningLogTimer]);
@@ -3554,16 +3601,15 @@ export default function ChatradeAI({
         <div className="flex items-center gap-2.5 font-mono flex-wrap ml-auto">
           {/* Autonomous Trading toggle pill */}
           <div 
-            className={`flex items-center gap-1.5 bg-gradient-to-r from-amber-500/10 to-[#d4af37]/5 border border-[#d4af37]/30 px-3 py-1 rounded-full text-[10px] shadow-[0_0_10px_rgba(212,175,55,0.05)] select-none transition-all ${(!autoTradeMode && globalPositions.length > 0) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-95'}`} 
+            className={`flex items-center gap-1.5 bg-gradient-to-r from-amber-500/10 to-[#d4af37]/5 border border-[#d4af37]/30 px-3 py-1 rounded-full text-[10px] shadow-[0_0_10px_rgba(212,175,55,0.05)] select-none transition-all ${autoTradeMode && globalPositions.length > 0 ? 'cursor-not-allowed opacity-90' : 'cursor-pointer active:scale-95'}`} 
             onClick={() => {
-              if (!autoTradeMode && globalPositions.length > 0) {
-                addLog("Cannot start engine while active trades are open. Please close trades or wait for TP/SL.");
-                return;
-              }
               toggleAutoTradeMode();
             }}
           >
-            <span className="text-[#d4af37] font-black uppercase tracking-wider text-[8px] sm:text-[9px]">{autoTradeMode ? 'STOP ENGINE' : 'START ENGINE'}:</span>
+            {autoTradeMode && globalPositions.length > 0 && <Lock className="w-2.5 h-2.5 text-amber-400 shrink-0" />}
+            <span className="text-[#d4af37] font-black uppercase tracking-wider text-[8px] sm:text-[9px]">
+              {autoTradeMode ? (globalPositions.length > 0 ? 'ENGINE LOCKED' : 'STOP ENGINE') : 'START ENGINE'}:
+            </span>
             <button
               type="button"
               className={`relative inline-flex h-3.5 w-6 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${autoTradeMode ? 'bg-[#d4af37]' : 'bg-slate-700'}`}
@@ -3857,7 +3903,7 @@ export default function ChatradeAI({
                           </div>
                         )}
                         <span className="text-[10px] font-mono text-slate-500 font-bold">
-                          {isUser ? 'You' : m.agentName ? `[${m.agentName}]` : 'Chatrade AI'} • {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {isUser ? 'You' : 'Chatrade AI'} • {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
 
@@ -4034,7 +4080,7 @@ export default function ChatradeAI({
                                 onClick={() => setExpandedSection(expandedSection === m.id ? null : m.id)}
                                 className="w-full flex items-center justify-between px-3 py-2 bg-white/[0.02] hover:bg-white/[0.04] text-slate-300 transition-colors text-[11px] font-mono"
                               >
-                                <span>{expandedSection === m.id ? 'Hide' : 'Expand'} Detailed Multi-Agent Intelligence Findings</span>
+                                <span>{expandedSection === m.id ? 'Hide' : 'Expand'} Detailed Market Analysis & Findings</span>
                                 {expandedSection === m.id ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />}
                               </button>
 
@@ -4157,33 +4203,33 @@ export default function ChatradeAI({
                                 <div className="p-3 bg-rose-950/20 rounded-xl border border-rose-500/20 space-y-2">
                                   <div className="flex items-center gap-2">
                                     <XCircle className="w-4 h-4 text-rose-500 shrink-0" />
-                                    <span className="text-white font-extrabold uppercase text-[10px] tracking-wider">Vetoing Agent: {renderSafeString(m.cardData.vetoAgent, "RISK_AGENT")}</span>
+                                    <span className="text-white font-extrabold uppercase text-[10px] tracking-wider">Safety Rule: {renderSafeString(m.cardData.vetoAgent, "CAPITAL_PROTECTION")}</span>
                                   </div>
                                   <div className="text-[11px] font-sans">
                                     <strong className="text-slate-200 block font-medium mb-1">{renderSafeString(m.cardData.primaryReason || m.cardData.reason, "Daily Drawdown Compliance Limit Near")}</strong>
-                                    <p className="text-slate-400 leading-relaxed text-xs">{renderSafeString(m.cardData.details, "Current daily floating risk approaches your allocated compliance threshold. Operation halted by Risk Agent to insulate account safety guidelines.")}</p>
+                                    <p className="text-slate-400 leading-relaxed text-xs">{renderSafeString(m.cardData.details, "Current floating risk reaches allocated risk threshold. Trade halted to preserve capital.")}</p>
                                   </div>
                                 </div>
 
                                 <div className="p-2.5 bg-black/30 rounded-xl border border-white/5 space-y-2 text-[10px]">
-                                  <span className="text-[8px] text-slate-500 uppercase tracking-widest font-extrabold block">Institutional Multi-Agent Logs</span>
+                                  <span className="text-[8px] text-slate-500 uppercase tracking-widest font-extrabold block">Risk Assessment Checks</span>
                                   <div className="space-y-1 text-[9px]">
                                      <div className="flex items-center justify-between">
-                                       <span className="text-slate-400 flex items-center gap-1.5"><Cpu className="w-3 h-3 text-slate-500" /> Technical Agent Status:</span>
+                                       <span className="text-slate-400 flex items-center gap-1.5"><Cpu className="w-3 h-3 text-slate-500" /> Technical Condition:</span>
                                        <span className={`font-bold uppercase ${m.cardData.vetoAgent?.includes('TECHNICAL') || m.cardData.vetoAgent?.includes('TECH') ? 'text-rose-400 bg-rose-500/10 border border-rose-500/20' : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'} px-1.5 py-0.5 rounded`}>
-                                         {m.cardData.vetoAgent?.includes('TECHNICAL') || m.cardData.vetoAgent?.includes('TECH') ? '❌ VETOED' : '✅ CLEAN'}
+                                         {m.cardData.vetoAgent?.includes('TECHNICAL') || m.cardData.vetoAgent?.includes('TECH') ? '❌ CAUTION' : '✅ CLEAN'}
                                        </span>
                                      </div>
                                      <div className="flex items-center justify-between">
-                                       <span className="text-slate-400 flex items-center gap-1.5"><Globe className="w-3 h-3 text-slate-500" /> News / Macro Agent Status:</span>
+                                       <span className="text-slate-400 flex items-center gap-1.5"><Globe className="w-3 h-3 text-slate-500" /> News / Macro Volatility:</span>
                                        <span className={`font-bold uppercase ${m.cardData.vetoAgent?.includes('NEWS') ? 'text-rose-400 bg-rose-500/10 border border-rose-500/20' : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'} px-1.5 py-0.5 rounded`}>
-                                         {m.cardData.vetoAgent?.includes('NEWS') ? '❌ VETOED' : '✅ CLEAN'}
+                                         {m.cardData.vetoAgent?.includes('NEWS') ? '❌ HIGH RISK' : '✅ STABLE'}
                                        </span>
                                      </div>
                                      <div className="flex items-center justify-between">
-                                       <span className="text-slate-400 flex items-center gap-1.5"><Scale className="w-3 h-3 text-slate-500" /> Risk Auditor Agent (SUPREME):</span>
+                                       <span className="text-slate-400 flex items-center gap-1.5"><Scale className="w-3 h-3 text-slate-500" /> Account Capital Guard:</span>
                                        <span className={`font-bold uppercase ${(!m.cardData.vetoAgent || m.cardData.vetoAgent?.includes('RISK')) ? 'text-rose-400 bg-rose-500/10 border border-rose-500/20' : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'} px-1.5 py-0.5 rounded`}>
-                                         {(!m.cardData.vetoAgent || m.cardData.vetoAgent?.includes('RISK')) ? '❌ VETO' : '✅ PASS'}
+                                         {(!m.cardData.vetoAgent || m.cardData.vetoAgent?.includes('RISK')) ? '❌ LIMIT REACHED' : '✅ PASS'}
                                        </span>
                                      </div>
                                   </div>
@@ -4306,45 +4352,12 @@ export default function ChatradeAI({
             </div>
           )}
 
-          {/* DYNAMIC AGENT DEBATE PROGRESS MATRIX */}
+          {/* SINGLE ASSISTANT INTELLIGENCE LOADING INDICATOR */}
           {isSendingMessage && (
-            <div className="space-y-4 py-2 animate-pulse font-mono">
-              <div className="flex items-center gap-2 text-slate-500 text-[10px]">
-                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-500" />
-                 Synthesizing Multi-Agent Neural Confluences...
-              </div>
-
-              {/* Cascade matrix visualization */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-                {[
-                  { name: 'Market Intel', key: 'market', icon: Brain },
-                  { name: 'Technical AI', key: 'technical', icon: Activity },
-                  { name: 'Risk Guardian', key: 'risk', icon: Scale },
-                  { name: 'News & Economic', key: 'news', icon: Globe },
-                  { name: 'Account Intel', key: 'account', icon: User },
-                  { name: 'Execution Dispatch', key: 'execution', icon: Play },
-                ].map((ag) => {
-                  const state = (agentStates as any)[ag.key];
-                  const IconComp = ag.icon;
-                  return (
-                    <div 
-                      key={ag.key} 
-                      className={`p-2.5 border rounded-xl flex flex-col items-center justify-center text-center transition-all ${
-                        state === 'completed' 
-                          ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400' 
-                          : state === 'processing' 
-                          ? 'border-amber-400 bg-amber-500/5 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.08)]' 
-                          : 'border-white/5 bg-white/[0.01] text-slate-600'
-                      }`}
-                    >
-                      <IconComp className={`w-4 h-4 mb-1.5 ${state === 'processing' ? 'animate-bounce' : ''}`} />
-                      <span className="text-[9px] font-extrabold uppercase tracking-tight block">{ag.name}</span>
-                      <span className="text-[7px] mt-0.5 opacity-80 block tracking-widest leading-none">
-                        {state === 'completed' ? '✓ DONE' : state === 'processing' ? '● CALC' : '◽ READY'}
-                      </span>
-                    </div>
-                  );
-                })}
+            <div className="py-2 animate-pulse font-mono">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/5 text-slate-400 text-xs">
+                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#d4af37]" />
+                 <span>Chatrade AI is analyzing...</span>
               </div>
             </div>
           )}
@@ -4358,8 +4371,13 @@ export default function ChatradeAI({
           {/* HORIZONTAL QUICK ACTIONS BAR */}
           <div className="flex gap-2 overflow-x-auto shrink-0 custom-scrollbar-horizontal pb-2 max-w-5xl mx-auto px-2 w-full">
             {[
+              { label: 'Scan Configured Markets', action: 'Scan all configured markets', Icon: Activity },
               { label: `Analyze ${internalSymbol}`, action: `Analyze ${internalSymbol}`, Icon: Activity },
-              { label: 'Generate Strategy', action: 'Create a new trend strategy', Icon: Sliders },
+              { label: 'Strongest Setup', action: 'Find the strongest current setup', Icon: Sliders },
+              { label: 'Explain Setup', action: 'Explain why this setup qualifies', Icon: FileText },
+              { label: 'Invalidation Level', action: 'What would invalidate this setup?', Icon: AlertTriangle },
+              { label: 'Prepare Trade', action: "Prepare the trade but don't execute it", Icon: Sliders },
+              { label: 'Execute Setup', action: 'Execute the setup', Icon: Play },
               { label: 'Show Open Positions', action: 'Show all open positions', Icon: Layers },
               { label: 'Economic Calendar', action: 'Show today economic calendar', Icon: Globe },
               { label: 'Market News', action: 'What is latest market news?', Icon: FileText },
@@ -4518,7 +4536,7 @@ export default function ChatradeAI({
               <div className="bg-gradient-to-r from-amber-505 to-amber-600 text-slate-950 text-[10px] sm:text-xs font-mono font-black py-2 px-4 flex items-center justify-between tracking-wide select-none">
                 <span className="flex items-center gap-1.5 uppercase">
                   <Activity className="w-3.5 h-3.5 animate-pulse text-slate-950" />
-                  Vertex AI Enterprise Signal Node Alert
+                  Enterprise Signal Node Alert
                 </span>
                 <span className="bg-slate-950 text-amber-400 font-bold px-2 py-0.5 rounded text-[9px] tracking-widest whitespace-nowrap">
                   HI-PRIORITY TOKENS
@@ -4610,15 +4628,15 @@ export default function ChatradeAI({
                   </div>
                 </div>
 
-                {/* Cognitive Multi-Agent Debate Records */}
+                {/* Technical & Risk Confluence Checks */}
                 <div className="space-y-2 bg-[#090e1a] border border-amber-500/10 p-3.5 rounded-2xl text-left select-none">
                   <span className="text-[9px] font-mono font-black text-amber-500 tracking-wider uppercase block">
-                    Institutional Consensus Check:
+                    Technical & Risk Confluence Check:
                   </span>
                   <div className="space-y-1 text-[10px] sm:text-[11px] leading-relaxed text-slate-400 font-mono">
                     <p><strong className="text-slate-300">[Candlestick Engine]</strong>: Wick structures rejection confirmed.</p>
-                    <p><strong className="text-slate-300">[Macro Monitor Agent]</strong>: Checked FRED & Finnhub indices. Risks flat.</p>
-                    <p><strong className="text-slate-300">[Risk Auditor Core]</strong>: Safety bounds vetted. Lot restricted strictly to 1.0% risk.</p>
+                    <p><strong className="text-slate-300">[Macro Analysis]</strong>: Economic indices and news sentiment aligned.</p>
+                    <p><strong className="text-slate-300">[Risk Controls]</strong>: Safety bounds vetted. Lot restricted strictly to 1.0% risk.</p>
                   </div>
                 </div>
 
@@ -4703,7 +4721,7 @@ export default function ChatradeAI({
         activeSetup={useStore((state: any) => state.activeSetup)}
         onExecute={(dir) => {
           setIsEvidencePackageOpen(false);
-          executeDirectTrade(opportunityModal.strategyName || "Vertex AI Strategy", opportunityModal.symbol || internalSymbol, dir);
+          executeDirectTrade(opportunityModal.strategyName || "Adaptive AI Strategy", opportunityModal.symbol || internalSymbol, dir);
         }}
       />
 

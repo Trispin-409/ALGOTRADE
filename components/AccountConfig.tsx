@@ -240,14 +240,18 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
   const [isAdding, setIsAdding] = useState(false);
   
   // Calculate limit based on plan
+  const rawPlan = subscriptionPlan || 'Starter';
+  const displayPlan = rawPlan.charAt(0).toUpperCase() + rawPlan.slice(1).toLowerCase();
+
   const planLimits: Record<string, number> = {
     'Starter': 1,
     'Pro': 1,
     'Elite': 2,
-    'Developer': 100 // No limit for developer
+    'Developer': 100,
+    'Admin': 100
   };
   
-  const currentLimit = planLimits[subscriptionPlan || 'Starter'] || 1;
+  const currentLimit = planLimits[displayPlan] || planLimits[rawPlan] || 1;
   const isLimitReached = accounts.length >= currentLimit;
   const isInputLocked = isLimitReached && !isAdding; 
 
@@ -488,7 +492,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
 
   const handleCreateAccount = async () => {
     if (isLimitReached) {
-      alert(`You have reached the ${currentLimit} account limit for your ${subscriptionPlan || 'Starter'} plan. Please upgrade to add more accounts.`);
+      alert(`You have reached the ${currentLimit} account limit for your ${displayPlan} plan. To connect a new MetaTrader account, please remove/hide your existing account below first, or upgrade your plan.`);
       return;
     }
     if (!formData.name || !formData.server || !formData.login || !formData.password) {
@@ -572,7 +576,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
               </button>
               <span className="w-1 h-1 rounded-full bg-slate-800 shrink-0"></span>
               <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded-full border border-white/5">
-                {subscriptionPlan || 'Starter'}: {accounts.length}/{currentLimit}
+                {displayPlan}: {accounts.length}/{currentLimit}
               </span>
             </div>
           </div>
@@ -581,7 +585,7 @@ const AccountConfig: React.FC<AccountConfigProps> = ({ accounts, setAccounts, to
           <button 
             onClick={() => { 
               if (isLimitReached) {
-                alert(`You have reached the ${currentLimit} account limit for your ${subscriptionPlan || 'Starter'} plan. Please upgrade to add more accounts.`);
+                alert(`You have reached the ${currentLimit} account limit for your ${displayPlan} plan. To connect a new MetaTrader account, please remove/hide your existing account below first, or upgrade your plan.`);
                 return;
               }
               setIsAdding(true); 

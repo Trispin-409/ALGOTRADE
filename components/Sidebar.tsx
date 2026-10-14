@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, Key, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut, Copy, Activity, TrendingUp, BrainCircuit } from 'lucide-react';
+import { LayoutDashboard, Users, ShieldAlert, Cpu, Database, Terminal, Key, X, Settings, Layers, Workflow, Cloud, MessageCircle, Download, Newspaper, Shield, LogOut, Copy, Activity, TrendingUp } from 'lucide-react';
 import { useStore } from '../src/store';
 
 interface SidebarProps {
@@ -42,12 +42,12 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
   const chartSettings = useStore(state => state.chartSettings);
   const currentUserEmail = useStore(state => state.currentUserEmail);
   const isOwner = currentUserEmail?.toLowerCase() === 'trispinblackops@gmail.com';
-  const isStarter = subscriptionPlan === 'Starter' || subscriptionPlan === 'STARTER' || !subscriptionPlan;
+  const normPlan = (subscriptionPlan || 'Starter').toLowerCase();
+  const isStarter = normPlan === 'starter';
   const hasChatradeAccess = isOwner || !isStarter;
 
   const baseMenuItems = [
     { id: 'dashboard', label: 'Metrics', icon: Activity },
-    ...(isOwner ? [{ id: 'command-center', label: 'Command Center', icon: BrainCircuit }] : []),
     { id: 'data', label: 'Market', icon: TrendingUp },
     ...(hasChatradeAccess ? [{ id: 'chatrade', label: 'Chatrade AI', icon: Cpu }] : []),
     { id: 'accounts', label: 'Accounts', icon: Users },
@@ -58,10 +58,10 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onTabChange,
 
   const menuItems = [...baseMenuItems];
 
-  if (subscriptionPlan === 'Developer' || subscriptionPlan === 'admin') {
+  if (normPlan === 'developer' || normPlan === 'admin' || isOwner) {
      menuItems.push({ id: 'logs', label: 'Logs', icon: Terminal });
      menuItems.push({ id: 'admin', label: 'Admin Dashboard', icon: Shield });
-     if (subscriptionPlan === 'Developer') {
+     if (normPlan === 'developer' || isOwner) {
         menuItems.push({ id: 'admin-logs', label: 'Admin Logs', icon: Database });
      }
   }

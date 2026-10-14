@@ -124,12 +124,26 @@ export const safeFetch = async (url: string, options?: RequestInit) => {
   }
 
   const fetchUrl = url.startsWith('/') ? `${getApiBaseUrl()}${url}` : url;
-  let res: Response;
-  try {
-    res = await fetch(fetchUrl, finalOptions);
-  } catch (netErr: any) {
-    console.warn(`[NETWORK] Fetch to ${fetchUrl} failed:`, netErr?.message || netErr);
-    throw new Error(`Connection Error: Unable to reach server (${netErr?.message || 'Failed to fetch'}). Please check your network connection.`);
+  let res: Response | null = null;
+  let lastNetErr: any = null;
+  const maxRetries = (method === 'GET' || url.includes('/api/trade/')) ? 2 : 1;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      res = await fetch(fetchUrl, finalOptions);
+      break;
+    } catch (netErr: any) {
+      lastNetErr = netErr;
+      if (attempt < maxRetries) {
+        // Exponential backoff before retry (400ms, 800ms)
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+      }
+    }
+  }
+
+  if (!res) {
+    console.warn(`[NETWORK] Fetch to ${fetchUrl} failed after retries:`, lastNetErr?.message || lastNetErr);
+    throw new Error(`Connection Error: Unable to reach server (${lastNetErr?.message || 'Failed to fetch'}). Please check your network connection.`);
   }
 
   const text = await res.text();

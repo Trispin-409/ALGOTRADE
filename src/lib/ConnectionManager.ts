@@ -185,6 +185,25 @@ class ConnectionManager {
 
   private tokens: Map<string, string> = new Map();
 
+  public disconnectAccount(accountId: string) {
+    ConnectionManager.ACTIVE_LIFECYCLES.delete(accountId);
+    const socket = this.connections.get(accountId);
+    if (socket) {
+      try {
+        (socket as any)._manualClose = true;
+        socket.close();
+      } catch(e) {}
+      this.connections.delete(accountId);
+    }
+    this.brokerConnectedState.delete(accountId);
+    this.terminalSyncedState.delete(accountId);
+    for (const key of Array.from(this.streamRegistry.keys())) {
+      if (key.startsWith(`${accountId}:`)) {
+        this.streamRegistry.delete(key);
+      }
+    }
+  }
+
   public forceReconnect(accountId: string, baseUrl: string, token: string = '') {
       if (!baseUrl || baseUrl === 'undefined') {
           throw new Error(`[CRITICAL] MetaApi base URL missing for ${accountId}. Reconnect aborted.`);
@@ -194,28 +213,16 @@ class ConnectionManager {
         this.tokens.set(accountId, token);
       }
 
+      // If switching from a different account, cleanly disconnect the previous one
+      if (this.selectedAccountId && this.selectedAccountId !== accountId) {
+        this.disconnectAccount(this.selectedAccountId);
+      }
+
       this.selectedAccountId = accountId;
       console.log(`[LIFECYCLE] 🔄 FORCE RESTART: Reconnecting Engine for Account ${accountId}...`);
 
       // Close existing socket for this account if any
-      const existingSocket = this.connections.get(accountId);
-      if (existingSocket) {
-          try {
-              existingSocket.close();
-          } catch(e) {}
-          this.connections.delete(accountId);
-      }
-
-      // Reset state for this account
-      this.brokerConnectedState.delete(accountId);
-      this.terminalSyncedState.delete(accountId);
-
-      // Clear stream registry for this account
-      for (const key of Array.from(this.streamRegistry.keys())) {
-          if (key.startsWith(`${accountId}:`)) {
-              this.streamRegistry.delete(key);
-          }
-      }
+      this.disconnectAccount(accountId);
 
       // Add to active lifecycles
       ConnectionManager.ACTIVE_LIFECYCLES.add(accountId);
@@ -405,6 +412,11 @@ class ConnectionManager {
             this.setAccountSyncComplete(accountId);
         }
 
+        if (data.type === 'ACCOUNT_NOT_FOUND') {
+            console.warn(`[ConnectionManager] Account ${accountId} does not exist on gateway. Disconnecting.`);
+            this.disconnectAccount(accountId);
+        }
+
         this.listeners.forEach(cb => cb(data));
     };
 
@@ -412,7 +424,14 @@ class ConnectionManager {
         this.connections.delete(accountId);
         this.notifyStatus(accountId, false);
         this.evaluatePhase();
-        setTimeout(() => this.initiateWSWithBackoff(accountId, baseUrl), 5000); // 5 sec backoff
+        if ((socket as any)._manualClose || !ConnectionManager.ACTIVE_LIFECYCLES.has(accountId)) {
+            return;
+        }
+        setTimeout(() => {
+            if (ConnectionManager.ACTIVE_LIFECYCLES.has(accountId)) {
+                this.initiateWSWithBackoff(accountId, baseUrl);
+            }
+        }, 5000); // 5 sec backoff
     };
   }
 

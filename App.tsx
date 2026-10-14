@@ -29,7 +29,6 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { PlatformType, TradingAccount } from './types';
 import Dashboard from './components/Dashboard';
-import CommandCenter, { AGENTS_CONFIG } from './components/CommandCenter';
 import Sidebar from './components/Sidebar';
 import AccountConfig from './components/AccountConfig';
 import News from './components/News';
@@ -51,7 +50,7 @@ import { supabase } from './src/lib/supabase';
 import { LoginForm } from './src/components/Auth/LoginForm';
 import { ResetPasswordForm } from './src/components/Auth/ResetPasswordForm';
 import { FullScreenLoader } from './src/components/Auth/FullScreenLoader';
-import { useStore, calculateTradingSession } from './src/store';
+import { useStore, calculateTradingSession, calculateDynamicLotSize } from './src/store';
 import { PricingPage } from './src/components/PricingPage';
 import { AdminDashboard } from './components/AdminDashboard';
 import { useNewsNotificationMonitor } from './src/hooks/useNewsNotificationMonitor';
@@ -224,7 +223,7 @@ const App: React.FC = () => {
     }
   }, [bootData, session, activeTab]);
 
-  const { setAgentStatus, addAgentLog, addActivity } = useStore();
+  const { addActivity } = useStore();
 
   useEffect(() => {
     const getMultiTimeframeAnalysis = (currentTf: string, currentTrend: 'Bullish' | 'Bearish') => {
@@ -292,7 +291,7 @@ const App: React.FC = () => {
       const curAccountId = selectedAccountIdRef.current;
       const curSession = sessionRef.current;
 
-      // 1. Live Vertex AI Dynamic Trailing Stop & Profit Protection Engine (+1% / +2% Auto-Lock)
+      // 1. Live Dynamic Trailing Stop & Profit Protection Engine (+1% / +2% Auto-Lock)
       if (curAccountId && curSession) {
         const currentPositions = useStore.getState().positions || [];
         const accountInfo = useStore.getState().account;
@@ -363,7 +362,7 @@ const App: React.FC = () => {
 
           // Condition 1: Profit >= +2.0% -> Lock in at least +1.0% profit using trailing stop
           if (profitPercent >= 2.0 || currentPipsProfit >= 20 * pipSize) {
-            const trailingOffset = Math.max(10 * pipSize, currentPipsProfit * 0.5);
+            const trailingOffset = Math.max(12 * pipSize, currentPipsProfit * 0.5);
             targetSL = isBuy ? (currentPrice - trailingOffset) : (currentPrice + trailingOffset);
             
             // Ensure targetSL protects at least 1% profit buffer above entry
@@ -372,20 +371,34 @@ const App: React.FC = () => {
             const lockPrice = isBuy ? (entryPrice + onePercentPips) : (entryPrice - onePercentPips);
             targetSL = isBuy ? Math.max(lockPrice, targetSL) : Math.min(lockPrice, targetSL);
             
-            shouldModify = !currentSL || (isBuy ? (targetSL > currentSL + 0.1 * pipSize) : (targetSL < currentSL - 0.1 * pipSize));
+            // Safety cap: SL must always stay at safe distance below (for BUY) or above (for SELL) current market price
+            if (isBuy) {
+              targetSL = Math.min(targetSL, currentPrice - 10 * pipSize);
+            } else {
+              targetSL = Math.max(targetSL, currentPrice + 10 * pipSize);
+            }
+
+            shouldModify = !currentSL || (isBuy ? (targetSL > currentSL + 0.5 * pipSize) : (targetSL < currentSL - 0.5 * pipSize));
           } 
           // Condition 2: Profit >= +1.0% -> Secure at Break-Even / +1% profit protection
           else if (profitPercent >= 1.0 || currentPipsProfit >= 10 * pipSize) {
             const breakEvenPrice = entryPrice;
-            const targetTrailingSL = isBuy ? (currentPrice - 8 * pipSize) : (currentPrice + 8 * pipSize);
+            const targetTrailingSL = isBuy ? (currentPrice - 12 * pipSize) : (currentPrice + 12 * pipSize);
             targetSL = isBuy ? Math.max(breakEvenPrice, targetTrailingSL) : Math.min(breakEvenPrice, targetTrailingSL);
             
-            shouldModify = !currentSL || (isBuy ? (targetSL > currentSL + 0.1 * pipSize) : (targetSL < currentSL - 0.1 * pipSize));
+            // Safety cap: SL must always stay at safe distance below (for BUY) or above (for SELL) current market price
+            if (isBuy) {
+              targetSL = Math.min(targetSL, currentPrice - 10 * pipSize);
+            } else {
+              targetSL = Math.max(targetSL, currentPrice + 10 * pipSize);
+            }
+
+            shouldModify = !currentSL || (isBuy ? (targetSL > currentSL + 0.5 * pipSize) : (targetSL < currentSL - 0.5 * pipSize));
           }
 
           if (shouldModify && targetSL > 0) {
-            const formattedSL = Number(targetSL.toFixed(digits));
-            console.log(`[VERTEX AI TRAIL ENGINE] Modifying SL for pos #${pos.id} (${pos.symbol}) to ${formattedSL} (Profit: +${profitPercent.toFixed(2)}%)`);
+            const formattedSL = Number((targetSL || 0).toFixed(digits || 5));
+            console.log(`[TRAIL ENGINE] Modifying SL for pos #${pos.id} (${pos.symbol}) to ${formattedSL} (Profit: +${(profitPercent || 0).toFixed(2)}%)`);
             try {
               pendingModifiesRef.current.add(posIdStr);
               const res = await safeFetch('/api/trade/modify', {
@@ -397,11 +410,12 @@ const App: React.FC = () => {
                 body: JSON.stringify({
                   accountId: curAccountId,
                   positionId: pos.id,
-                  stopLoss: formattedSL
+                  stopLoss: formattedSL,
+                  takeProfit: pos.takeProfit ? Number(Number(pos.takeProfit).toFixed(digits || 5)) : undefined
                 })
               });
               if (res?.success) {
-                const logMsg = `[${new Date().toLocaleTimeString()}] Vertex AI Trailing Stop: SL for ${pos.symbol} (#${pos.id}) secured at ${formattedSL} (+${profitPercent.toFixed(2)}% profit protected)`;
+                const logMsg = `[${new Date().toLocaleTimeString()}] Dynamic Trailing Stop: SL for ${pos.symbol} (#${pos.id}) secured at ${formattedSL} (+${(profitPercent || 0).toFixed(2)}% profit protected)`;
                 addActivity(logMsg);
               }
             } catch (e) {
@@ -573,8 +587,8 @@ const App: React.FC = () => {
 
       const balanceDelta = currentBalance - prevBalance;
       if (Math.abs(balanceDelta) > 0.01) {
-        const deltaStr = balanceDelta > 0 ? `+$${balanceDelta.toFixed(2)}` : `-$${Math.abs(balanceDelta).toFixed(2)}`;
-        addActivity(`[${new Date().toLocaleTimeString()}] Trade event balance change: ${deltaStr} (realized). New balance: $${currentBalance.toFixed(2)}.`);
+        const deltaStr = balanceDelta > 0 ? `+$${(balanceDelta || 0).toFixed(2)}` : `-$${Math.abs(balanceDelta || 0).toFixed(2)}`;
+        addActivity(`[${new Date().toLocaleTimeString()}] Trade event balance change: ${deltaStr} (realized). New balance: $${(currentBalance || 0).toFixed(2)}.`);
       }
     }
 
@@ -676,6 +690,48 @@ const App: React.FC = () => {
   const [isFabPanelOpen, setIsFabPanelOpen] = useState(false);
   const unreadPushCount = useStore(state => state.unreadPushCount);
 
+  // Floating ChatradeAI & Evidence Package FAB Position & Dragging State
+  const [fabPosition, setFabPosition] = useState<{ x: number; y: number } | null>(null);
+  const isFabDragging = useRef(false);
+  const fabDragMoved = useRef(false);
+  const fabStartPos = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && fabPosition === null) {
+      setFabPosition({
+        x: Math.max(20, window.innerWidth - 75),
+        y: Math.max(20, window.innerHeight - 180)
+      });
+    }
+  }, [fabPosition]);
+
+  const handleFabPointerDown = (e: React.PointerEvent) => {
+    isFabDragging.current = true;
+    fabDragMoved.current = false;
+    const currentX = fabPosition?.x ?? (window.innerWidth - 75);
+    const currentY = fabPosition?.y ?? (window.innerHeight - 180);
+    fabStartPos.current = {
+      x: e.clientX - currentX,
+      y: e.clientY - currentY
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handleFabPointerMove = (e: React.PointerEvent) => {
+    if (!isFabDragging.current) return;
+    fabDragMoved.current = true;
+    const newX = Math.max(20, Math.min(window.innerWidth - 60, e.clientX - fabStartPos.current.x));
+    const newY = Math.max(20, Math.min(window.innerHeight - 60, e.clientY - fabStartPos.current.y));
+    setFabPosition({ x: newX, y: newY });
+  };
+
+  const handleFabPointerUp = (e: React.PointerEvent) => {
+    isFabDragging.current = false;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch (_) {}
+  };
+
   const {
     notificationPermission,
     requestPermission,
@@ -716,18 +772,26 @@ const App: React.FC = () => {
         const data = await safeFetch(url);
         if (data && isActive) {
            setEaStatuses(prev => ({ ...prev, [selectedAccountId]: data }));
-           // Sync engineState and engineSession
-           if (data.engineState) {
-              useStore.getState().setEngineState(data.engineState);
-           }
-           if (data.engineSession) {
-              useStore.getState().setEngineSession(data.engineSession);
-           }
-           // Sync algo running state with terminal state if in EA mode
-           if (executionModes[selectedAccountId] === 'EA') {
-              setIsAlgoTradeRunning(data.status === 'ACTIVE' || data.status === 'RUNNING' || data.algoRunning === true);
+           // Lock engine state while active trades are open
+           const openPositions = useStore.getState().positions || [];
+           const hasOpenPositions = openPositions.length > 0;
+
+           if (hasOpenPositions) {
+              useStore.getState().setEngineState('RUNNING');
+              setIsAlgoTradeRunning(true);
            } else {
-              setIsAlgoTradeRunning(data.engineState === 'RUNNING');
+              if (data.engineState) {
+                 useStore.getState().setEngineState(data.engineState);
+              }
+              if (data.engineSession) {
+                 useStore.getState().setEngineSession(data.engineSession);
+              }
+              // Sync algo running state with terminal state
+              if (executionModes[selectedAccountId] === 'EA') {
+                 setIsAlgoTradeRunning(data.status === 'ACTIVE' || data.status === 'RUNNING' || data.algoRunning === true);
+              } else {
+                 setIsAlgoTradeRunning(data.engineState === 'RUNNING' || data.algoRunning === true);
+              }
            }
            // Reset backoff delay on successful fetch
            currentDelay = minDelay;
@@ -737,6 +801,17 @@ const App: React.FC = () => {
         const errMsg = err.message || '';
         const isRateLimit = errMsg.includes('429') || errMsg.toLowerCase().includes('rate exceeded') || errMsg.toLowerCase().includes('too many requests');
         const isNetworkError = errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError');
+
+        const isNotFound = errMsg.toLowerCase().includes('not found') || errMsg.includes('404');
+        if (isNotFound) {
+          console.warn(`[POLL] Account ${selectedAccountId} not found on server. Purging and switching.`);
+          localStorage.removeItem('selectedAccountId');
+          const nextAcc = accounts.find(a => a.id !== selectedAccountId);
+          if (nextAcc) {
+            handleAccountSelect(nextAcc.id);
+          }
+          return;
+        }
 
         if (isRateLimit) {
           // Double the delay on rate limit, up to maxDelay
@@ -862,6 +937,16 @@ const App: React.FC = () => {
     }
   }, [bootData, handleAccountSelect, accounts.length, session]);
 
+  // Account validity guard: If accounts exist and current selection is missing or deleted, switch to active account
+  useEffect(() => {
+    if (accounts.length > 0) {
+      if (!selectedAccountId || !accounts.some(a => a.id === selectedAccountId)) {
+        console.warn(`[ACCOUNT_GUARD] Selected account ${selectedAccountId} is not in available accounts list. Auto-selecting ${accounts[0].id}.`);
+        handleAccountSelect(accounts[0].id);
+      }
+    }
+  }, [accounts, selectedAccountId, handleAccountSelect]);
+
   useEffect(() => {
     if (!selectedAccountId) return;
     const unsubStatus = connectionManager.subscribeStatus(selectedAccountId, (status: boolean) => {
@@ -898,6 +983,14 @@ const App: React.FC = () => {
             }
             return acc;
           }));
+      }
+      if (data.type === 'ACCOUNT_NOT_FOUND') {
+          console.warn(`[WS] Account ${data.accountId} not found on server.`);
+          localStorage.removeItem('selectedAccountId');
+          const nextAcc = accounts.find(a => a.id !== data.accountId);
+          if (nextAcc) {
+            handleAccountSelect(nextAcc.id);
+          }
       }
       if (data.type === 'ERROR') {
           addLog(`SYSTEM: ${data.message}`);
@@ -1133,24 +1226,30 @@ const App: React.FC = () => {
   // Sync execution settings to backend
   const strategySettings = useStore(state => state.strategySettings);
   const activeSetup = useStore(state => state.activeSetup);
+  const accountBalance = useStore(state => state.account?.balance);
 
-  // Dynamic AI Lot Size Calculation
+  // Dynamic AI Lot Size Calculation based on Balance, Margin, Symbol, and User's Number of Trades input
+  const accountFreeMargin = useStore(state => state.account?.freeMargin);
   useEffect(() => {
-    const balance = useStore.getState().account?.balance || 10000;
+    const balance = accountBalance || 10000;
+    const freeMargin = accountFreeMargin ?? balance;
     const riskPercentage = strategySettings.riskConfig?.riskPercentage || 1.0;
-    const maxRiskCapital = balance * (riskPercentage / 100);
-    const slPips = 35;
-    const isGold = selectedSymbol?.toLowerCase().includes('xau') || selectedSymbol?.toLowerCase().includes('gold');
-    const pipValuePerStandardLot = isGold ? 10 : 10;
-    let calculatedLotSize = maxRiskCapital / (slPips * pipValuePerStandardLot);
-    if (calculatedLotSize < 0.01) calculatedLotSize = 0.01;
-    if (calculatedLotSize > 5.0) calculatedLotSize = 5.0;
-    const roundedLotSize = Number(calculatedLotSize.toFixed(2));
+    const slPips = strategySettings.riskConfig?.stopLossPips || 35;
+    const maxTrades = strategySettings.maxTrades || 1;
+
+    const dynamicLot = calculateDynamicLotSize(
+      balance,
+      freeMargin,
+      maxTrades,
+      selectedSymbol,
+      riskPercentage,
+      slPips
+    );
     
-    if (strategySettings.lotSize !== roundedLotSize) {
-      useStore.getState().setStrategySettings({ lotSize: roundedLotSize });
+    if (Math.abs((strategySettings.lotSize || 0.01) - dynamicLot) > 0.001) {
+      useStore.getState().setStrategySettings({ lotSize: dynamicLot });
     }
-  }, [selectedSymbol, strategySettings.riskConfig?.riskPercentage, useStore.getState().account?.balance]);
+  }, [selectedSymbol, strategySettings.riskConfig?.riskPercentage, strategySettings.riskConfig?.stopLossPips, strategySettings.maxTrades, accountBalance, accountFreeMargin, strategySettings.lotSize]);
   useEffect(() => {
     if (!selectedAccountId || !session) return;
     
@@ -1201,36 +1300,54 @@ const App: React.FC = () => {
 
   const handleToggleAlgo = async () => {
     if (!selectedAccountId || !session) return;
+    const currentPositions = useStore.getState().positions || [];
     const newState = !isAlgoTradeRunning;
+
+    // 0. LOCK PROTECTION: Prevent stopping engine while active positions are open
+    if (!newState && currentPositions.length > 0) {
+       const msg = `ENGINE LOCKED: You have ${currentPositions.length} active trade(s) open. The engine is locked in RUNNING mode until trades hit TP/SL or are closed manually.`;
+       addLog(msg);
+       alert(msg);
+       return;
+    }
 
     const activeSetup = useStore.getState().activeSetup;
     const strategySettings = useStore.getState().strategySettings;
     const activeSymbol = activeSetup?.symbol || strategySettings?.symbol || selectedSymbol;
     const activeTimeframe = activeSetup?.timeframe || strategySettings?.timeframe || selectedTimeframe;
 
-    // 1. VALIDATION: Check symbol before starting
-    if (newState) {
+    // 1. VALIDATION: Check symbol if symbol list is available
+    if (newState && availableBrokerSymbols.length > 0) {
        if (!activeSymbol || !availableBrokerSymbols.includes(activeSymbol)) {
-          const msg = `AI ERROR: Cannot start strategy on invalid symbol "${activeSymbol}". Select a valid one from the list.`;
-          addLog(msg);
-          alert(msg);
-          return;
+          console.warn(`[ENGINE] Symbol ${activeSymbol} not in current loaded list; proceeding with fallback.`);
        }
     }
 
+    // Instant optimistic state transition
+    setIsAlgoTradeRunning(newState);
+    useStore.getState().setIsAutoTrade(newState);
+    useStore.getState().setEngineState(newState ? 'RUNNING' : 'STOPPED');
+    localStorage.setItem('auto_trade_mode', newState ? 'true' : 'false');
+    useStore.getState().setEngineSession(newState ? {
+      runningState: 'RUNNING',
+      workflowState: 'Cognitive Pipeline Active',
+      aiContext: `ChatradeAI agent actively scanning ${activeSymbol} in ${activeTimeframe} timeframe.`
+    } : null);
+
     try {
-      addLog(`CHATRADE AI: Toggling adaptive strategy engine ${newState ? 'ON' : 'OFF'}...`);
-      setIsAlgoTradeRunning(newState);
+      addLog(`CHATRADE AI: Engine set to ${newState ? 'RUNNING' : 'STOPPED'}...`);
       
-      // Keep engineState in sync for dashboard displays
-      useStore.getState().setEngineState(newState ? 'RUNNING' : 'STOPPED');
-      useStore.getState().setEngineSession(newState ? {
-        runningState: 'RUNNING',
-        workflowState: 'Cognitive Pipeline Active',
-        aiContext: `ChatradeAI agent actively scanning ${activeSymbol} in ${activeTimeframe} timeframe.`
-      } : null);
-      
-      addLog(`SUCCESS: ChatradeAI agent auto-trading set to ${newState ? 'ACTIVE' : 'INACTIVE'}.`);
+      // Background sync engine state to backend
+      safeFetch(`/api/account/${encodeURIComponent(selectedAccountId)}/algo/toggle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ enabled: newState })
+      }).catch(err => console.warn("[ALGO_TOGGLE] Backend sync warning:", err.message));
+
+      addLog(`SUCCESS: ChatradeAI autonomous execution ${newState ? 'ACTIVATED' : 'HALTED'}.`);
     } catch (err: any) {
       addLog(`FATAL ERROR: Failed to toggle AI execution state: ${err.message}`);
     }
@@ -1385,7 +1502,7 @@ const App: React.FC = () => {
 
       const accountsList = Array.isArray(data) ? data : (data.accounts || []);
       
-      if (accountsList.length === 0 && accounts.length > 0) {
+      if (accountsList.length === 0 && accountsRef.current.length > 0) {
         addLog(`SDK Warning: Received empty terminals list. Preserving current state.`);
         return;
       }
@@ -1442,7 +1559,7 @@ const App: React.FC = () => {
         setTimeout(() => verifyAndFetch(5), 60000);
       }
     }
-  }, [addLog, session, accounts.length, selectedAccountId]);
+  }, [addLog, session, selectedAccountId]);
 
   // Terminal Auto-Discovery logic removed in favor of direct SDK handling
   useEffect(() => {
@@ -1803,7 +1920,6 @@ const App: React.FC = () => {
                     hasActiveSubscription={bootData?.has_active_subscription}
                   />
                 )}
-                {activeTab === 'command-center' && session?.user?.email?.toLowerCase() === 'trispinblackops@gmail.com' && <CommandCenter />}
                 {activeTab === 'open_positions' && (
                   <ErrorBoundary>
                     <OpenPositionsView 
@@ -1908,9 +2024,15 @@ const App: React.FC = () => {
           selectedSymbol={selectedSymbol || 'XAUUSDm'}
         />
 
-        {/* ChatradeAI Quick Trade & Execution FAB */}
-        {selectedAccountId && session && (
-          <div className="fixed bottom-20 right-4 sm:bottom-24 sm:right-6 z-[80] flex flex-col items-end gap-2">
+        {/* ChatradeAI Quick Trade & Execution FAB (Draggable) */}
+        {selectedAccountId && session && fabPosition && (
+          <div 
+            className={`fixed z-[80] flex flex-col ${fabPosition.x < 320 ? 'items-start' : 'items-end'} gap-2 touch-none select-none`}
+            style={{
+              left: fabPosition.x,
+              top: fabPosition.y,
+            }}
+          >
             <AnimatePresence>
               {isFabPanelOpen && (
                 <motion.div
@@ -2035,8 +2157,18 @@ const App: React.FC = () => {
             </AnimatePresence>
 
             <button
-              onClick={() => setIsFabPanelOpen(prev => !prev)}
-              className="w-12 h-12 rounded-full shadow-[0_0_20px_rgba(var(--accent-color-rgb),0.35)] bg-black/50 border border-white/20 flex items-center justify-center backdrop-blur-md transition-all hover:scale-110 active:scale-95 cursor-pointer relative"
+              onPointerDown={handleFabPointerDown}
+              onPointerMove={handleFabPointerMove}
+              onPointerUp={handleFabPointerUp}
+              onClick={(e) => {
+                if (fabDragMoved.current) {
+                  e.stopPropagation();
+                  return;
+                }
+                setIsFabPanelOpen(prev => !prev);
+              }}
+              title="Drag to reposition floating button, tap/click to open Evidence Package & Quick Trade panel"
+              className="w-12 h-12 rounded-full shadow-[0_0_20px_rgba(var(--accent-color-rgb),0.35)] bg-black/70 border border-white/20 flex items-center justify-center backdrop-blur-md transition-all hover:scale-105 active:scale-95 cursor-grab active:cursor-grabbing relative touch-none select-none"
               style={{ borderColor: 'rgba(var(--accent-color-rgb), 0.5)', color: 'var(--accent-color)' }}
             >
               <Cpu className="w-5 h-5 animate-pulse" />
