@@ -97,6 +97,7 @@ import { adminSupabase } from "./src/lib/supabaseAdmin.ts";
 import { ChatradeMemory } from "./src/lib/memorySystem.ts";
 import { getSymbolsCached } from "./src/lib/symbolCache.ts";
 import * as candleCache from "./services/candleCache.ts";
+import { createLeanBacktestRouter } from "./services/leanBacktestRoutes.ts";
 
 // TRADING CONTROLLER: Persistent Database & Lifecycle Interface (User-Isolated)
 const TradingController = {
@@ -666,6 +667,9 @@ async function enforceOwnership(req: express.Request, res: express.Response, nex
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// QuantConnect LEAN backtesting API bridge (server-side only; does not execute broker orders).
+app.use("/api/lean", createLeanBacktestRouter(getUserIdFromRequest));
 
 // ENFORCE OWNERSHIP ON ALL ACCOUNT ROUTES
 app.use("/api/account/:accountId", enforceOwnership);
