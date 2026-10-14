@@ -31,6 +31,7 @@ import { PlatformType, TradingAccount } from './types';
 import Dashboard from './components/Dashboard';
 import CommandCenter, { AGENTS_CONFIG } from './components/CommandCenter';
 import Sidebar from './components/Sidebar';
+import LeanStrategyLab from './components/LeanStrategyLab';
 import AccountConfig from './components/AccountConfig';
 import News from './components/News';
 import RiskManagement from './components/RiskManagement';
@@ -1829,6 +1830,11 @@ const App: React.FC = () => {
                       selectedAccountId={selectedAccountId || ''}
                       selectedTimeframe={selectedTimeframe}
                     />
+                  </ErrorBoundary>
+                )}
+                {activeTab === 'lean-lab' && session?.user?.email?.toLowerCase() === 'trispinblackops@gmail.com' && (
+                  <ErrorBoundary>
+                    <LeanStrategyLab token={session?.access_token || ''} />
                   </ErrorBoundary>
                 )}
                 {activeTab === 'admin' && (
