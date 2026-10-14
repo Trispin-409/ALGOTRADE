@@ -26,10 +26,7 @@ export default function LeanStrategyLab({ token }: { token: string }) {
   const [startDate, setStartDate] = useState("2022-01-01");
   const [endDate, setEndDate] = useState(today());
   const [startingCash, setStartingCash] = useState("10000");
-  const [parametersText, setParametersText] = useState('{
-  "fastPeriod": 12,
-  "slowPeriod": 26
-}');
+  const [parametersText, setParametersText] = useState(JSON.stringify({ fastPeriod: 12, slowPeriod: 26 }, null, 2));
 
   const checkHealth = useCallback(async () => {
     setChecking(true);
