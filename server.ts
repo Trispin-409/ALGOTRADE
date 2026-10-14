@@ -437,6 +437,13 @@ const globalApiLimiter = rateLimit({
   validate: false
 });
 
+const leanBacktestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: "Backtest request limit reached. Please try again later." },
+  validate: false
+});
+
 app.use(cors());
 
 // Apply global API rate limiter to all API endpoints for security
@@ -667,6 +674,9 @@ async function enforceOwnership(req: express.Request, res: express.Response, nex
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// Limit compute-heavy backtest requests separately from normal market-data traffic.
+app.use("/api/lean/backtests", leanBacktestLimiter);
 
 // QuantConnect LEAN backtesting API bridge (server-side only; does not execute broker orders).
 app.use("/api/lean", createLeanBacktestRouter(getUserIdFromRequest));
